@@ -2,7 +2,7 @@
 
 Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
 
-`infra` 在 Windows 上安装并启停 ComfyUI。Runner 读 `infra/config.json` 里的地址，按 `runner/adapter` 把业务参数填进界面工作流，等执行结束，把结果下载到本机。
+`infra` 在 Windows 上安装并启停 ComfyUI。Runner 读根目录 `config.json` 里的 `runner.comfyUiBaseURL`，这个字段没有值时用 `comfyui.baseURL`。它按 `runner/adapter` 把业务参数填进界面工作流，等执行结束，把结果下载到本机。
 
 默认根目录是 `C:\AIGC`。仓库放在别的路径时，给下面的脚本加上 `-Root D:\AIGC`。
 
@@ -10,7 +10,7 @@ Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
 
 | 路径 | 作用 |
 | --- | --- |
-| `infra/config.json` | ComfyUI 监听地址，Runner 也读这里 |
+| `config.json` | ComfyUI 和 Runner 的地址、超时、结果目录 |
 | `infra/data/environment.json` | ComfyUI、插件、Python、PyTorch 的版本钉扎 |
 | `runtime/comfyui-prod` | ComfyUI 本体和虚拟环境，不进版本库 |
 | `models/` | 共享权重，不进版本库 |
@@ -31,17 +31,26 @@ Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
 
 ### 配置
 
-`infra/config.json`：
+根目录 `config.json`：
 
 ```json
 {
-  "baseURL": "http://192.168.8.136:8188",
-  "listen": "0.0.0.0",
-  "port": 8188
+  "comfyui": {
+    "baseURL": "http://192.168.8.136:8188",
+    "listen": "0.0.0.0",
+    "port": 8188
+  },
+  "runner": {
+    "comfyUiBaseURL": "http://127.0.0.1:18188",
+    "host": "127.0.0.1",
+    "port": 8787,
+    "timeout": 600,
+    "out": "outputs/runner"
+  }
 }
 ```
 
-`listen` 和 `port` 是 Windows 进程的绑定地址。`baseURL` 是浏览器和 Runner 访问用的地址，改 IP 时改这一项。
+`comfyui.listen` 和 `comfyui.port` 是 Windows 进程的绑定地址。`comfyui.baseURL` 是浏览器访问用的地址。Runner 访问 ComfyUI 用 `runner.comfyUiBaseURL`，这个字段没有值时用 `comfyui.baseURL`。`runner` 里其余字段是本地 HTTP 服务的监听地址、超时秒数和结果目录。
 
 ### 安装
 
@@ -90,19 +99,19 @@ infra\install-shortcuts.ps1 -Startup
 
 ## Runner
 
-在能访问 `baseURL` 的机器上执行。需要 Node.js 22.18 或更新版本。直接跑服务，不用先 `npm install`。
+在能访问 ComfyUI 的机器上执行。需要 Node.js 22.18 或更新版本。直接跑服务，不用先 `npm install`。
 
 ```bash
 node runner/src/server.ts
 ```
 
-服务听在 `http://127.0.0.1:8787`。`--port` 改端口，`--timeout` 改每个任务的超时秒数（默认 600），`--out` 改结果根目录（默认 `<仓库>/outputs/runner`）。ComfyUI 地址来自 `infra/config.json`。这些在进程启动时定一次。Ctrl+C 会取消正在执行的提交。
+服务听在 `config.json` 的 `runner.host` 和 `runner.port`，默认是 `http://127.0.0.1:8787`。`--host`、`--port`、`--timeout`、`--out` 只覆盖这一次启动。`timeout` 单位是秒，默认 600。`out` 相对仓库根目录，默认 `outputs/runner`。ComfyUI 地址来自 `runner.comfyUiBaseURL`，没有值时用 `comfyui.baseURL`。这些在进程启动时定一次。Ctrl+C 会取消正在执行的提交。
 
 调用分三层：
 
 1. HTTP 接口只收业务参数。`POST /text2img` 要 `text` 和 `entry`。`POST /remove-bg` 要 `path` 和 `adapter`。`POST /cutout` 要 `text`，`entry` 默认 `sdxl`，`adapter` 默认 `birefnet`。
 2. `runner/adapter/<task>/<model>.json` 用 `model` 选中 `user/default/workflows` 里的一张界面图，并把入参写到指定节点。
-3. `runner/src` 把这张图转成 ComfyUI API prompt，提交，等待，再把结果下载到 `--out` 下面的一个新目录。响应是 `{ "path": "<这个目录>" }`。
+3. `runner/src` 把这张图转成 ComfyUI API prompt，提交，等待，再把结果下载到结果根目录下面的一个新目录。响应是 `{ "path": "<这个目录>" }`。
 
 文生图。`entry sdxl` 读 `runner/adapter/text2img/sdxl.json`，把 `text` 写到 `text2image_sdxl.json` 的节点 `10`（Positive Prompt）：
 

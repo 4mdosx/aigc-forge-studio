@@ -22,21 +22,24 @@ $env:PYTHONIOENCODING = "utf-8"
 
 $Runtime = Join-Path $Root "runtime\comfyui-prod"
 $Python = Join-Path $Runtime ".venv\Scripts\python.exe"
-$Infra = Join-Path $Root "infra"
 $LogDir = Join-Path $Root "logs"
 $PidFile = Join-Path $LogDir "comfyui.pid"
 $OutLog = Join-Path $LogDir "comfyui.log"
 $ErrLog = Join-Path $LogDir "comfyui.err.log"
 
-$AppConfigPath = Join-Path $Infra "config.json"
+$AppConfigPath = Join-Path $Root "config.json"
 if (-not (Test-Path -LiteralPath $AppConfigPath)) {
     throw "Missing config.json: $AppConfigPath"
 }
 
 $AppConfig = Get-Content -LiteralPath $AppConfigPath -Raw | ConvertFrom-Json
-$Listen = if ($AppConfig.listen) { [string]$AppConfig.listen } else { "0.0.0.0" }
-$Port = if ($AppConfig.port) { [int]$AppConfig.port } else { 8188 }
-$BaseUrl = if ($AppConfig.baseURL) { ([string]$AppConfig.baseURL).TrimEnd("/") } else { "http://127.0.0.1:$Port" }
+$Comfy = $AppConfig.comfyui
+if (-not $Comfy) {
+    throw "comfyui missing in $AppConfigPath"
+}
+$Listen = if ($Comfy.listen) { [string]$Comfy.listen } else { "0.0.0.0" }
+$Port = if ($Comfy.port) { [int]$Comfy.port } else { 8188 }
+$BaseUrl = if ($Comfy.baseURL) { ([string]$Comfy.baseURL).TrimEnd("/") } else { "http://127.0.0.1:$Port" }
 
 $ArgumentList = @(
     (Join-Path $Runtime "main.py"),

@@ -27,32 +27,33 @@ async function main(): Promise<void> {
     args: process.argv.slice(2),
     strict: true,
     options: {
-      host: { type: 'string', default: '127.0.0.1' },
-      port: { type: 'string', default: '8787' },
+      host: { type: 'string' },
+      port: { type: 'string' },
       timeout: { type: 'string' },
       out: { type: 'string' },
     },
   })
   const root = findRepoRoot([process.cwd(), import.meta.dirname])
-  const config = loadConfig(resolve(root, 'infra/config.json'))
+  const config = loadConfig(resolve(root, 'config.json'))
+  const host = values.host ?? config.runner.host
+  const port = portOf(values.port, config.runner.port)
   const shutdown = new AbortController()
   const app: App = {
     root,
-    client: new ComfyClient(config.baseURL, {
+    client: new ComfyClient(config.runner.comfyUiBaseURL, {
       onPromptId: (promptId) => console.error(`prompt_id ${promptId}`),
     }),
-    timeoutMs: timeoutMs(values.timeout),
-    outDir: resolve(values.out ?? join(root, 'outputs', 'runner')),
+    timeoutMs: timeoutMs(values.timeout, config.runner.timeout),
+    outDir: resolve(values.out ?? join(root, config.runner.out)),
     signal: shutdown.signal,
   }
   const server = createServer(app)
-  const port = portOf(values.port)
   await new Promise<void>((resolveListen, reject) => {
     server.once('error', reject)
-    server.listen(port, values.host, () => resolveListen())
+    server.listen(port, host, () => resolveListen())
   })
-  console.error(`Runner http://${values.host}:${port}`)
-  console.error(`ComfyUI ${config.baseURL}`)
+  console.error(`Runner http://${host}:${port}`)
+  console.error(`ComfyUI ${config.runner.comfyUiBaseURL}`)
   process.once('SIGINT', () => {
     console.error('interrupting')
     shutdown.abort()
@@ -200,16 +201,16 @@ function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-function timeoutMs(raw: string | undefined): number {
-  if (raw === undefined) return 600_000
+function timeoutMs(raw: string | undefined, fallbackSeconds: number): number {
+  if (raw === undefined) return fallbackSeconds * 1000
   if (!/^\d+$/.test(raw) || Number(raw) === 0) {
     throw new RunnerError('--timeout must be a positive number of seconds')
   }
   return Number(raw) * 1000
 }
 
-function portOf(raw: string | undefined): number {
-  if (raw === undefined) return 8787
+function portOf(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback
   const port = Number(raw)
   if (!/^\d+$/.test(raw) || port < 1 || port > 65535) {
     throw new RunnerError('--port must be a number from 1 to 65535')

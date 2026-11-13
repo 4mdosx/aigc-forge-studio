@@ -13,7 +13,7 @@ $Runtime = Join-Path $Root "runtime\comfyui-prod"
 $Python = Join-Path $Runtime ".venv\Scripts\python.exe"
 
 $EnvironmentFile = Join-Path $Infra "data\environment.json"
-$AppConfigFile = Join-Path $Infra "config.json"
+$AppConfigFile = Join-Path $Root "config.json"
 
 if (-not (Test-Path $EnvironmentFile)) {
     throw "Missing environment.json"
@@ -30,7 +30,7 @@ $AppConfig = Get-Content $AppConfigFile -Raw |
     ConvertFrom-Json
 
 if (-not $BaseUrl) {
-    $BaseUrl = $AppConfig.baseURL
+    $BaseUrl = $AppConfig.comfyui.baseURL
 }
 
 $BaseUrl = $BaseUrl.TrimEnd("/")
