@@ -3,45 +3,41 @@
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
 
+import { Dialog } from '@/components/dialog'
+import { PromptChat } from '@/components/prompt-chat'
 import { api } from '@/lib/api'
 import type { Task, Work, Workflow } from '@/lib/types'
 
-interface ComfyWorkflow {
-  path: string
-  name: string
-  status: 'new' | 'updated' | 'unchanged'
+type FieldType = 'string' | 'seed' | 'image'
+
+interface FieldDraft {
+  key: string
+  type: FieldType
 }
+
+const starter: FieldDraft[] = [
+  { key: 'text', type: 'string' },
+  { key: 'seed', type: 'seed' },
+]
 
 export function HomeBoard() {
   const [works, setWorks] = useState<Work[]>([])
-  const [workName, setWorkName] = useState('')
-  const [semantic, setSemantic] = useState(
-    '{\n  "inputs": {\n    "text": { "type": "string" },\n    "seed": { "type": "seed" }\n  }\n}',
-  )
   const [workflows, setWorkflows] = useState<Workflow[]>([])
-  const [remote, setRemote] = useState<ComfyWorkflow[]>([])
-  const [selected, setSelected] = useState<string[]>([])
+  const [tasks, setTasks] = useState<Task[]>([])
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [editing, setEditing] = useState<Work | null>(null)
+  const [chatOpen, setChatOpen] = useState(false)
 
   async function load() {
-    const [library, catalog, jobs] = await Promise.all([
+    const [library, catalog] = await Promise.all([
       api<{ workflows: Workflow[] }>('workflows'),
-      api<{ workflows: ComfyWorkflow[] }>('comfy/workflows'),
       api<{ works: Work[] }>('works'),
     ])
-    setWorks(jobs.works)
+    setWorks(catalog.works)
     setWorkflows(library.workflows)
-    setRemote(catalog.workflows)
-    setSelected((current) =>
-      current.filter((path) =>
-        catalog.workflows.some(
-          (item) => item.path === path && item.status !== 'unchanged',
-        ),
-      ),
-    )
   }
 
   useEffect(() => {
@@ -50,46 +46,30 @@ export function HomeBoard() {
     )
   }, [])
 
-  function toggle(path: string) {
-    setSelected((current) =>
-      current.includes(path)
-        ? current.filter((item) => item !== path)
-        : [...current, path],
-    )
-  }
+  useEffect(() => {
+    let stop = false
+    async function poll() {
+      try {
+        const body = await api<{ tasks: Task[] }>('tasks')
+        if (!stop) setTasks(body.tasks)
+      } catch (err) {
+        if (!stop) setError(err instanceof Error ? err.message : String(err))
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 2000)
+    return () => {
+      stop = true
+      window.clearInterval(timer)
+    }
+  }, [])
 
-  function selectedPaths(action: 'import' | 'update'): string[] {
-    return selected.filter((path) => {
-      const item = remote.find((workflow) => workflow.path === path)
-      return action === 'import' ? item?.status === 'new' : item?.status === 'updated'
-    })
-  }
-
-  async function runSelected(action: 'import' | 'update') {
-    const paths = selectedPaths(action)
+  async function run(action: () => Promise<void>) {
     setBusy(true)
     setError('')
     setNotice('')
     try {
-      const result = await api<{
-        created: Array<{ name: string }>
-        updated: Array<{ name: string; version: number }>
-        unchanged: Array<{ name: string }>
-        failed: Array<{ path: string; error: string }>
-      }>('comfy/workflows', {
-        method: 'POST',
-        body: JSON.stringify({ action, paths }),
-      })
-      const lines = [
-        ...result.created.map((item) => `${item.name} 已入库`),
-        ...result.updated.map((item) => `${item.name} 已覆盖当前版本`),
-        ...result.unchanged.map((item) => `${item.name} 已入库`),
-      ]
-      setNotice(lines.join('\n'))
-      if (result.failed.length > 0) {
-        setError(result.failed.map((item) => `${item.path}: ${item.error}`).join('\n'))
-      }
-      setSelected([])
+      await action()
       await load()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -98,192 +78,268 @@ export function HomeBoard() {
     }
   }
 
-  async function createLlm(event: React.FormEvent) {
-    event.preventDefault()
-    setBusy(true)
-    setError('')
-    try {
-      const task = await api<Task>('tasks', {
-        method: 'POST',
-        body: JSON.stringify({
-          executor: 'llm',
-          task: 'prompt',
-          payload: { prompt },
-        }),
-      })
-      window.location.href = `/tasks/${task.id}`
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      setBusy(false)
-    }
-  }
+  const linked = new Set(works.flatMap((work) => work.workflows.map((item) => item.name)))
+  const loose = workflows.filter((item) => !linked.has(item.name))
 
   return (
     <>
       {notice ? <div className="note">{notice}</div> : null}
       {error ? <div className="error">{error}</div> : null}
-      <section className="panel">
-        <h2>Work</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th>字段</th>
-              <th>workflow</th>
-            </tr>
-          </thead>
-          <tbody>
-            {works.length === 0 ? (
-              <tr>
-                <td colSpan={3}>还没有 Work。</td>
-              </tr>
-            ) : (
-              works.map((work) => (
-                <tr key={work.id}>
-                  <td>
+      <div className="board">
+        <section className="column">
+          <h2>进行中</h2>
+          {tasks.length === 0 ? (
+            <p className="muted">没有正在进行的任务。</p>
+          ) : (
+            <ul className="stack">
+              {tasks.map((task) => (
+                <li key={task.id}>
+                  <Link href={`/tasks/${task.id}`}>{task.task}</Link>
+                  <span className={`status ${task.status}`}>{task.status}</span>
+                  <span className="muted">
+                    {[task.workName, task.workflowName].filter(Boolean).join(' · ')}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section className="column">
+          <div className="column-head">
+            <h2>Work</h2>
+            <button type="button" onClick={() => setCreating(true)}>
+              新建
+            </button>
+          </div>
+          {works.length === 0 && loose.length === 0 ? (
+            <p className="muted">还没有 Work。</p>
+          ) : (
+            <ul className="stack">
+              {works.map((work) => (
+                <li key={work.id}>
+                  <div className="item-line">
                     <Link href={`/works/${encodeURIComponent(work.name)}`}>{work.name}</Link>
-                  </td>
-                  <td className="mono">{Object.keys(work.semantic.inputs).join(', ')}</td>
-                  <td>{work.workflows.map((item) => item.name).join(', ') || '—'}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault()
-            void (async () => {
-              setBusy(true)
-              setError('')
-              try {
-                const parsed = JSON.parse(semantic) as unknown
-                await api('works', {
-                  method: 'POST',
-                  body: JSON.stringify({ name: workName, semantic: parsed }),
-                })
-                setWorkName('')
-                await load()
-              } catch (err) {
-                setError(err instanceof Error ? err.message : String(err))
-              } finally {
-                setBusy(false)
-              }
-            })()
-          }}
-        >
-          <div className="grid">
-            <label>
-              名称
-              <input value={workName} onChange={(event) => setWorkName(event.target.value)} />
-            </label>
-            <label>
-              语义配置
-              <textarea value={semantic} onChange={(event) => setSemantic(event.target.value)} />
-            </label>
+                    <button type="button" className="quiet" onClick={() => setEditing(work)}>
+                      编辑
+                    </button>
+                  </div>
+                  <span className="muted">{Object.keys(work.semantic.inputs).join(', ')}</span>
+                  {work.workflows.length === 0 ? (
+                    <span className="muted">还没有 workflow</span>
+                  ) : (
+                    <ul>
+                      {work.workflows.map((item) => (
+                        <li key={item.id}>
+                          <Link href={`/workflows/${encodeURIComponent(item.name)}`}>
+                            {item.name}
+                          </Link>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              ))}
+              {loose.map((item) => (
+                <li key={item.id}>
+                  <Link href={`/workflows/${encodeURIComponent(item.name)}`}>{item.name}</Link>
+                  <span className="muted">未挂到 Work</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section className="column" aria-label="留空" />
+      </div>
+      <WorkDialog
+        open={creating}
+        title="新建 Work"
+        work={null}
+        busy={busy}
+        onClose={() => setCreating(false)}
+        onSave={(name, fields) =>
+          run(async () => {
+            await api('works', {
+              method: 'POST',
+              body: JSON.stringify({ name, semantic: { inputs: inputsOf(fields) } }),
+            })
+            setCreating(false)
+            setNotice(`已建立 ${name}`)
+          })
+        }
+      />
+      <WorkDialog
+        open={editing !== null}
+        title={editing ? `编辑 ${editing.name}` : '编辑 Work'}
+        work={editing}
+        busy={busy}
+        onClose={() => setEditing(null)}
+        onSave={(name, fields) =>
+          run(async () => {
+            await api(`works/${encodeURIComponent(name)}/semantic`, {
+              method: 'POST',
+              body: JSON.stringify({ semantic: { inputs: inputsOf(fields) } }),
+            })
+            setEditing(null)
+            setNotice(`已保存 ${name}`)
+          })
+        }
+      />
+      {chatOpen ? (
+        <section className="chat-panel">
+          <div className="column-head">
+            <h2>提示词</h2>
+            <button type="button" className="quiet" onClick={() => setChatOpen(false)}>
+              关闭
+            </button>
           </div>
-          <div className="row">
-            <button disabled={busy || workName.trim() === ''}>建立 Work</button>
-          </div>
-        </form>
-      </section>
-      <section className="panel">
-        <h2>工作流</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>名称</th>
-              <th>分支</th>
-              <th>ComfyUI 路径</th>
-            </tr>
-          </thead>
-          <tbody>
-            {workflows.length === 0 ? (
-              <tr>
-                <td colSpan={3}>还没有工作流。</td>
-              </tr>
-            ) : (
-              workflows.map((workflow) => (
-                <tr key={workflow.id}>
-                  <td>
-                    <Link href={`/workflows/${encodeURIComponent(workflow.name)}`}>
-                      {workflow.name}
-                    </Link>
-                  </td>
-                  <td>{workflow.currentBranch}</td>
-                  <td className="mono">{workflow.comfyPath}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </section>
-      <section className="panel">
-        <h2>从 ComfyUI 建立</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>选择</th>
-              <th>文件</th>
-              <th>入库名称</th>
-            </tr>
-          </thead>
-          <tbody>
-            {remote.length === 0 ? (
-              <tr>
-                <td colSpan={3}>ComfyUI 没有可入库的工作流。</td>
-              </tr>
-            ) : (
-              remote.map((item) => (
-                <tr key={item.path}>
-                  <td>
-                    {item.status === 'unchanged' ? (
-                      '已入库'
-                    ) : (
-                      <input
-                        type="checkbox"
-                        checked={selected.includes(item.path)}
-                        onChange={() => toggle(item.path)}
-                        aria-label={item.path}
-                      />
-                    )}
-                    {item.status === 'updated' ? ' 可覆盖' : ''}
-                  </td>
-                  <td className="mono">{item.path}</td>
-                  <td>{item.name}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-        <div className="row">
-          <button
-            disabled={busy || selectedPaths('import').length === 0}
-            onClick={() => void runSelected('import')}
-          >
-            入库
-          </button>
-          <button
-            className="quiet"
-            disabled={busy || selectedPaths('update').length === 0}
-            onClick={() => void runSelected('update')}
-          >
-            覆盖
-          </button>
-        </div>
-      </section>
-      <section className="panel">
-        <h2>LLM 任务</h2>
-        <form onSubmit={createLlm}>
-          <label>
-            提示词
-            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} required />
-          </label>
-          <div className="row">
-            <button disabled={busy || prompt.trim() === ''}>提交</button>
-          </div>
-        </form>
-      </section>
+          <PromptChat />
+        </section>
+      ) : null}
+      <button type="button" className="chat-fab" onClick={() => setChatOpen((open) => !open)}>
+        对话
+      </button>
     </>
   )
+}
+
+function WorkDialog({
+  open,
+  title,
+  work,
+  busy,
+  onClose,
+  onSave,
+}: {
+  open: boolean
+  title: string
+  work: Work | null
+  busy: boolean
+  onClose: () => void
+  onSave: (name: string, fields: FieldDraft[]) => Promise<void>
+}) {
+  const [name, setName] = useState('')
+  const [fields, setFields] = useState<FieldDraft[]>(starter)
+  useEffect(() => {
+    if (!open) return
+    setName(work?.name ?? '')
+    setFields(
+      work
+        ? Object.entries(work.semantic.inputs).map(([key, value]) => ({
+            key,
+            type: value.type,
+          }))
+        : starter.map((field) => ({ ...field })),
+    )
+  }, [open, work])
+  return (
+    <Dialog open={open} title={title} onClose={onClose}>
+      <label>
+        名称
+        <input
+          value={name}
+          disabled={work !== null}
+          onChange={(event) => setName(event.target.value)}
+        />
+      </label>
+      <h3>语义字段</h3>
+      <FieldTable fields={fields} onChange={setFields} />
+      <div className="row">
+        <button
+          type="button"
+          disabled={busy || name.trim() === ''}
+          onClick={() => void onSave(name.trim(), fields)}
+        >
+          保存
+        </button>
+      </div>
+    </Dialog>
+  )
+}
+
+function FieldTable({
+  fields,
+  onChange,
+}: {
+  fields: FieldDraft[]
+  onChange: (fields: FieldDraft[]) => void
+}) {
+  return (
+    <>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>类型</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {fields.map((field, index) => (
+            <tr key={index}>
+              <td>
+                <input
+                  value={field.key}
+                  onChange={(event) =>
+                    onChange(
+                      fields.map((item, itemIndex) =>
+                        itemIndex === index ? { ...item, key: event.target.value } : item,
+                      ),
+                    )
+                  }
+                />
+              </td>
+              <td>
+                <select
+                  value={field.type}
+                  onChange={(event) =>
+                    onChange(
+                      fields.map((item, itemIndex) =>
+                        itemIndex === index
+                          ? { ...item, type: event.target.value as FieldType }
+                          : item,
+                      ),
+                    )
+                  }
+                >
+                  <option value="string">string</option>
+                  <option value="seed">seed</option>
+                  <option value="image">image</option>
+                </select>
+              </td>
+              <td>
+                <button
+                  type="button"
+                  className="quiet"
+                  onClick={() => onChange(fields.filter((_, itemIndex) => itemIndex !== index))}
+                >
+                  删除
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="row">
+        <button
+          type="button"
+          className="quiet"
+          onClick={() => onChange([...fields, { key: '', type: 'string' }])}
+        >
+          加字段
+        </button>
+      </div>
+    </>
+  )
+}
+
+function inputsOf(fields: FieldDraft[]): Record<string, { type: FieldType }> {
+  const inputs: Record<string, { type: FieldType }> = {}
+  for (const field of fields) {
+    const key = field.key.trim()
+    if (!key) throw new Error('字段名不能为空')
+    if (inputs[key]) throw new Error(`字段 ${key} 重复`)
+    inputs[key] = { type: field.type }
+  }
+  if (Object.keys(inputs).length === 0) throw new Error('至少要有一个字段')
+  return inputs
 }

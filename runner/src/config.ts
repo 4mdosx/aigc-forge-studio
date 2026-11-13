@@ -14,12 +14,6 @@ export interface AppConfig {
     timeout: number
     out: string
     db: string
-    llm: {
-      baseURL: string
-      model: string
-      concurrency: number
-      timeout: number
-    } | null
   }
 }
 
@@ -54,7 +48,6 @@ export function loadConfig(path: string): AppConfig {
       timeout: timeoutOf(runner, path),
       out: outOf(runner, path),
       db: dbOf(runner),
-      llm: llmOf(runner, path),
     },
   }
 }
@@ -186,51 +179,6 @@ function dbOf(runner: Record<string, unknown>): string {
     throw new RunnerError('runner.db must be a path')
   }
   return db.trim()
-}
-
-function llmOf(
-  runner: Record<string, unknown>,
-  path: string,
-): AppConfig['runner']['llm'] {
-  if (!Object.hasOwn(runner, 'llm') || runner.llm == null) return null
-  if (
-    !runner.llm ||
-    typeof runner.llm !== 'object' ||
-    Array.isArray(runner.llm)
-  ) {
-    throw new RunnerError(`runner.llm must be an object in ${path}`)
-  }
-  const llm = runner.llm as Record<string, unknown>
-  const baseURL = llm.baseURL
-  if (typeof baseURL !== 'string' || baseURL.trim() === '') {
-    throw new RunnerError(`runner.llm.baseURL missing in ${path}`)
-  }
-  return {
-    baseURL: baseURL.trim().replace(/\/+$/, ''),
-    model: stringOr(llm.model, 'default', `runner.llm.model in ${path}`),
-    concurrency: positiveInt(
-      llm.concurrency,
-      8,
-      `runner.llm.concurrency in ${path}`,
-    ),
-    timeout: positiveInt(llm.timeout, 60, `runner.llm.timeout in ${path}`),
-  }
-}
-
-function stringOr(value: unknown, fallback: string, label: string): string {
-  if (value === undefined) return fallback
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw new RunnerError(`${label} must be a string`)
-  }
-  return value.trim()
-}
-
-function positiveInt(value: unknown, fallback: number, label: string): number {
-  if (value === undefined) return fallback
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
-    throw new RunnerError(`${label} must be a positive integer`)
-  }
-  return value
 }
 
 function messageOf(err: unknown): string {

@@ -4,6 +4,8 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
+import { gatewayChat } from './chat/client.ts'
+import { loadGateway } from './chat/env.ts'
 import { ComfyClient } from './comfy/client.ts'
 import { findRepoRoot, loadConfig } from './config.ts'
 import { openDatabase } from './db.ts'
@@ -23,23 +25,16 @@ async function main(): Promise<void> {
   })
   const root = findRepoRoot([process.cwd(), import.meta.dirname])
   const config = loadConfig(resolve(root, 'config.json'))
+  const gateway = await loadGateway(root)
   const runner: Runner = {
     db: openDatabase(resolve(root, config.runner.db)),
     clients: config.runner.comfyUiBaseURLs.map(
       (baseURL) => new ComfyClient(baseURL),
     ),
-    llm: config.runner.llm
-      ? {
-          baseURL: config.runner.llm.baseURL,
-          model: config.runner.llm.model,
-          concurrency: config.runner.llm.concurrency,
-          timeoutMs: config.runner.llm.timeout * 1000,
-        }
-      : null,
+    chat: gateway ? gatewayChat(gateway) : null,
     timeoutMs: timeoutMs(values.timeout, config.runner.timeout),
     now: () => new Date(),
     randomSeed: () => Math.floor(Math.random() * 2 ** 32),
-    stops: new Map(),
   }
   resume(runner)
   const app = createApp(runner)
@@ -51,6 +46,7 @@ async function main(): Promise<void> {
   const server = serve({ fetch: app.fetch, hostname: host, port })
   log(root, `Runner http://${host}:${port}`)
   log(root, `ComfyUI ${config.runner.comfyUiBaseURLs.join(', ')}`)
+  log(root, gateway ? `Gateway ${gateway.models.join(', ')}` : 'Gateway off')
   process.once('SIGINT', () => {
     log(root, 'interrupting')
     clearInterval(timer)

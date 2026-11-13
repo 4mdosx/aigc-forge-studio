@@ -12,10 +12,11 @@ Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
 | --- | --- |
 | `dev.mjs` | 同时启动 Runner 和 Web 的开发服务器 |
 | `config.json` | ComfyUI 和 Runner 的地址、超时、数据库路径 |
+| `env.example.ts` | 提示词网关的模板。复制成 `env.ts` 后填写，`env.ts` 不进版本库 |
 | `infra/data/environment.json` | ComfyUI、插件、Python、PyTorch 的版本钉扎 |
 | `runtime/comfyui-prod` | ComfyUI 本体和虚拟环境，不进版本库 |
 | `models/` | 共享权重，不进版本库 |
-| `runner/src/` | HTTP 服务。`http` 是接口，`workflow` 是版本，`task` 是队列，`comfy` 是 ComfyUI 客户端 |
+| `runner/src/` | HTTP 服务。`http` 是接口，`workflow` 是版本，`task` 是出图队列，`chat` 是提示词对话，`comfy` 是 ComfyUI 客户端 |
 | `web/` | Next.js 界面，通过 Runner 的 HTTP 接口操作 |
 | `data/` | Runner 的数据库和日志，不进版本库 |
 | `datasets/` | 训练数据集。启动 ComfyUI 时作为数据集节点的默认目录 |
@@ -55,13 +56,7 @@ Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
 
 `comfyui.listen` 和 `comfyui.port` 是 Windows 进程的绑定地址。`comfyui.baseURL` 是浏览器访问用的地址。Runner 的出图实例优先用 `runner.comfyUiBaseURLs`。没有这个数组时用 `runner.comfyUiBaseURL`，这个字段没有值时用 `comfyui.baseURL`。`runner.timeout` 是出图任务进入执行后的超时秒数，默认 600。`runner.db` 默认是 `data/runner.sqlite`。日志写到 `data/logs/runner.log`。
 
-可选的 LLM 配置：
-
-```json
-"llm": { "baseURL": "http://127.0.0.1:11434/v1", "model": "writer", "concurrency": 8, "timeout": 60 }
-```
-
-`concurrency` 是这个地址上同时进行的 LLM 请求数。没有 `llm` 时，LLM 任务不会被执行。
+提示词对话读仓库根目录的 `env.ts`，这个文件不进版本库。把 `env.example.ts` 复制成 `env.ts` 再填写。`AI_GATEWAY_MODEL` 是模型名列表。请求里的 `model` 必须是其中一项，不传就用第一项。没有 `env.ts`，或 key、url 还空着时，出图照常运行，对话接口返回 503。
 
 ### 安装
 
@@ -128,7 +123,7 @@ npm start
 
 服务听在 `config.json` 的 `runner.host` 和 `runner.port`，默认是 `http://127.0.0.1:8787`。`--host`、`--port`、`--timeout` 只覆盖这一次启动。`npm run dev` 会在源码变化时重启进程。数据库在 `runner.db`，默认 `data/runner.sqlite`。日志在 `data/logs/runner.log`。
 
-SQLite 里 `works` 是逻辑能力，例如生成一张 SDXL 图。语义字段写在 `semantic_json`。一个 Work 挂多个 `workflows`。`workflows` 对应 ComfyUI userdata 里的一个文件，Adapter 写在这行的 `adapter_json`，修改它不产生新版本。`workflow_revisions` 保存界面图和执行图，`version` 只是这个 Workflow 内部递增的序号。覆盖只改写当前头，Commit 才新增一版。`workflow_revision_parents` 记录父节点，分支上的顺序看父节点。`workflow_branches` 是可移动的分支头。`tasks` 记下这次用的 Work、Workflow、版本、ComfyUI 路径和当时的 Adapter。
+SQLite 里 `works` 是逻辑能力，例如生成一张 SDXL 图。语义字段写在 `semantic_json`。一个 Work 挂多个 `workflows`。`workflows` 对应 ComfyUI userdata 里的一个文件，Adapter 写在这行的 `adapter_json`，修改它不产生新版本。`workflow_revisions` 保存界面图和执行图，`version` 只是这个 Workflow 内部递增的序号。覆盖只改写当前头，Commit 才新增一版。`workflow_revision_parents` 记录父节点，分支上的顺序看父节点。`workflow_branches` 是可移动的分支头。`tasks` 记下这次用的 Work、Workflow、版本、ComfyUI 路径和当时的 Adapter。`chats` 和 `chat_messages` 保存提示词对话，不进入任务队列。
 
 从 ComfyUI 拉列表，再由调用方选择入库或更新。列表只比较，不写入：
 
@@ -160,19 +155,26 @@ curl --json '{"revisionId":"<revision>","expectedHead":"<current head>"}' http:/
 
 Adapter 用 `class_type` 锁定节点。写了 `name` 时再按节点标题筛选，结果必须恰好一个。`id` 只校验锁定到的节点，变了就失败，需要改 Adapter，这次修改不产生新版本。输入键要和所属 Work 的语义字段一致。`seed` 不传或传 `random` 时生成 `0` 到 `2^32-1` 的整数；传入数字则固定这个值。实际写入的整数记在任务的 `input_json`。
 
-队列在 Runner 里，出图和 LLM 各有一条消费循环。`POST /tasks` 写入 `pending` 后立即返回。出图按实例列表分配，一台实例同时只有一条 `running` 任务。实例连不上时任务留在 `pending`；`/prompt` 拒绝时写成 `failed`。LLM 按 `runner.llm.concurrency` 计数，默认 8。没有 `llm` 配置时，LLM 任务不会被执行。客户端查询只读数据库。任务完成后只记录路径，不把文件下载到 Runner。
+队列只跑出图。`POST /tasks` 写入 `pending` 后立即返回。出图按实例列表分配，一台实例同时只有一条 `running` 任务。实例连不上时任务留在 `pending`；`/prompt` 拒绝时写成 `failed`。客户端查询只读数据库。任务完成后只记录路径，不把文件下载到 Runner。
 
 ```bash
-curl --json '{"executor":"llm","task":"prompt","payload":{"prompt":"describe a knight"}}' http://127.0.0.1:8787/tasks
-curl --json '{"executor":"comfyui","task":"text2img","workName":"picture","workflowName":"character-generator","payload":{"text":"a knight","seed":"random"},"parentTaskId":"<llm task>"}' http://127.0.0.1:8787/tasks
+curl --json '{"task":"text2img","workName":"picture","workflowName":"character-generator","payload":{"text":"a knight","seed":"random"}}' http://127.0.0.1:8787/tasks
 curl http://127.0.0.1:8787/tasks/<task id>
 curl -X POST http://127.0.0.1:8787/tasks/<task id>/cancel
 curl http://127.0.0.1:8787/revisions/<revision id>/tasks
 ```
 
-状态是 `pending`、`running`、`completed`、`failed`、`timeout`、`cancelled`。出图超时从 `started_at` 起算，默认 600 秒，不算排队。超时后写成 `timeout`，不再查看，也不取消 ComfyUI 上的执行。LLM 默认 60 秒。`pending` 的取消只改 Runner 状态；`running` 的出图任务会调用该实例的 `POST /api/jobs/{prompt_id}/cancel`。LLM 完成后不会自动创建出图任务。
+状态是 `pending`、`running`、`completed`、`failed`、`timeout`、`cancelled`。出图超时从 `started_at` 起算，默认 600 秒，不算排队。超时后写成 `timeout`，不再查看，也不取消 ComfyUI 上的执行。`pending` 的取消只改 Runner 状态；`running` 的任务会调用该实例的 `POST /api/jobs/{prompt_id}/cancel`。
 
-LLM 的文本在 `outputText`。出图的最终文件在 `outputPath`，同一节点多张图时是 JSON 数组。其余产出在 `process`，每项含 `path`、`name` 和 `id`。对比图片由客户端按两次 Revision 查出任务后自己做。
+最终文件在 `outputPath`，同一节点多张图时是 JSON 数组。其余产出在 `process`，每项含 `path`、`name` 和 `id`。对比图片由客户端按两次 Revision 查出任务后自己做。
+
+提示词对话是同步的多轮请求，用官方 `openai` 包发给 `env.ts` 里的 `AI_GATEWAY_URL`。单次等待模型返回，超时 60 秒，失败后再试 1 次。历史只在模型成功返回后写入。助手用用户的语言交谈，定稿时给出一段英文提示词。
+
+```bash
+curl --json '{"content":"一个穿红盔甲的骑士","model":"writer"}' http://127.0.0.1:8787/chats
+curl --json '{"content":"背景改成雪原"}' http://127.0.0.1:8787/chats/<id>/messages
+curl http://127.0.0.1:8787/chats/<id>
+```
 
 上传只进入每台实例的 `input`。路径必须是相对路径，拒绝 `..`、绝对路径和反斜杠：
 
@@ -208,4 +210,4 @@ npm run dev
 
 默认打开 `http://127.0.0.1:3000`。Runner 地址用环境变量 `RUNNER_URL`，默认 `http://127.0.0.1:8787`。
 
-首页建立 Work，并列出它的语义字段。从 ComfyUI 列出工作流时，内容和库里的当前头一致则显示「已入库」。新文件要勾选后点「入库」。已入库但内容有变化的文件要勾选后点「覆盖」，改写当前版本，不新增版本。打开页面不会写入。Work 页把 workflow 挂上来，选择版本后出图；版本留空就用 `main`。工作流页可以切换分支、检出到 ComfyUI、保存 Adapter、提交新版本和上传输入图。任务页轮询状态，并可以取消还没结束的任务。
+顶部是 Work 和 Library。Work 是三列：进行中的任务、Work 及其 workflow、右侧留空。右下角的对话用来多轮写出图提示词，不进入任务队列。新建和编辑 Work 都在弹窗里。Library 管理 ComfyUI 的 input 和 output，上传输入图也在这一页。同一页可以「从 ComfyUI 建立」workflow：一次选一份 JSON，新文件入库，已变化的文件覆盖当前版本，不产生新版本。打开页面不会写入。Work 页把 workflow 挂上来，选择版本后出图；不选版本就用 `main`。工作流页顶部可以新建版本，并在版本列表里改说明、把这一版同步到 ComfyUI、查看或编辑 Adapter。Adapter 仍保存在 workflow 上，保存不产生新版本。任务页轮询状态，并可以取消还没结束的任务。

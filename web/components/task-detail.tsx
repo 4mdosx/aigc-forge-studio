@@ -72,8 +72,7 @@ export function TaskDetail({ id }: { id: string }) {
         {task ? (
           <>
             <p>
-              <span className={`status ${task.status}`}>{task.status}</span>{' '}
-              {task.executor}
+              <span className={`status ${task.status}`}>{task.status}</span>
               {task.workName ? (
                 <>
                   {' '}
@@ -96,7 +95,6 @@ export function TaskDetail({ id }: { id: string }) {
               {task.comfyPath ? <span className="mono"> · {task.comfyPath}</span> : null}
             </p>
             {task.error ? <div className="error">{task.error}</div> : null}
-            {task.outputText ? <div className="output">{task.outputText}</div> : null}
             {paths.length > 0 ? (
               <ul>
                 {paths.map((path) => (

@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
 import Link from 'next/link'
 
+import { Nav } from '@/components/nav'
+
 import './globals.css'
 
 export const metadata = {
@@ -17,9 +19,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <Link className="mark" href="/">
               AIGC<span>Runner</span>
             </Link>
-            <nav>
-              <Link href="/">Work</Link>
-            </nav>
+            <Nav />
           </header>
           {children}
         </div>

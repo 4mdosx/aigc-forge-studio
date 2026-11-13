@@ -21,7 +21,6 @@ import type { Prompt } from '../workflow/graph.ts'
 import { workByName } from '../work/works.ts'
 
 export interface TaskInput {
-  executor: 'comfyui' | 'llm'
   task: string
   workName?: string
   workflowName?: string
@@ -38,27 +37,6 @@ export function createTask(
 ): TaskRow {
   const task = required(input.task, 'task')
   if (input.parentTaskId) taskById(db, input.parentTaskId)
-  if (input.executor === 'llm') {
-    const payload = input.payload ?? {}
-    if (typeof payload.prompt !== 'string' || payload.prompt === '') {
-      throw new RunnerError('prompt is required')
-    }
-    const id = randomUUID()
-    db.prepare(
-      `INSERT INTO tasks
-        (id, executor, task, input_json, status, parent_task_id, created_at)
-       VALUES (?, 'llm', ?, ?, 'pending', ?, ?)`,
-    ).run(
-      id,
-      task,
-      JSON.stringify(payload),
-      input.parentTaskId ?? null,
-      now.toISOString(),
-    )
-    return taskById(db, id)
-  }
-  if (input.executor !== 'comfyui')
-    throw new RunnerError('executor must be comfyui or llm')
   const work = workByName(db, required(input.workName, 'workName'))
   const workflow = workflowByName(
     db,
@@ -75,9 +53,9 @@ export function createTask(
   const id = randomUUID()
   db.prepare(
     `INSERT INTO tasks
-      (id, executor, workflow_name, workflow_id, work_id, comfy_path, adapter_json, api_json,
+      (id, workflow_name, workflow_id, work_id, comfy_path, adapter_json, api_json,
        head_revision_id, parent_task_id, task, input_json, status, created_at)
-     VALUES (?, 'comfyui', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
   ).run(
     id,
     workflow.name,

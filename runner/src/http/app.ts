@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 
 import { RunnerError } from '../errors.ts'
 import type { Runner } from '../task/queue.ts'
+import { mountChats } from './chats.ts'
 import { mountFiles } from './files.ts'
 import { mountTasks } from './tasks.ts'
 import { mountWorkflows } from './workflows.ts'
@@ -18,6 +19,7 @@ export function createApp(runner: Runner): Hono {
   mountWorks(app, runner)
   mountWorkflows(app, runner)
   mountTasks(app, runner)
+  mountChats(app, runner)
   mountFiles(app, runner)
   return app
 }

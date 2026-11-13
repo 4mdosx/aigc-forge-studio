@@ -50,6 +50,14 @@ button:disabled {
   padding: 1.25rem 1.25rem 3rem;
 }
 
+.shell:has(.board) {
+  max-width: none;
+  height: calc(100vh - 5.5rem);
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 1.25rem;
+}
+
 .top {
   display: flex;
   justify-content: space-between;
@@ -58,6 +66,40 @@ button:disabled {
   margin-bottom: 1.5rem;
   border-bottom: 1px solid #c9beae;
   padding-bottom: 0.75rem;
+}
+
+nav {
+  display: flex;
+  gap: 1.25rem;
+}
+
+nav a {
+  color: #5c564e;
+  text-decoration: none;
+}
+
+nav a.active {
+  color: #0c5c49;
+  border-bottom: 2px solid #0c5c49;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  align-items: end;
+}
+
+.tabs button {
+  background: transparent;
+  color: #5c564e;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 0.4rem 0.7rem;
+}
+
+.tabs button.active {
+  color: #0c5c49;
+  border-bottom-color: #0c5c49;
 }
 
 .mark {
@@ -201,4 +243,221 @@ th {
   background: #fffdf8;
   border: 1px solid #e4dacd;
   padding: 0.75rem;
+}
+
+dialog {
+  border: 1px solid #d8cec0;
+  background: #f7f3ea;
+  color: #241f1a;
+  width: min(760px, calc(100vw - 2rem));
+  padding: 1rem;
+}
+
+dialog[open] {
+  position: fixed;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+}
+
+dialog::backdrop {
+  background: rgba(36, 31, 26, 0.45);
+}
+
+.dialog-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.dialog-head h2,
+dialog h3 {
+  font-family: "Iowan Old Style", Palatino, serif;
+  margin: 0;
+}
+
+dialog h3 {
+  font-size: 1rem;
+  margin-top: 1rem;
+}
+
+.graph {
+  position: relative;
+  margin-top: 0.75rem;
+  background: #fffdf8;
+  border: 1px solid #e4dacd;
+  overflow: auto;
+}
+
+.graph svg {
+  position: absolute;
+  inset: 0;
+}
+
+.graph-node {
+  position: absolute;
+  width: 140px;
+  min-height: 52px;
+  padding: 0.35rem 0.45rem;
+  background: #f7f3ea;
+  border: 1px solid #c9beae;
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75rem;
+}
+
+.board {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.3fr) minmax(220px, 1fr);
+  gap: 0.75rem;
+}
+
+.column {
+  background: #f7f3ea;
+  border: 1px solid #d8cec0;
+  padding: 0.9rem;
+  overflow: auto;
+  min-height: 0;
+}
+
+.column h2,
+.column-head h2 {
+  font-family: "Iowan Old Style", Palatino, serif;
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.column-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.stack {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.stack > li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid #e4dacd;
+}
+
+.stack ul {
+  margin: 0.15rem 0 0;
+  padding-left: 1rem;
+}
+
+.item-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.muted {
+  color: #746c63;
+  font-size: 0.82rem;
+}
+
+.chat-fab {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 2;
+}
+
+.chat-panel {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 4.25rem;
+  z-index: 2;
+  width: min(360px, calc(100vw - 2rem));
+  background: #f7f3ea;
+  border: 1px solid #d8cec0;
+  padding: 0.9rem;
+  box-shadow: 0 12px 32px rgba(36, 31, 26, 0.16);
+}
+
+.chat-panel textarea {
+  width: 100%;
+  min-height: 4.5rem;
+  margin-top: 0.5rem;
+}
+
+.chat-panel select {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  max-height: 280px;
+  overflow: auto;
+  margin-top: 0.65rem;
+}
+
+.chat-log p {
+  margin: 0.15rem 0 0;
+  white-space: pre-wrap;
+  background: #fffdf8;
+  border: 1px solid #e4dacd;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.85rem;
+}
+
+.file-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 0.6rem;
+  max-height: 28rem;
+  overflow: auto;
+  margin-top: 0.75rem;
+}
+
+.file-grid a {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  color: inherit;
+  text-decoration: none;
+  min-width: 0;
+}
+
+.file-grid img,
+.file-fallback {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: #fffdf8;
+  border: 1px solid #e4dacd;
+}
+
+.file-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #746c63;
+  font-size: 0.75rem;
+}
+
+.file-grid span {
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
 }

@@ -10,11 +10,12 @@ import { RunnerError } from '../errors.ts'
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { Runner } from '../task/queue.ts'
-import { suggestAdapter } from '../workflow/binding.ts'
+import { adapterFit, suggestAdapter } from '../workflow/binding.ts'
 import type { Prompt } from '../workflow/graph.ts'
 import {
   checkout,
   commitHead,
+  updateRevisionMessage,
   createBranch,
   moveBranch,
   readAndCreate,
@@ -168,6 +169,29 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
     return c.json({ ok: true })
   })
 
+  app.post('/workflows/:name/revisions/:version/message', async (c) => {
+    const body = await jsonObject(c.req)
+    const version = versionOf(c.req.param('version'))
+    const message = body.message
+    if (message !== null && typeof message !== 'string') {
+      throw new RunnerError('message must be a string')
+    }
+    const text = typeof message === 'string' ? message.trim() : ''
+    updateRevisionMessage(
+      runner.db,
+      c.req.param('name'),
+      version,
+      text === '' ? null : text,
+    )
+    return c.json({ ok: true })
+  })
+
+  app.post('/workflows/:name/revisions/:version/checkout', async (c) => {
+    const version = versionOf(c.req.param('version'))
+    await checkout(runner.db, editor(runner), c.req.param('name'), version)
+    return c.json({ ok: true })
+  })
+
   app.post('/workflows/:name/commit', async (c) => {
     const body = await jsonObject(c.req)
     const revision = await commitHead(
@@ -188,11 +212,14 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
     const workflow = workflowByName(runner.db, c.req.param('name'))
     const rows = runner.db
       .prepare(
-        `SELECT r.id, r.version, r.message, r.created_at, r.api_json,
-                r.id = b.head_revision_id AS head
+        `SELECT r.id, r.version, r.message, r.created_at, r.api_json, r.ui_json,
+                r.id = current.head_revision_id AS head,
+                r.id = main.head_revision_id AS main_head
          FROM workflow_revisions r
-         JOIN workflow_branches b
-           ON b.workflow_id = r.workflow_id AND b.name = ?
+         JOIN workflow_branches current
+           ON current.workflow_id = r.workflow_id AND current.name = ?
+         JOIN workflow_branches main
+           ON main.workflow_id = r.workflow_id AND main.name = 'main'
          WHERE r.workflow_id = ?
          ORDER BY r.version`,
       )
@@ -204,8 +231,31 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
         message: row.message,
         createdAt: row.created_at,
         head: Boolean(row.head),
+        main: Boolean(row.main_head),
+        adapter: adapterFit(
+          JSON.parse(row.api_json) as Prompt,
+          workflow.adapter_json,
+        ),
         suggestedAdapter: suggestAdapter(JSON.parse(row.api_json) as Prompt),
       })),
+    })
+  })
+
+  app.get('/workflows/:name/revisions/:version', (c) => {
+    const workflow = workflowByName(runner.db, c.req.param('name'))
+    const version = versionOf(c.req.param('version'))
+    const row = runner.db
+      .prepare(
+        `SELECT version, message, ui_json FROM workflow_revisions
+         WHERE workflow_id = ? AND version = ?`,
+      )
+      .get(workflow.id, version) as
+      { version: number; message: string | null; ui_json: string } | undefined
+    if (!row) throw new RunnerError(`version ${version} not found`, 404)
+    return c.json({
+      version: row.version,
+      message: row.message,
+      ...graphView(JSON.parse(row.ui_json) as unknown),
     })
   })
 
@@ -220,13 +270,72 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
   })
 }
 
+function versionOf(value: string): number {
+  const version = Number(value)
+  if (!Number.isInteger(version) || version < 1) {
+    throw new RunnerError('version must be a positive integer')
+  }
+  return version
+}
+
 interface RevisionListRow {
   id: string
   version: number
   message: string | null
   created_at: string
   api_json: string
+  ui_json: string
   head: number
+  main_head: number
+}
+
+function graphView(ui: unknown): {
+  nodes: Array<{
+    id: number
+    type: string
+    title: string
+    x: number
+    y: number
+  }>
+  links: Array<{ from: number; to: number }>
+} {
+  const record =
+    ui && typeof ui === 'object' && !Array.isArray(ui)
+      ? (ui as { nodes?: unknown; links?: unknown })
+      : {}
+  const nodes = Array.isArray(record.nodes)
+    ? record.nodes.flatMap((node) => {
+        if (!node || typeof node !== 'object' || Array.isArray(node)) return []
+        const item = node as {
+          id?: unknown
+          type?: unknown
+          title?: unknown
+          pos?: unknown
+        }
+        if (typeof item.id !== 'number' || typeof item.type !== 'string')
+          return []
+        const pos = Array.isArray(item.pos) ? item.pos : []
+        return [
+          {
+            id: item.id,
+            type: item.type,
+            title: typeof item.title === 'string' ? item.title : '',
+            x: typeof pos[0] === 'number' ? pos[0] : 0,
+            y: typeof pos[1] === 'number' ? pos[1] : 0,
+          },
+        ]
+      })
+    : []
+  const links = Array.isArray(record.links)
+    ? record.links.flatMap((link) => {
+        if (!Array.isArray(link) || link.length < 5) return []
+        const from = link[1]
+        const to = link[3]
+        if (typeof from !== 'number' || typeof to !== 'number') return []
+        return [{ from, to }]
+      })
+    : []
+  return { nodes, links }
 }
 
 interface SyncRow {

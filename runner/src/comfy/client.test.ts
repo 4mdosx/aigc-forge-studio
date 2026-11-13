@@ -174,6 +174,34 @@ test('reads one workflow json from ComfyUI', async () => {
   )
 })
 
+test('lists input and output files from ComfyUI', async () => {
+  let seen = ''
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = new URL(
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url,
+    )
+    seen = url.pathname
+    return Response.json(['jobs/face.png [input]', 'example.png [input]'])
+  }
+  const client = new ComfyClient('http://127.0.0.1:8188', { fetch: fetchImpl })
+  assert.deepEqual(await client.listFiles('input'), [
+    'jobs/face.png',
+    'example.png',
+  ])
+  assert.equal(seen, '/internal/files/input')
+  await assert.rejects(
+    () =>
+      new ComfyClient('http://127.0.0.1:8188', {
+        fetch: async () => Response.json(['../secret.png [input]']),
+      }).listFiles('input'),
+    /invalid path/,
+  )
+})
+
 test('upload sends bytes to the ComfyUI input directory', async () => {
   let seen = ''
   const fetchImpl: typeof fetch = async (input) => {

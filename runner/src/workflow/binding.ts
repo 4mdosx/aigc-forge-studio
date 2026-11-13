@@ -73,6 +73,22 @@ export function suggestAdapter(prompt: Prompt): AdapterMap | null {
   return { inputs, outputs }
 }
 
+export function adapterFit(
+  prompt: Prompt,
+  adapterJson: string | null,
+): { status: 'missing' | 'ready' | 'mismatch'; error?: string } {
+  if (!adapterJson) return { status: 'missing' }
+  try {
+    assertAdapter(prompt, parseAdapter(JSON.parse(adapterJson) as unknown))
+    return { status: 'ready' }
+  } catch (err) {
+    return {
+      status: 'mismatch',
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
 export function assertAdapter(prompt: Prompt, adapter: AdapterMap): void {
   for (const binding of Object.values(adapter.inputs))
     matchNode(prompt, binding)

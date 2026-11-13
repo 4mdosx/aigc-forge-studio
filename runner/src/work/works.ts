@@ -64,6 +64,22 @@ export function updateSemantic(
   return workByName(db, work.name)
 }
 
+export function detachWorkflow(
+  db: DatabaseSync,
+  workName: string,
+  workflowName: string,
+): WorkflowRow {
+  const work = workByName(db, workName)
+  const workflow = workflowByName(db, workflowName)
+  if (workflow.work_id !== work.id) {
+    throw new RunnerError('workflow is not in this work')
+  }
+  db.prepare('UPDATE workflows SET work_id = NULL WHERE id = ?').run(
+    workflow.id,
+  )
+  return workflowByName(db, workflow.name)
+}
+
 export function attachWorkflow(
   db: DatabaseSync,
   workName: string,

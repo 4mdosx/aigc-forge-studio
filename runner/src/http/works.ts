@@ -4,6 +4,7 @@ import type { Runner } from '../task/queue.ts'
 import {
   attachWorkflow,
   createWork,
+  detachWorkflow,
   updateSemantic,
   workByName,
   workflowsOf,
@@ -69,6 +70,16 @@ export function mountWorks(app: Hono, runner: Runner): void {
       name: work.name,
       semantic: JSON.parse(work.semantic_json) as unknown,
     })
+  })
+
+  app.post('/works/:name/workflows/detach', async (c) => {
+    const body = await jsonObject(c.req)
+    const workflow = detachWorkflow(
+      runner.db,
+      c.req.param('name'),
+      stringField(body, 'workflowName'),
+    )
+    return c.json({ name: workflow.name, workId: workflow.work_id })
   })
 
   app.post('/works/:name/workflows', async (c) => {

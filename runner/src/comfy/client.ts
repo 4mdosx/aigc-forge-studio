@@ -1,4 +1,5 @@
 import { RunnerError } from '../errors.ts'
+import { relativePath } from '../path.ts'
 import type { Prompt } from '../workflow/graph.ts'
 
 export interface RemoteFile {
@@ -101,6 +102,18 @@ export class ComfyClient {
       },
       { overwrite: 'true' },
     )
+  }
+
+  async listFiles(
+    type: 'input' | 'output',
+    signal?: AbortSignal,
+  ): Promise<string[]> {
+    const res = await this.request(`/internal/files/${type}`, { signal })
+    const body: unknown = await res.json()
+    if (!Array.isArray(body)) {
+      throw new RunnerError('ComfyUI file list is not an array')
+    }
+    return body.map((item) => listedName(item, type))
   }
 
   async uploadBytes(
@@ -363,6 +376,14 @@ async function errorText(res: Response): Promise<string> {
   } catch {
     return text
   }
+}
+
+function listedName(item: unknown, type: 'input' | 'output'): string {
+  const suffix = ` [${type}]`
+  if (typeof item !== 'string' || !item.endsWith(suffix)) {
+    throw new RunnerError('ComfyUI file list has an invalid entry')
+  }
+  return relativePath(item.slice(0, -suffix.length))
 }
 
 function messageOf(err: unknown): string {

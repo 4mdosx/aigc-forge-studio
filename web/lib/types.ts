@@ -40,12 +40,28 @@ export interface Revision {
   message: string | null
   createdAt: string
   head: boolean
+  main?: boolean
+  adapter?: { status: 'missing' | 'ready' | 'mismatch'; error?: string }
   suggestedAdapter?: Adapter | null
+}
+
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: string
+}
+
+export interface Chat {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  messages: ChatMessage[]
 }
 
 export interface Task {
   id: string
-  executor: 'comfyui' | 'llm'
   task: string
   workId: string | null
   workName: string | null
@@ -59,7 +75,6 @@ export interface Task {
   promptId: string | null
   comfyBaseURL: string | null
   error: string | null
-  outputText: string | null
   outputPath: string | null
   process: Array<{ path: string; name: string; id: string }> | null
   createdAt: string

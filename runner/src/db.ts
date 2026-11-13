@@ -4,6 +4,31 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { RunnerError } from './errors.ts'
 
+const taskColumns = `
+  id TEXT PRIMARY KEY,
+  workflow_name TEXT NOT NULL,
+  workflow_id TEXT,
+  work_id TEXT,
+  comfy_path TEXT,
+  adapter_json TEXT,
+  api_json TEXT,
+  head_revision_id TEXT NOT NULL,
+  parent_task_id TEXT,
+  task TEXT NOT NULL,
+  input_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  prompt_id TEXT,
+  comfy_base_url TEXT,
+  error TEXT,
+  output_path TEXT,
+  process_json TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  FOREIGN KEY (head_revision_id) REFERENCES workflow_revisions(id),
+  FOREIGN KEY (parent_task_id) REFERENCES tasks(id)
+`
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS works (
   id TEXT PRIMARY KEY,
@@ -58,39 +83,30 @@ CREATE TABLE IF NOT EXISTS workflow_branches (
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
-  id TEXT PRIMARY KEY,
-  executor TEXT NOT NULL,
-  workflow_name TEXT,
-  workflow_id TEXT,
-  work_id TEXT,
-  comfy_path TEXT,
-  adapter_json TEXT,
-  api_json TEXT,
-  head_revision_id TEXT,
-  parent_task_id TEXT,
-  task TEXT NOT NULL,
-  input_json TEXT NOT NULL,
-  status TEXT NOT NULL,
-  prompt_id TEXT,
-  comfy_base_url TEXT,
-  error TEXT,
-  output_text TEXT,
-  output_path TEXT,
-  process_json TEXT,
-  created_at TEXT NOT NULL,
-  started_at TEXT,
-  completed_at TEXT,
-  CHECK (executor IN ('comfyui', 'llm')),
-  CHECK (
-    (executor = 'comfyui' AND workflow_name IS NOT NULL AND head_revision_id IS NOT NULL)
-    OR (executor = 'llm' AND workflow_name IS NULL AND head_revision_id IS NULL)
-  ),
-  FOREIGN KEY (head_revision_id) REFERENCES workflow_revisions(id),
-  FOREIGN KEY (parent_task_id) REFERENCES tasks(id)
+${taskColumns}
 );
 
 CREATE INDEX IF NOT EXISTS tasks_by_revision ON tasks (head_revision_id);
-CREATE INDEX IF NOT EXISTS tasks_by_executor_status ON tasks (executor, status, created_at);
+CREATE INDEX IF NOT EXISTS tasks_by_status ON tasks (status, created_at);
+
+CREATE TABLE IF NOT EXISTS chats (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id TEXT PRIMARY KEY,
+  chat_id TEXT NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  CHECK (role IN ('user', 'assistant')),
+  FOREIGN KEY (chat_id) REFERENCES chats(id)
+);
+
+CREATE INDEX IF NOT EXISTS chat_messages_by_chat ON chat_messages (chat_id, created_at);
 `
 
 export interface WorkRow {
@@ -129,7 +145,6 @@ export interface BranchRow {
 
 export interface TaskRow {
   id: string
-  executor: 'comfyui' | 'llm'
   workflow_name: string | null
   workflow_id: string | null
   work_id: string | null
@@ -144,7 +159,6 @@ export interface TaskRow {
   prompt_id: string | null
   comfy_base_url: string | null
   error: string | null
-  output_text: string | null
   output_path: string | null
   process_json: string | null
   created_at: string
@@ -178,6 +192,41 @@ function migrate(db: DatabaseSync): void {
      )
      WHERE adapter_json IS NULL`,
   )
+  dropLlmTasks(db)
+}
+
+function dropLlmTasks(db: DatabaseSync): void {
+  const columns = db.prepare('PRAGMA table_info(tasks)').all() as Array<{
+    name: string
+  }>
+  if (!columns.some((column) => column.name === 'executor')) return
+  db.exec('PRAGMA foreign_keys = OFF')
+  try {
+    transaction(db, () => {
+      db.exec(`
+        UPDATE tasks SET parent_task_id = NULL
+        WHERE parent_task_id IN (SELECT id FROM tasks WHERE executor = 'llm');
+        DELETE FROM tasks WHERE executor = 'llm';
+        CREATE TABLE tasks_next (${taskColumns});
+        INSERT INTO tasks_next (
+          id, workflow_name, workflow_id, work_id, comfy_path, adapter_json, api_json,
+          head_revision_id, parent_task_id, task, input_json, status, prompt_id,
+          comfy_base_url, error, output_path, process_json, created_at, started_at, completed_at
+        )
+        SELECT
+          id, workflow_name, workflow_id, work_id, comfy_path, adapter_json, api_json,
+          head_revision_id, parent_task_id, task, input_json, status, prompt_id,
+          comfy_base_url, error, output_path, process_json, created_at, started_at, completed_at
+        FROM tasks;
+        DROP TABLE tasks;
+        ALTER TABLE tasks_next RENAME TO tasks;
+        CREATE INDEX tasks_by_revision ON tasks (head_revision_id);
+        CREATE INDEX tasks_by_status ON tasks (status, created_at);
+      `)
+    })
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON')
+  }
 }
 
 function addColumn(

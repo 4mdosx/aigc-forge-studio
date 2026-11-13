@@ -27,7 +27,6 @@ export function taskJson(
     : undefined
   return {
     id: task.id,
-    executor: task.executor,
     task: task.task,
     workId: task.work_id,
     workName: task.work_id ? workById(db, task.work_id).name : null,
@@ -41,7 +40,6 @@ export function taskJson(
     promptId: task.prompt_id,
     comfyBaseURL: task.comfy_base_url,
     error: task.error,
-    outputText: task.output_text,
     outputPath: task.output_path,
     process: task.process_json
       ? (JSON.parse(task.process_json) as unknown)

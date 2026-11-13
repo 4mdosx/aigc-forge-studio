@@ -103,14 +103,48 @@ export async function checkout(
   db: DatabaseSync,
   client: ComfyClient,
   name: string,
+  version?: number,
 ): Promise<void> {
   const workflow = workflowByName(db, name)
-  const branch = branchOf(db, workflow.id, workflow.current_branch)
-  const revision = revisionById(db, branch.head_revision_id)
+  const revision =
+    version === undefined
+      ? revisionById(
+          db,
+          branchOf(db, workflow.id, workflow.current_branch).head_revision_id,
+        )
+      : revisionByVersion(db, workflow.id, version)
   await client.writeWorkflow(
     workflow.comfy_path,
     JSON.parse(revision.ui_json) as unknown,
   )
+}
+
+export function updateRevisionMessage(
+  db: DatabaseSync,
+  name: string,
+  version: number,
+  message: string | null,
+): void {
+  const workflow = workflowByName(db, name)
+  const revision = revisionByVersion(db, workflow.id, version)
+  db.prepare('UPDATE workflow_revisions SET message = ? WHERE id = ?').run(
+    message,
+    revision.id,
+  )
+}
+
+function revisionByVersion(
+  db: DatabaseSync,
+  workflowId: string,
+  version: number,
+): RevisionRow {
+  const row = db
+    .prepare(
+      'SELECT * FROM workflow_revisions WHERE workflow_id = ? AND version = ?',
+    )
+    .get(workflowId, version) as RevisionRow | undefined
+  if (!row) throw new RunnerError(`version ${version} not found`, 404)
+  return row
 }
 
 export function switchBranch(

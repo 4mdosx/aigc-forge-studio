@@ -1,6 +1,6 @@
 import type { Hono } from 'hono'
 
-import { taskById } from '../db.ts'
+import { taskById, type TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import { createTask } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
@@ -13,16 +13,20 @@ import {
 } from './request.ts'
 
 export function mountTasks(app: Hono, runner: Runner): void {
+  app.get('/tasks', (c) => {
+    const rows = runner.db
+      .prepare(
+        `SELECT * FROM tasks WHERE status IN ('pending', 'running') ORDER BY created_at, rowid`,
+      )
+      .all() as unknown as TaskRow[]
+    return c.json({ tasks: rows.map((row) => taskJson(runner.db, row)) })
+  })
+
   app.post('/tasks', async (c) => {
     const body = await jsonObject(c.req)
-    const executor = stringField(body, 'executor')
-    if (executor !== 'comfyui' && executor !== 'llm') {
-      throw new RunnerError('executor must be comfyui or llm')
-    }
     const task = createTask(
       runner.db,
       {
-        executor,
         task: stringField(body, 'task'),
         ...(body.workName === undefined
           ? {}
@@ -64,9 +68,7 @@ export function mountTasks(app: Hono, runner: Runner): void {
       return c.json(taskJson(runner.db, taskById(runner.db, task.id)))
     }
     if (task.status !== 'running') throw new RunnerError('task is not running')
-    if (task.executor === 'llm') {
-      runner.stops.get(task.id)?.abort()
-    } else if (task.prompt_id && task.comfy_base_url) {
+    if (task.prompt_id && task.comfy_base_url) {
       const client = runner.clients.find(
         (item) => item.baseURL === task.comfy_base_url,
       )

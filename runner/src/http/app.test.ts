@@ -85,7 +85,6 @@ test('commit, queue one task per instance, and record paths', async () => {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      executor: 'comfyui',
       task: 'text2img',
       workName: 'picture',
       workflowName: 'character-generator',
@@ -105,6 +104,13 @@ test('commit, queue one task per instance, and record paths', async () => {
   assert.equal(queued.workName, 'picture')
   assert.equal(queued.comfyPath, 'character-generator.json')
   assert.equal(queued.version, 1)
+  const active = (await (await app.request('/tasks')).json()) as {
+    tasks: Array<{ id: string }>
+  }
+  assert.equal(
+    active.tasks.some((item) => item.id === queued.id),
+    true,
+  )
 
   await tick(runner)
   assert.equal(submitted.length, 1)
@@ -129,6 +135,13 @@ test('commit, queue one task per instance, and record paths', async () => {
   }
   assert.equal(body.status, 'completed')
   assert.equal(body.outputPath, 'output/a.png')
+  const finished = (await (await app.request('/tasks')).json()) as {
+    tasks: Array<{ id: string }>
+  }
+  assert.equal(
+    finished.tasks.some((item) => item.id === queued.id),
+    false,
+  )
   assert.deepEqual(body.process, [
     { path: 'temp/preview.png', name: '', id: '8' },
   ])
@@ -166,7 +179,6 @@ test('a second instance runs the next pending task', async () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        executor: 'comfyui',
         task: 'text2img',
         workName: 'picture',
         workflowName: 'character-generator',
@@ -179,45 +191,6 @@ test('a second instance runs the next pending task', async () => {
   assert.equal(second.length, 1)
   assert.equal(first[0]?.['6']?.inputs.text, 'one')
   assert.equal(second[0]?.['6']?.inputs.text, 'two')
-})
-
-test('llm tasks use their own concurrency and do not submit to ComfyUI', async () => {
-  const submitted: Prompt[] = []
-  let calls = 0
-  const runner = testRunner([fakeClient('http://gpu-a', submitted, () => null)])
-  runner.llm = {
-    baseURL: 'http://llm',
-    model: 'writer',
-    concurrency: 8,
-    timeoutMs: 60_000,
-  }
-  runner.fetchImpl = async () => {
-    calls += 1
-    return Response.json({
-      choices: [{ message: { content: 'a knight in red' } }],
-    })
-  }
-  const app = createApp(runner)
-  const created = await app.request('/tasks', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      executor: 'llm',
-      task: 'prompt',
-      payload: { prompt: 'describe a knight' },
-    }),
-  })
-  const task = (await created.json()) as { id: string }
-  await tick(runner)
-  await new Promise((resolve) => setTimeout(resolve, 20))
-  const done = (await (await app.request(`/tasks/${task.id}`)).json()) as {
-    status: string
-    outputText: string
-  }
-  assert.equal(calls, 1)
-  assert.equal(submitted.length, 0)
-  assert.equal(done.status, 'completed')
-  assert.equal(done.outputText, 'a knight in red')
 })
 
 test('imports a workflow chosen from the ComfyUI list', async () => {
@@ -255,6 +228,12 @@ test('imports a workflow chosen from the ComfyUI list', async () => {
   )
   assert.equal(result.created[0]?.version, 1)
   assert.deepEqual(result.unchanged, [])
+  const noted = await app.request('/workflows/RM_BG/revisions/1/message', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ message: '去背景' }),
+  })
+  assert.equal(noted.status, 200)
 
   const same = (await (await app.request('/comfy/workflows')).json()) as {
     workflows: Array<{ path: string; status: string }>
@@ -309,8 +288,9 @@ test('imports a workflow chosen from the ComfyUI list', async () => {
   assert.equal(revised.updated[0]?.version, 1)
   const history = (await (
     await app.request('/workflows/RM_BG/revisions')
-  ).json()) as { revisions: Array<{ version: number }> }
+  ).json()) as { revisions: Array<{ version: number; message: string | null }> }
   assert.equal(history.revisions.length, 1)
+  assert.equal(history.revisions[0]?.message, '去背景')
   const covered = (await (await app.request('/comfy/workflows')).json()) as {
     workflows: Array<{ path: string; status: string }>
   }
@@ -362,7 +342,6 @@ test('a task uses main when version is omitted, even after another branch moves'
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        executor: 'comfyui',
         task: 'text2img',
         workName: 'picture',
         workflowName: 'character-generator',
@@ -375,7 +354,6 @@ test('a task uses main when version is omitted, even after another branch moves'
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        executor: 'comfyui',
         task: 'text2img',
         workName: 'picture',
         workflowName: 'character-generator',
@@ -397,6 +375,22 @@ test('a task uses main when version is omitted, even after another branch moves'
     await app.request('/workflows/character-generator/revisions')
   ).json()) as { revisions: unknown[] }
   assert.equal(history.revisions.length, 2)
+  const fits = history.revisions as Array<{
+    adapter: { status: string }
+    main: boolean
+  }>
+  assert.equal(fits.find((item) => item.main)?.adapter.status, 'ready')
+
+  const detached = await app.request('/works/picture/workflows/detach', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ workflowName: 'character-generator' }),
+  })
+  assert.equal(detached.status, 200)
+  const work = (await (await app.request('/works/picture')).json()) as {
+    workflows: unknown[]
+  }
+  assert.deepEqual(work.workflows, [])
 })
 
 async function attach(
@@ -432,11 +426,10 @@ function testRunner(clients: ComfyClient[]): Runner {
   return {
     db: openDatabase(':memory:'),
     clients,
-    llm: null,
+    chat: null,
     timeoutMs: 600_000,
     now: () => new Date('2026-01-01T00:00:00.000Z'),
     randomSeed: () => 42,
-    stops: new Map(),
   }
 }
 

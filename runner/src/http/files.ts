@@ -36,6 +36,17 @@ export function mountFiles(app: Hono, runner: Runner): void {
     })
   })
 
+  app.get('/files', async (c) => {
+    const type = c.req.query('type')
+    if (type !== 'input' && type !== 'output') {
+      throw new RunnerError('type must be input or output')
+    }
+    const names = await editor(runner).listFiles(type)
+    return c.json({
+      files: names.map((name) => ({ name, path: `${type}/${name}` })),
+    })
+  })
+
   app.post('/files', async (c) => {
     const body = await c.req.parseBody()
     const path = relativePath(typeof body.path === 'string' ? body.path : '')
@@ -53,8 +64,16 @@ export function mountFiles(app: Hono, runner: Runner): void {
 
   app.get('/files/*', async (c) => {
     const path = relativePath(c.req.path.slice('/files/'.length))
-    const { filename, subfolder } = splitRelative(path)
-    const file = await editor(runner).viewFile('input', subfolder, filename)
+    const head = path.split('/')[0]
+    const target =
+      head === 'input' || head === 'output' || head === 'temp'
+        ? viewTarget(path)
+        : { type: 'input', ...splitRelative(path) }
+    const file = await editor(runner).viewFile(
+      target.type,
+      target.subfolder,
+      target.filename,
+    )
     return c.body(bytesOf(file.bytes), 200, {
       'content-type': file.contentType,
     })
