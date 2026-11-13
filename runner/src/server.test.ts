@@ -70,6 +70,66 @@ test('http routes take business fields and use the app config', async () => {
   }
 })
 
+test('GET /workflows/:name returns one ComfyUI workflow', async () => {
+  const graph = { nodes: [{ id: 1 }], links: [] }
+  const client = {
+    workflow: async (name: string) => {
+      assert.equal(name, 'nested/cutout.json')
+      return graph
+    },
+  } as ComfyClient
+  const app: App = {
+    root,
+    client,
+    timeoutMs: 1234,
+    outDir: root,
+    signal: new AbortController().signal,
+  }
+  const server = createServer(app)
+  const base = await listen(server)
+  try {
+    const one = await get(base, '/workflows/nested/cutout.json')
+    assert.equal(one.status, 200)
+    assert.equal(one.body.name, 'nested/cutout.json')
+    assert.deepEqual(one.body.workflow, graph)
+
+    const bad = await get(base, '/workflows/notes.txt')
+    assert.equal(bad.status, 400)
+    assert.match(bad.body.error ?? '', /must end with \.json/)
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()))
+    })
+  }
+})
+
+test('GET /workflows returns the list from ComfyUI', async () => {
+  const client = {
+    workflows: async () => ['text2image_sdxl.json', 'RM_BG.json'],
+  } as ComfyClient
+  const app: App = {
+    root,
+    client,
+    timeoutMs: 1234,
+    outDir: root,
+    signal: new AbortController().signal,
+  }
+  const server = createServer(app)
+  const base = await listen(server)
+  try {
+    const listed = await get(base, '/workflows')
+    assert.equal(listed.status, 200)
+    assert.deepEqual(listed.body.workflows, ['text2image_sdxl.json', 'RM_BG.json'])
+
+    const rejected = await post(base, '/workflows', {})
+    assert.equal(rejected.status, 404)
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()))
+    })
+  }
+})
+
 async function listen(server: Server): Promise<string> {
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
@@ -84,14 +144,24 @@ async function post(
   base: string,
   path: string,
   body: unknown,
-): Promise<{ status: number; body: { path?: string; error?: string } }> {
+): Promise<{ status: number; body: Reply }> {
   const res = await fetch(`${base}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   })
-  return {
-    status: res.status,
-    body: (await res.json()) as { path?: string; error?: string },
-  }
+  return { status: res.status, body: (await res.json()) as Reply }
+}
+
+async function get(base: string, path: string): Promise<{ status: number; body: Reply }> {
+  const res = await fetch(`${base}${path}`)
+  return { status: res.status, body: (await res.json()) as Reply }
+}
+
+interface Reply {
+  path?: string
+  error?: string
+  workflows?: string[]
+  name?: string
+  workflow?: unknown
 }

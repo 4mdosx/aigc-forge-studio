@@ -41,6 +41,18 @@ const MIME: Record<string, string> = {
   '.avif': 'image/avif',
 }
 
+export function workflowName(name: string): string {
+  const parts = name.split('/')
+  const bad = parts.some(
+    (part) => part === '' || part === '.' || part === '..' || part.includes('\\'),
+  )
+  if (bad) throw new RunnerError('invalid workflow name')
+  if (!name.toLowerCase().endsWith('.json')) {
+    throw new RunnerError('workflow name must end with .json')
+  }
+  return name
+}
+
 export class ComfyClient {
   readonly baseURL: string
   private readonly deps: ComfyDeps
@@ -72,6 +84,45 @@ export class ComfyClient {
     return typeof body.subfolder === 'string' && body.subfolder !== ''
       ? `${body.subfolder}/${body.name}`
       : body.name
+  }
+
+  async workflows(signal?: AbortSignal): Promise<string[]> {
+    const res = await this.request(
+      '/userdata',
+      { signal },
+      { dir: 'workflows', recurse: 'true' },
+    )
+    const body: unknown = await res.json()
+    if (!Array.isArray(body)) {
+      throw new RunnerError('ComfyUI workflow list is not an array')
+    }
+    const names: string[] = []
+    for (const item of body) {
+      if (typeof item !== 'string' || item === '') {
+        throw new RunnerError('ComfyUI workflow list has an invalid entry')
+      }
+      if (item.toLowerCase().endsWith('.json')) names.push(item)
+    }
+    names.sort()
+    return names
+  }
+
+  async workflow(name: string, signal?: AbortSignal): Promise<unknown> {
+    const safe = workflowName(name)
+    const res = await this.request(
+      `/userdata/${encodeURIComponent(`workflows/${safe}`)}`,
+      { signal },
+    )
+    let body: unknown
+    try {
+      body = await res.json()
+    } catch {
+      throw new RunnerError(`${safe} is not JSON`)
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new RunnerError(`${safe} is not a workflow object`)
+    }
+    return body
   }
 
   async run(

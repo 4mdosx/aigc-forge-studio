@@ -164,6 +164,49 @@ test('pollUntilDone returns the first finished entry', async () => {
   assert.equal(entry.status?.status_str, 'success')
 })
 
+test('lists workflow json files from ComfyUI', async () => {
+  let seen = ''
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = new URL(
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url,
+    )
+    seen = `${url.pathname}?${url.searchParams.toString()}`
+    return Response.json([
+      'nested/cutout.json',
+      'notes.txt',
+      'text2image_sdxl.json',
+      'RM_BG.JSON',
+    ])
+  }
+  const client = new ComfyClient('http://127.0.0.1:8188', { fetch: fetchImpl })
+  assert.deepEqual(await client.workflows(), [
+    'RM_BG.JSON',
+    'nested/cutout.json',
+    'text2image_sdxl.json',
+  ])
+  assert.equal(seen, '/userdata?dir=workflows&recurse=true')
+})
+
+test('reads one workflow json from ComfyUI', async () => {
+  let seen = ''
+  const fetchImpl: typeof fetch = async (input) => {
+    seen = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    return Response.json({ nodes: [{ id: 2 }], links: [] })
+  }
+  const client = new ComfyClient('http://127.0.0.1:8188', { fetch: fetchImpl })
+  assert.deepEqual(await client.workflow('nested/cutout.json'), {
+    nodes: [{ id: 2 }],
+    links: [],
+  })
+  assert.equal(seen, 'http://127.0.0.1:8188/userdata/workflows%2Fnested%2Fcutout.json')
+  await assert.rejects(() => client.workflow('../secret.json'), /invalid workflow name/)
+  await assert.rejects(() => client.workflow('notes.txt'), /must end with \.json/)
+})
+
 test('upload keeps the server filename', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'aigc-upload-'))
   const file = join(dir, 'face.png')

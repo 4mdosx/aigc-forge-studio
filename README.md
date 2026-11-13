@@ -109,9 +109,29 @@ node runner/src/server.ts
 
 调用分三层：
 
-1. HTTP 接口只收业务参数。`POST /text2img` 要 `text` 和 `entry`。`POST /remove-bg` 要 `path` 和 `adapter`。`POST /cutout` 要 `text`，`entry` 默认 `sdxl`，`adapter` 默认 `birefnet`。
+1. HTTP 接口只收业务参数。`GET /workflows` 向 ComfyUI 要 workflow 文件名。`GET /workflows/<文件名>` 要这一份图的 JSON。`POST /text2img` 要 `text` 和 `entry`。`POST /remove-bg` 要 `path` 和 `adapter`。`POST /cutout` 要 `text`，`entry` 默认 `sdxl`，`adapter` 默认 `birefnet`。
 2. `runner/adapter/<task>/<model>.json` 用 `model` 选中 `user/default/workflows` 里的一张界面图，并把入参写到指定节点。
 3. `runner/src` 把这张图转成 ComfyUI API prompt，提交，等待，再把结果下载到结果根目录下面的一个新目录。响应是 `{ "path": "<这个目录>" }`。
+
+workflow 列表。Runner 请求 ComfyUI 的 `/userdata?dir=workflows`，只留下 `.json` 文件名：
+
+```bash
+curl http://127.0.0.1:8787/workflows
+```
+
+```json
+{"workflows":["RM_BG.json","text2image_sdxl.json"]}
+```
+
+单条 workflow。文件名用列表里的那一项，嵌套目录用路径。Runner 向 ComfyUI 请求 `/userdata/workflows/<文件名>`，响应里的 `workflow` 是文件内容：
+
+```bash
+curl http://127.0.0.1:8787/workflows/RM_BG.json
+```
+
+```json
+{"name":"RM_BG.json","workflow":{"nodes":[],"links":[]}}
+```
 
 文生图。`entry sdxl` 读 `runner/adapter/text2img/sdxl.json`，把 `text` 写到 `text2image_sdxl.json` 的节点 `10`（Positive Prompt）：
 

@@ -7,7 +7,7 @@ import { cutout } from '../task/cutout.ts'
 import { removeBg } from '../task/remove-bg.ts'
 import { text2img } from '../task/text2img.ts'
 import { type App, withApp } from './app.ts'
-import { ComfyClient } from './comfy.ts'
+import { ComfyClient, workflowName } from './comfy.ts'
 import { findRepoRoot, loadConfig } from './config.ts'
 import { RunnerError } from './errors.ts'
 import type { TaskResult } from './adapter.ts'
@@ -71,17 +71,28 @@ async function handle(app: App, req: IncomingMessage, res: ServerResponse): Prom
   })
 
   try {
+    const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
+    if (req.method === 'GET' && path === '/workflows') {
+      const workflows = await app.client.workflows(request.signal)
+      send(res, 200, { workflows })
+      return
+    }
+    if (req.method === 'GET' && path.startsWith('/workflows/')) {
+      const name = workflowName(decodeName(path.slice('/workflows/'.length)))
+      const workflow = await app.client.workflow(name, request.signal)
+      send(res, 200, { name, workflow })
+      return
+    }
     if (req.method !== 'POST') {
       send(res, 405, { error: 'POST only' })
       return
     }
-    const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
     const route = routes[path]
     if (!route) {
       send(res, 404, { error: 'not found' })
       return
     }
-    const result = await withApp({ ...app, signal: request.signal }, () =>
+    const result = await withApp({ ...app, signal: request.signal }, async () =>
       route(parseJson(await readBody(req))),
     )
     send(res, 200, result)
@@ -115,6 +126,14 @@ const routes: Record<string, (body: unknown) => Promise<TaskResult>> = {
       ...(input.adapter ? { adapter: input.adapter } : {}),
     })
   },
+}
+
+function decodeName(raw: string): string {
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    throw new RunnerError('invalid workflow name')
+  }
 }
 
 function fields(body: unknown, required: string[], optional: string[] = []): Record<string, string> {
