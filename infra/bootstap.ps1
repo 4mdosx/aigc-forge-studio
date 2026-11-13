@@ -393,7 +393,8 @@ $Directories = @(
     "outputs",
     "input",
     "user",
-    "datasets"
+    "datasets",
+    "data"
 )
 
 $created = @()

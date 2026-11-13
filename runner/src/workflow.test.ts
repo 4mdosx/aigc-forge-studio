@@ -18,17 +18,21 @@ test('reads comfyui and runner from config.json', () => {
       port: number
       timeout: number
       out: string
+      db: string
     }
   }
   const config = loadConfig(path)
   const configured = raw.runner.comfyUiBaseURL?.trim().replace(/\/+$/, '')
   assert.equal(config.comfyui.baseURL, raw.comfyui.baseURL.replace(/\/+$/, ''))
-  assert.equal(config.runner.comfyUiBaseURL, configured || config.comfyui.baseURL)
-  assert.match(config.runner.comfyUiBaseURL, /^https?:\/\/[^/]+/)
+  assert.deepEqual(config.runner.comfyUiBaseURLs, [
+    configured || config.comfyui.baseURL,
+  ])
+  assert.match(config.runner.comfyUiBaseURLs[0] ?? '', /^https?:\/\/[^/]+/)
   assert.equal(config.runner.host, raw.runner.host)
   assert.equal(config.runner.port, raw.runner.port)
   assert.equal(config.runner.timeout, raw.runner.timeout)
   assert.equal(config.runner.out, raw.runner.out)
+  assert.equal(config.runner.db, raw.runner.db)
 })
 
 test('runner uses comfyui.baseURL when comfyUiBaseURL is empty', () => {
@@ -48,5 +52,6 @@ test('runner uses comfyui.baseURL when comfyUiBaseURL is empty', () => {
     }),
   )
   const config = loadConfig(path)
-  assert.equal(config.runner.comfyUiBaseURL, 'http://192.168.8.136:8188')
+  assert.deepEqual(config.runner.comfyUiBaseURLs, ['http://192.168.8.136:8188'])
+  assert.equal(config.runner.db, 'data/runner.sqlite')
 })

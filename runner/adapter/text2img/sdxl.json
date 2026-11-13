@@ -1,7 +1,0 @@
-{
-  "model": "sdxl",
-  "workflow": "user/default/workflows/text2image_sdxl.json",
-  "inputs": {
-    "text": { "node": "10", "input": "text" }
-  }
-}

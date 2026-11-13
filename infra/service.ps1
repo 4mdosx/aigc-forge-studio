@@ -50,6 +50,7 @@ $ArgumentList = @(
     "--user-directory", (Join-Path $Root "user"),
     "--enable-manager"
 )
+$DatasetPaths = Join-Path $Runtime "aigc-datasets.yaml"
 
 function Show-Endpoint {
     Write-Host "URL: $BaseUrl"
@@ -203,9 +204,17 @@ function Get-LogTail {
 }
 
 function Ensure-RuntimeDirectories {
-    foreach ($relative in @("outputs", "input", "user", "logs")) {
+    foreach ($relative in @("outputs", "input", "user", "logs", "datasets")) {
         New-Item -ItemType Directory -Force -Path (Join-Path $Root $relative) | Out-Null
     }
+}
+
+function Enable-DatasetDirectory {
+    $base = ($Root -replace '\\', '/') -replace "'", "''"
+    $yaml = "aigc_datasets:`n  base_path: '$base'`n  is_default: true`n  datasets: datasets`n"
+    $utf8 = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($DatasetPaths, $yaml, $utf8)
+    $script:ArgumentList += @("--extra-model-paths-config", $DatasetPaths)
 }
 
 function Assert-Installed {
@@ -264,6 +273,8 @@ function Invoke-Start {
         Show-Endpoint
         return
     }
+
+    Enable-DatasetDirectory
 
     if ($Foreground) {
         Write-Host "Starting ComfyUI in this window. Press Ctrl+C to stop."

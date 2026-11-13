@@ -10,12 +10,16 @@
     "dev": "node --watch src/server.ts",
     "test": "node --test src/*.test.ts",
     "check": "tsc --noEmit",
-    "format": "prettier --write src task",
-    "format:check": "prettier --check src task"
+    "format": "prettier --write src",
+    "format:check": "prettier --check src"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "prettier": "^3.6.2",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.8",
+    "hono": "^4.13.18"
   }
 }

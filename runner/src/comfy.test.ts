@@ -1,14 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { test } from 'node:test'
 
 import {
   ComfyClient,
   assertSuccess,
   filesFromHistory,
-  outputPath,
   pollUntilDone,
   type HistoryEntry,
 } from './comfy.ts'
@@ -22,9 +18,7 @@ const prompt: Prompt = {
   },
 }
 
-test('writes history images after the job appears', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'aigc-comfy-'))
-  let polls = 0
+test('submits a prompt and reads the image back through ComfyUI', async () => {
   const bodies: unknown[] = []
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = new URL(
@@ -39,8 +33,6 @@ test('writes history images after the job appears', async () => {
       return Response.json({ prompt_id: 'job-1', number: 1, node_errors: {} })
     }
     if (url.pathname === '/history/job-1') {
-      polls += 1
-      if (polls === 1) return Response.json({})
       const entry: HistoryEntry = {
         status: { status_str: 'success', completed: true, messages: [] },
         outputs: {
@@ -63,53 +55,17 @@ test('writes history images after the job appears', async () => {
 
   const client = new ComfyClient('http://192.168.8.136:8188', {
     fetch: fetchImpl,
-    sleep: async () => undefined,
-    now: () => 0,
   })
-  const result = await client.run(prompt, dir, 5_000)
-  assert.equal(result.promptId, 'job-1')
-  assert.deepEqual(
-    await readFile(result.files[0] ?? ''),
-    Buffer.from([9, 8, 7]),
-  )
+  assert.equal(await client.submitPrompt(prompt), 'job-1')
+  const entry = await client.promptHistory('job-1')
+  const file = filesFromHistory(entry ?? {})[0]
+  assert.equal(file?.filename, 'txt2img_00001_.png')
+  const viewed = await client.viewFile('output', '', 'txt2img_00001_.png')
+  assert.deepEqual(viewed.bytes, Uint8Array.from([9, 8, 7]))
   assert.equal(
     (bodies[0] as { prompt: Prompt }).prompt['9']?.class_type,
     'SaveImage',
   )
-})
-
-test('timeout cancels the prompt', async () => {
-  let cancelled = false
-  let clock = 0
-  const fetchImpl: typeof fetch = async (input, init) => {
-    const url = new URL(
-      typeof input === 'string'
-        ? input
-        : input instanceof URL
-          ? input.href
-          : input.url,
-    )
-    if (url.pathname === '/prompt')
-      return Response.json({ prompt_id: 'job-2', number: 0, node_errors: {} })
-    if (url.pathname === '/history/job-2') return Response.json({})
-    if (url.pathname === '/api/jobs/job-2/cancel' && init?.method === 'POST') {
-      cancelled = true
-      return Response.json({ cancelled: true })
-    }
-    return new Response('nope', { status: 404 })
-  }
-  const client = new ComfyClient('http://127.0.0.1:8188', {
-    fetch: fetchImpl,
-    now: () => clock,
-    sleep: async (ms: number) => {
-      clock += ms
-    },
-  })
-  await assert.rejects(
-    () => client.run(prompt, '/tmp/unused', 1_500),
-    /timed out after 1.5s/,
-  )
-  assert.equal(cancelled, true)
 })
 
 test('execution_error names the node', () => {
@@ -131,7 +87,7 @@ test('execution_error names the node', () => {
   )
 })
 
-test('collects image files and refuses parent segments', () => {
+test('collects image files from history once', () => {
   const files = filesFromHistory({
     outputs: {
       '4': {
@@ -143,11 +99,8 @@ test('collects image files and refuses parent segments', () => {
     },
   })
   assert.equal(files.length, 1)
-  assert.equal(
-    outputPath('/out', 'a', 'cutout_00001_.png'),
-    join('/out', 'a', 'cutout_00001_.png'),
-  )
-  assert.throws(() => outputPath('/out', '..', 'a.png'), /bad subfolder/)
+  assert.equal(files[0]?.subfolder, 'a')
+  assert.equal(files[0]?.filename, 'cutout_00001_.png')
 })
 
 test('pollUntilDone returns the first finished entry', async () => {
@@ -194,7 +147,12 @@ test('lists workflow json files from ComfyUI', async () => {
 test('reads one workflow json from ComfyUI', async () => {
   let seen = ''
   const fetchImpl: typeof fetch = async (input) => {
-    seen = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    seen =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url
     return Response.json({ nodes: [{ id: 2 }], links: [] })
   }
   const client = new ComfyClient('http://127.0.0.1:8188', { fetch: fetchImpl })
@@ -202,17 +160,32 @@ test('reads one workflow json from ComfyUI', async () => {
     nodes: [{ id: 2 }],
     links: [],
   })
-  assert.equal(seen, 'http://127.0.0.1:8188/userdata/workflows%2Fnested%2Fcutout.json')
-  await assert.rejects(() => client.workflow('../secret.json'), /invalid workflow name/)
-  await assert.rejects(() => client.workflow('notes.txt'), /must end with \.json/)
+  assert.equal(
+    seen,
+    'http://127.0.0.1:8188/userdata/workflows%2Fnested%2Fcutout.json',
+  )
+  await assert.rejects(
+    () => client.workflow('../secret.json'),
+    /invalid workflow name/,
+  )
+  await assert.rejects(
+    () => client.workflow('notes.txt'),
+    /must end with \.json/,
+  )
 })
 
-test('upload keeps the server filename', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'aigc-upload-'))
-  const file = join(dir, 'face.png')
-  await writeFile(file, 'png')
-  const fetchImpl: typeof fetch = async () =>
-    Response.json({ name: 'face.png', subfolder: 'pasted', type: 'input' })
+test('upload sends bytes to the ComfyUI input directory', async () => {
+  let seen = ''
+  const fetchImpl: typeof fetch = async (input) => {
+    seen =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url
+    return Response.json({ name: 'face.png', subfolder: 'jobs', type: 'input' })
+  }
   const client = new ComfyClient('http://127.0.0.1:8188', { fetch: fetchImpl })
-  assert.equal(await client.upload(file), 'pasted/face.png')
+  await client.uploadBytes(Uint8Array.from([1, 2, 3]), 'face.png', 'jobs')
+  assert.equal(seen, 'http://127.0.0.1:8188/upload/image')
 })

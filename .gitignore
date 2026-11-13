@@ -15,6 +15,7 @@
 /input/
 /temp/
 /datasets/
+/data/
 
 # ========================================
 # User data and local state
@@ -56,6 +57,7 @@ Desktop.ini
 # Runner
 # ========================================
 /runner/node_modules/
+/runner/runner.sqlite
 
 # ========================================
 # Keep deployment reference

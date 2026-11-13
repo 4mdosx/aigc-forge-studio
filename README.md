@@ -2,7 +2,7 @@
 
 Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
 
-`infra` 在 Windows 上安装并启停 ComfyUI。Runner 读根目录 `config.json` 里的 `runner.comfyUiBaseURL`，这个字段没有值时用 `comfyui.baseURL`。它按 `runner/adapter` 把业务参数填进界面工作流，等执行结束，把结果下载到本机。
+`infra` 在 Windows 上安装并启停 ComfyUI。Runner 是 Hono 服务，用 SQLite 保存 Workflow 版本和任务队列。出图实例来自 `runner.comfyUiBaseURLs`；没有这个列表时用 `runner.comfyUiBaseURL`，它也没有值时用 `comfyui.baseURL`。一台实例同时只跑一条出图任务。
 
 默认根目录是 `C:\AIGC`。仓库放在别的路径时，给下面的脚本加上 `-Root D:\AIGC`。
 
@@ -10,16 +10,16 @@ Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
 
 | 路径 | 作用 |
 | --- | --- |
-| `config.json` | ComfyUI 和 Runner 的地址、超时、结果目录 |
+| `config.json` | ComfyUI 和 Runner 的地址、超时、数据库路径 |
 | `infra/data/environment.json` | ComfyUI、插件、Python、PyTorch 的版本钉扎 |
 | `runtime/comfyui-prod` | ComfyUI 本体和虚拟环境，不进版本库 |
 | `models/` | 共享权重，不进版本库 |
-| `runner/task/` | 日常维护的业务入口。`text2img.ts`、`remove-bg.ts`，链式调用在 `cutout.ts` |
-| `runner/adapter/` | 日常维护的映射。用 `model` 选中界面工作流，并把入参写到节点 |
-| `runner/src/` | 本地 HTTP 服务和执行。应用配置、读 adapter、提交、等待、下载 |
-| `user/default/workflows/` | ComfyUI 界面里保存的图，不进版本库 |
-| `outputs/` | 生成结果，不进版本库 |
-| `input/` | 交给 ComfyUI 的输入图，不进版本库 |
+| `runner/src/` | HTTP 服务、SQLite、版本操作和任务队列 |
+| `data/` | Runner 的数据库和日志，不进版本库 |
+| `datasets/` | 训练数据集。启动 ComfyUI 时作为数据集节点的默认目录 |
+| `user/default/workflows/` | ComfyUI 自己的界面图，Runner 只通过 `/userdata` 读写 |
+| `outputs/` | ComfyUI 的生成结果，Runner 只记录路径并通过 `/view` 读取 |
+| `input/` | ComfyUI 的输入图，Runner 只通过 `/upload/image` 写入 |
 
 ## infra
 
@@ -50,7 +50,15 @@ Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
 }
 ```
 
-`comfyui.listen` 和 `comfyui.port` 是 Windows 进程的绑定地址。`comfyui.baseURL` 是浏览器访问用的地址。Runner 访问 ComfyUI 用 `runner.comfyUiBaseURL`，这个字段没有值时用 `comfyui.baseURL`。`runner` 里其余字段是本地 HTTP 服务的监听地址、超时秒数和结果目录。
+`comfyui.listen` 和 `comfyui.port` 是 Windows 进程的绑定地址。`comfyui.baseURL` 是浏览器访问用的地址。Runner 的出图实例优先用 `runner.comfyUiBaseURLs`。没有这个数组时用 `runner.comfyUiBaseURL`，这个字段没有值时用 `comfyui.baseURL`。`runner.timeout` 是出图任务进入执行后的超时秒数，默认 600。`runner.db` 默认是 `data/runner.sqlite`。日志写到 `data/logs/runner.log`。
+
+可选的 LLM 配置：
+
+```json
+"llm": { "baseURL": "http://127.0.0.1:11434/v1", "model": "writer", "concurrency": 8, "timeout": 60 }
+```
+
+`concurrency` 是这个地址上同时进行的 LLM 请求数。没有 `llm` 时，LLM 任务不会被执行。
 
 ### 安装
 
@@ -83,9 +91,9 @@ infra\service.ps1 status
 infra\service.ps1 restart
 ```
 
-`start.ps1` 在后台启动。端口已经由这次安装的进程占用时，会跳过。`-Foreground` 把进程留在当前窗口，Ctrl+C 停止。
+`start.ps1` 在后台启动。端口已经由这次安装的进程占用时，会跳过。`-Foreground` 把进程留在当前窗口，Ctrl+C 停止。启动时把根目录的 `datasets` 设为训练数据集节点的默认目录，`SaveTrainingDataset` 写到这里。
 
-日志在 `logs\comfyui.log` 和 `logs\comfyui.err.log`。
+ComfyUI 日志在 `logs\comfyui.log` 和 `logs\comfyui.err.log`。
 
 托盘图标：
 
@@ -99,63 +107,58 @@ infra\install-shortcuts.ps1 -Startup
 
 ## Runner
 
-在能访问 ComfyUI 的机器上执行。需要 Node.js 22.18 或更新版本。直接跑服务，不用先 `npm install`。
+在能访问 ComfyUI 的机器上执行。需要 Node.js 22.18 或更新版本。先安装依赖：
 
 ```bash
-node runner/src/server.ts
+cd runner
+npm install
+node src/server.ts
 ```
 
-服务听在 `config.json` 的 `runner.host` 和 `runner.port`，默认是 `http://127.0.0.1:8787`。`--host`、`--port`、`--timeout`、`--out` 只覆盖这一次启动。`timeout` 单位是秒，默认 600。`out` 相对仓库根目录，默认 `outputs/runner`。ComfyUI 地址来自 `runner.comfyUiBaseURL`，没有值时用 `comfyui.baseURL`。这些在进程启动时定一次。Ctrl+C 会取消正在执行的提交。
+服务听在 `config.json` 的 `runner.host` 和 `runner.port`，默认是 `http://127.0.0.1:8787`。`--host`、`--port`、`--timeout` 只覆盖这一次启动。`npm run dev` 会在源码变化时重启进程。
 
-调用分三层：
+队列在 Runner 里。`POST /tasks` 写入 `pending` 后立即返回。出图消费按实例列表分配，一台实例同时只有一条 `running` 任务。LLM 消费使用 `runner.llm`，和出图分开计数。客户端查询只读数据库，不会触发一次新的检查。任务完成后只记录 ComfyUI 上的文件路径，不把文件下载到 Runner。
 
-1. HTTP 接口只收业务参数。`GET /workflows` 向 ComfyUI 要 workflow 文件名。`GET /workflows/<文件名>` 要这一份图的 JSON。`POST /text2img` 要 `text` 和 `entry`。`POST /remove-bg` 要 `path` 和 `adapter`。`POST /cutout` 要 `text`，`entry` 默认 `sdxl`，`adapter` 默认 `birefnet`。
-2. `runner/adapter/<task>/<model>.json` 用 `model` 选中 `user/default/workflows` 里的一张界面图，并把入参写到指定节点。
-3. `runner/src` 把这张图转成 ComfyUI API prompt，提交，等待，再把结果下载到结果根目录下面的一个新目录。响应是 `{ "path": "<这个目录>" }`。
-
-workflow 列表。Runner 请求 ComfyUI 的 `/userdata?dir=workflows`，只留下 `.json` 文件名：
+第一次提交从 ComfyUI 的 userdata 读出界面图，创建 Workflow、根 Revision 和 `main`：
 
 ```bash
-curl http://127.0.0.1:8787/workflows
+curl --json '{"name":"character-generator","comfyPath":"character-generator.json","adapter":{"inputs":{"text":{"class_type":"CLIPTextEncode","name":"positive","input":"text"}},"outputs":{"images":{"class_type":"SaveImage","name":"result"}}}}' http://127.0.0.1:8787/workflows
 ```
 
-```json
-{"workflows":["RM_BG.json","text2image_sdxl.json"]}
-```
-
-单条 workflow。文件名用列表里的那一项，嵌套目录用路径。Runner 向 ComfyUI 请求 `/userdata/workflows/<文件名>`，响应里的 `workflow` 是文件内容：
+之后的版本操作：
 
 ```bash
-curl http://127.0.0.1:8787/workflows/RM_BG.json
+curl --json '{"name":"lora-a"}' http://127.0.0.1:8787/workflows/character-generator/branches
+curl --json '{"branch":"lora-a"}' http://127.0.0.1:8787/workflows/character-generator/switch
+curl -X POST http://127.0.0.1:8787/workflows/character-generator/checkout
+curl --json '{"message":"try another lora"}' http://127.0.0.1:8787/workflows/character-generator/commit
+curl --json '{"revisionId":"<revision>","expectedHead":"<current head>"}' http://127.0.0.1:8787/workflows/character-generator/branches/main
 ```
 
-```json
-{"name":"RM_BG.json","workflow":{"nodes":[],"links":[]}}
-```
+Checkout 把当前头的界面图写回第一台实例。Commit 从同一路径读回，父节点是当时的当前头。Adapter 用 `class_type` 和可选的节点标题锁定节点，`id` 只做校验。`seed` 不传或传 `random` 时生成整数；传入数字则固定这个值。
 
-文生图。`entry sdxl` 读 `runner/adapter/text2img/sdxl.json`，把 `text` 写到 `text2image_sdxl.json` 的节点 `10`（Positive Prompt）：
+执行任务：
 
 ```bash
-curl --json '{"text":"a standing character, simple background","entry":"sdxl"}' http://127.0.0.1:8787/text2img
+curl --json '{"executor":"llm","task":"prompt","payload":{"prompt":"describe a knight"}}' http://127.0.0.1:8787/tasks
+curl --json '{"executor":"comfyui","task":"text2img","workflowName":"character-generator","payload":{"text":"a knight","seed":"random"},"parentTaskId":"<llm task>"}' http://127.0.0.1:8787/tasks
+curl http://127.0.0.1:8787/tasks/<task id>
+curl -X POST http://127.0.0.1:8787/tasks/<task id>/cancel
+curl http://127.0.0.1:8787/revisions/<revision id>/tasks
 ```
 
-```json
-{"path":"/Volumes/AIGC/outputs/runner/text2img-20261113T003400123"}
-```
+LLM 任务完成后，文本在 `outputText`。出图任务的最终文件在 `outputPath`，其余产出在 `process`，每项含 `path`、`name` 和 `id`。
 
-抠图。`path` 可以是一张图，也可以是上一步返回的目录；目录里会取按文件名排序的第一张图。`adapter birefnet` 读 `runner/adapter/remove-bg/birefnet.json`，把这张图上传后写入 `RM_BG.json` 的节点 `2`（LoadImage）：
+上传只进入每台实例的 `input`。路径必须是相对路径：
 
 ```bash
-curl --json '{"path":"/Volumes/AIGC/outputs/runner/text2img-20261113T003400123","adapter":"birefnet"}' http://127.0.0.1:8787/remove-bg
+curl -F file=@face.png -F path=jobs/face.png http://127.0.0.1:8787/files
+curl http://127.0.0.1:8787/files/jobs/face.png
+curl http://127.0.0.1:8787/tasks/<task id>/files
+curl http://127.0.0.1:8787/tasks/<task id>/files/output/a.png
 ```
 
-`POST /cutout` 先跑文生图，再把返回的 `path` 交给抠图。响应里的 `path` 是抠图结果目录。
-
-```bash
-curl --json '{"text":"a standing character, simple background"}' http://127.0.0.1:8787/cutout
-```
-
-换模型时在 `runner/adapter/text2img/` 或 `runner/adapter/remove-bg/` 加一个 JSON。`model` 用新名字，`workflow` 指向 `user/default/workflows` 里的图，`inputs` 写明每个业务参数落到哪个节点。`upload: true` 表示这个参数是本地图片，先上传再写入节点。
+按 task 下载只允许这条任务已经记下的路径，并从它记录的那台实例读取。`..`、绝对路径和反斜杠会被拒绝。
 
 ### 开发
 
@@ -166,4 +169,4 @@ npm test
 npm run check
 ```
 
-`npm test` 不连 GPU。`npm run check` 做类型检查。
+`npm test` 不连 GPU，也不读 `user/default/workflows`。`npm run check` 做类型检查。

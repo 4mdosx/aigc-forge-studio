@@ -1,25 +1,358 @@
-import { createServer as createHttp, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { serve } from '@hono/node-server'
+import { Hono } from 'hono'
+import { appendFileSync, mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
-import { cutout } from '../task/cutout.ts'
-import { removeBg } from '../task/remove-bg.ts'
-import { text2img } from '../task/text2img.ts'
-import { type App, withApp } from './app.ts'
-import { ComfyClient, workflowName } from './comfy.ts'
+import { ComfyClient } from './comfy.ts'
 import { findRepoRoot, loadConfig } from './config.ts'
+import {
+  openDatabase,
+  revisionById,
+  taskById,
+  workflowByName,
+  type TaskRow,
+  type WorkflowRow,
+} from './db.ts'
 import { RunnerError } from './errors.ts'
-import type { TaskResult } from './adapter.ts'
+import { relativePath, splitRelative, viewTarget } from './path.ts'
+import { resume, tick, type Runner } from './queue.ts'
+import {
+  checkout,
+  commitHead,
+  createBranch,
+  moveBranch,
+  readAndCreate,
+  switchBranch,
+} from './revisions.ts'
+import { assertStoredPath, createTask, storedPaths } from './tasks.ts'
 
-const MAX_BODY = 1_000_000
-
-export function createServer(app: App): Server {
-  const server = createHttp((req, res) => {
-    void handle(app, req, res)
+export function createApp(runner: Runner): Hono {
+  const app = new Hono()
+  app.onError((err, c) => {
+    const status = err instanceof RunnerError ? err.status : 500
+    const message = err instanceof Error ? err.message : String(err)
+    return c.json({ error: message }, status as 400)
   })
-  server.requestTimeout = 0
-  return server
+  app.notFound((c) => c.json({ error: 'not found' }, 404))
+
+  app.get('/workflows', (c) => {
+    const rows = runner.db
+      .prepare('SELECT * FROM workflows ORDER BY name')
+      .all() as unknown as WorkflowRow[]
+    return c.json({
+      workflows: rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        comfyPath: row.comfy_path,
+        currentBranch: row.current_branch,
+      })),
+    })
+  })
+
+  app.post('/workflows', async (c) => {
+    const body = await jsonObject(c.req)
+    const created = await readAndCreate(
+      runner.db,
+      editor(runner),
+      {
+        name: stringField(body, 'name'),
+        comfyPath: stringField(body, 'comfyPath'),
+        ...(body.message === undefined
+          ? {}
+          : { message: stringField(body, 'message') }),
+        ...(body.adapter === undefined ? {} : { adapter: body.adapter }),
+      },
+      runner.now(),
+    )
+    return c.json(
+      { id: created.workflow.id, revisionId: created.revision.id },
+      201,
+    )
+  })
+
+  app.post('/workflows/:name/switch', async (c) => {
+    const body = await jsonObject(c.req)
+    const workflow = switchBranch(
+      runner.db,
+      c.req.param('name'),
+      stringField(body, 'branch'),
+    )
+    return c.json({
+      name: workflow.name,
+      currentBranch: workflow.current_branch,
+    })
+  })
+
+  app.post('/workflows/:name/branches', async (c) => {
+    const body = await jsonObject(c.req)
+    const branch = createBranch(
+      runner.db,
+      c.req.param('name'),
+      stringField(body, 'name'),
+      body.revisionId === undefined
+        ? undefined
+        : stringField(body, 'revisionId'),
+    )
+    return c.json(
+      { name: branch.name, headRevisionId: branch.head_revision_id },
+      201,
+    )
+  })
+
+  app.post('/workflows/:name/branches/:branch', async (c) => {
+    const body = await jsonObject(c.req)
+    const branch = moveBranch(
+      runner.db,
+      c.req.param('name'),
+      c.req.param('branch'),
+      stringField(body, 'revisionId'),
+      stringField(body, 'expectedHead'),
+    )
+    return c.json({
+      name: branch.name,
+      headRevisionId: branch.head_revision_id,
+    })
+  })
+
+  app.post('/workflows/:name/checkout', async (c) => {
+    await checkout(runner.db, editor(runner), c.req.param('name'))
+    return c.json({ ok: true })
+  })
+
+  app.post('/workflows/:name/commit', async (c) => {
+    const body = await jsonObject(c.req)
+    const revision = await commitHead(
+      runner.db,
+      editor(runner),
+      c.req.param('name'),
+      {
+        ...(body.message === undefined
+          ? {}
+          : { message: stringField(body, 'message') }),
+        ...(body.adapter === undefined ? {} : { adapter: body.adapter }),
+      },
+      runner.now(),
+    )
+    return c.json({ id: revision.id, version: revision.version }, 201)
+  })
+
+  app.get('/workflows/:name/revisions', (c) => {
+    const workflow = workflowByName(runner.db, c.req.param('name'))
+    const rows = runner.db
+      .prepare(
+        `SELECT id, version, message, created_at FROM workflow_revisions
+         WHERE workflow_id = ? ORDER BY version`,
+      )
+      .all(workflow.id) as unknown as Array<{
+      id: string
+      version: number
+      message: string | null
+      created_at: string
+    }>
+    return c.json({
+      revisions: rows.map((row) => ({
+        id: row.id,
+        version: row.version,
+        message: row.message,
+        createdAt: row.created_at,
+      })),
+    })
+  })
+
+  app.get('/revisions/:id/tasks', (c) => {
+    revisionById(runner.db, c.req.param('id'))
+    const rows = runner.db
+      .prepare(
+        'SELECT * FROM tasks WHERE head_revision_id = ? ORDER BY created_at',
+      )
+      .all(c.req.param('id')) as unknown as TaskRow[]
+    return c.json({ tasks: rows.map(taskJson) })
+  })
+
+  app.post('/tasks', async (c) => {
+    const body = await jsonObject(c.req)
+    const executor = stringField(body, 'executor')
+    if (executor !== 'comfyui' && executor !== 'llm') {
+      throw new RunnerError('executor must be comfyui or llm')
+    }
+    const task = createTask(
+      runner.db,
+      {
+        executor,
+        task: stringField(body, 'task'),
+        ...(body.workflowName === undefined
+          ? {}
+          : { workflowName: stringField(body, 'workflowName') }),
+        ...(body.payload === undefined
+          ? {}
+          : { payload: objectField(body, 'payload') }),
+        ...(body.parentTaskId === undefined
+          ? {}
+          : { parentTaskId: stringField(body, 'parentTaskId') }),
+      },
+      runner.now(),
+      runner.randomSeed,
+    )
+    return c.json(taskJson(task), 201)
+  })
+
+  app.get('/tasks/:id', (c) =>
+    c.json(taskJson(taskById(runner.db, c.req.param('id')))),
+  )
+
+  app.post('/tasks/:id/cancel', async (c) => {
+    const task = taskById(runner.db, c.req.param('id'))
+    const now = runner.now().toISOString()
+    if (task.status === 'pending') {
+      const updated = runner.db
+        .prepare(
+          `UPDATE tasks SET status = 'cancelled', completed_at = ? WHERE id = ? AND status = 'pending'`,
+        )
+        .run(now, task.id)
+      if (updated.changes !== 1)
+        throw new RunnerError('task is no longer pending')
+      return c.json(taskJson(taskById(runner.db, task.id)))
+    }
+    if (task.status !== 'running') throw new RunnerError('task is not running')
+    if (task.executor === 'llm') {
+      runner.stops.get(task.id)?.abort()
+    } else if (task.prompt_id && task.comfy_base_url) {
+      const client = runner.clients.find(
+        (item) => item.baseURL === task.comfy_base_url,
+      )
+      if (client) await client.cancelJob(task.prompt_id)
+    }
+    runner.db
+      .prepare(
+        `UPDATE tasks SET status = 'cancelled', completed_at = ? WHERE id = ? AND status = 'running'`,
+      )
+      .run(now, task.id)
+    return c.json(taskJson(taskById(runner.db, task.id)))
+  })
+
+  app.get('/tasks/:id/files', (c) => {
+    const task = taskById(runner.db, c.req.param('id'))
+    return c.json({ files: storedPaths(task) })
+  })
+
+  app.get('/tasks/:id/files/*', async (c) => {
+    const task = taskById(runner.db, c.req.param('id'))
+    const path = relativePath(
+      c.req.path.slice(`/tasks/${task.id}/files/`.length),
+    )
+    assertStoredPath(task, path)
+    if (!task.comfy_base_url)
+      throw new RunnerError('task has no ComfyUI instance', 404)
+    const client = runner.clients.find(
+      (item) => item.baseURL === task.comfy_base_url,
+    )
+    if (!client) throw new RunnerError('task instance is not configured', 404)
+    const target = viewTarget(path)
+    const file = await client.viewFile(
+      target.type,
+      target.subfolder,
+      target.filename,
+    )
+    return c.body(bytesOf(file.bytes), 200, {
+      'content-type': file.contentType,
+    })
+  })
+
+  app.post('/files', async (c) => {
+    const body = await c.req.parseBody()
+    const path = relativePath(typeof body.path === 'string' ? body.path : '')
+    const file = body.file
+    if (!(file instanceof File)) throw new RunnerError('file is required')
+    const { filename, subfolder } = splitRelative(path)
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    if (runner.clients.length === 0)
+      throw new RunnerError('no ComfyUI instance')
+    for (const client of runner.clients) {
+      await client.uploadBytes(bytes, filename, subfolder)
+    }
+    return c.json({ path }, 201)
+  })
+
+  app.get('/files/*', async (c) => {
+    const path = relativePath(c.req.path.slice('/files/'.length))
+    const { filename, subfolder } = splitRelative(path)
+    const file = await editor(runner).viewFile('input', subfolder, filename)
+    return c.body(bytesOf(file.bytes), 200, {
+      'content-type': file.contentType,
+    })
+  })
+
+  return app
+}
+
+function bytesOf(bytes: Uint8Array): ArrayBuffer {
+  const copy = new ArrayBuffer(bytes.byteLength)
+  new Uint8Array(copy).set(bytes)
+  return copy
+}
+
+function editor(runner: Runner): ComfyClient {
+  const client = runner.clients[0]
+  if (!client) throw new RunnerError('no ComfyUI instance')
+  return client
+}
+
+function taskJson(task: TaskRow): Record<string, unknown> {
+  return {
+    id: task.id,
+    executor: task.executor,
+    task: task.task,
+    workflowName: task.workflow_name,
+    headRevisionId: task.head_revision_id,
+    parentTaskId: task.parent_task_id,
+    status: task.status,
+    promptId: task.prompt_id,
+    comfyBaseURL: task.comfy_base_url,
+    error: task.error,
+    outputText: task.output_text,
+    outputPath: task.output_path,
+    process: task.process_json
+      ? (JSON.parse(task.process_json) as unknown)
+      : null,
+    createdAt: task.created_at,
+    startedAt: task.started_at,
+    completedAt: task.completed_at,
+  }
+}
+
+async function jsonObject(req: {
+  json: () => Promise<unknown>
+}): Promise<Record<string, unknown>> {
+  let body: unknown
+  try {
+    body = await req.json()
+  } catch {
+    throw new RunnerError('invalid JSON')
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new RunnerError('body must be a JSON object')
+  }
+  return body as Record<string, unknown>
+}
+
+function stringField(body: Record<string, unknown>, key: string): string {
+  const value = body[key]
+  if (typeof value !== 'string' || value === '')
+    throw new RunnerError(`${key} is required`)
+  return value
+}
+
+function objectField(
+  body: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> {
+  const value = body[key]
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RunnerError(`${key} must be an object`)
+  }
+  return value as Record<string, unknown>
 }
 
 async function main(): Promise<void> {
@@ -30,194 +363,53 @@ async function main(): Promise<void> {
       host: { type: 'string' },
       port: { type: 'string' },
       timeout: { type: 'string' },
-      out: { type: 'string' },
     },
   })
   const root = findRepoRoot([process.cwd(), import.meta.dirname])
   const config = loadConfig(resolve(root, 'config.json'))
+  const runner: Runner = {
+    db: openDatabase(resolve(root, config.runner.db)),
+    clients: config.runner.comfyUiBaseURLs.map(
+      (baseURL) => new ComfyClient(baseURL),
+    ),
+    llm: config.runner.llm
+      ? {
+          baseURL: config.runner.llm.baseURL,
+          model: config.runner.llm.model,
+          concurrency: config.runner.llm.concurrency,
+          timeoutMs: config.runner.llm.timeout * 1000,
+        }
+      : null,
+    timeoutMs: timeoutMs(values.timeout, config.runner.timeout),
+    now: () => new Date(),
+    randomSeed: () => Math.floor(Math.random() * 2 ** 32),
+    stops: new Map(),
+  }
+  resume(runner)
+  const app = createApp(runner)
   const host = values.host ?? config.runner.host
   const port = portOf(values.port, config.runner.port)
-  const shutdown = new AbortController()
-  const app: App = {
-    root,
-    client: new ComfyClient(config.runner.comfyUiBaseURL, {
-      onPromptId: (promptId) => console.error(`prompt_id ${promptId}`),
-    }),
-    timeoutMs: timeoutMs(values.timeout, config.runner.timeout),
-    outDir: resolve(values.out ?? join(root, config.runner.out)),
-    signal: shutdown.signal,
-  }
-  const server = createServer(app)
-  await new Promise<void>((resolveListen, reject) => {
-    server.once('error', reject)
-    server.listen(port, host, () => resolveListen())
-  })
-  console.error(`Runner http://${host}:${port}`)
-  console.error(`ComfyUI ${config.runner.comfyUiBaseURL}`)
+  const timer = setInterval(() => {
+    void tick(runner)
+  }, 1000)
+  const server = serve({ fetch: app.fetch, hostname: host, port })
+  log(root, `Runner http://${host}:${port}`)
+  log(root, `ComfyUI ${config.runner.comfyUiBaseURLs.join(', ')}`)
   process.once('SIGINT', () => {
-    console.error('interrupting')
-    shutdown.abort()
+    log(root, 'interrupting')
+    clearInterval(timer)
     server.close()
   })
 }
 
-async function handle(app: App, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const request = new AbortController()
-  const stop = () => request.abort()
-  if (app.signal.aborted) request.abort()
-  else app.signal.addEventListener('abort', stop, { once: true })
-  res.on('close', () => {
-    if (!res.writableEnded) request.abort()
-  })
-
-  try {
-    const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname
-    if (req.method === 'GET' && path === '/workflows') {
-      const workflows = await app.client.workflows(request.signal)
-      send(res, 200, { workflows })
-      return
-    }
-    if (req.method === 'GET' && path.startsWith('/workflows/')) {
-      const name = workflowName(decodeName(path.slice('/workflows/'.length)))
-      const workflow = await app.client.workflow(name, request.signal)
-      send(res, 200, { name, workflow })
-      return
-    }
-    if (req.method !== 'POST') {
-      send(res, 405, { error: 'POST only' })
-      return
-    }
-    const route = routes[path]
-    if (!route) {
-      send(res, 404, { error: 'not found' })
-      return
-    }
-    const result = await withApp({ ...app, signal: request.signal }, async () =>
-      route(parseJson(await readBody(req))),
-    )
-    send(res, 200, result)
-  } catch (err) {
-    if (res.writableEnded || res.destroyed) return
-    const aborted = request.signal.aborted && messageOf(err) === 'interrupted'
-    try {
-      send(res, aborted ? 499 : statusOf(err), { error: messageOf(err) })
-    } catch {
-      // The client closed the socket before the error body was written.
-    }
-  } finally {
-    app.signal.removeEventListener('abort', stop)
-  }
-}
-
-const routes: Record<string, (body: unknown) => Promise<TaskResult>> = {
-  '/text2img': (body) => {
-    const input = fields(body, ['text', 'entry'])
-    return text2img({ text: input.text, entry: input.entry })
-  },
-  '/remove-bg': (body) => {
-    const input = fields(body, ['path', 'adapter'])
-    return removeBg({ path: input.path, adapter: input.adapter })
-  },
-  '/cutout': (body) => {
-    const input = fields(body, ['text'], ['entry', 'adapter'])
-    return cutout({
-      text: input.text,
-      ...(input.entry ? { entry: input.entry } : {}),
-      ...(input.adapter ? { adapter: input.adapter } : {}),
-    })
-  },
-}
-
-function decodeName(raw: string): string {
-  try {
-    return decodeURIComponent(raw)
-  } catch {
-    throw new RunnerError('invalid workflow name')
-  }
-}
-
-function fields(body: unknown, required: string[], optional: string[] = []): Record<string, string> {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
-    throw new RunnerError('body must be a JSON object')
-  }
-  const allowed = new Set([...required, ...optional])
-  const record = body as Record<string, unknown>
-  for (const key of Object.keys(record)) {
-    if (!allowed.has(key)) throw new RunnerError(`unknown field ${key}`)
-  }
-  const input: Record<string, string> = {}
-  for (const key of required) input[key] = stringField(record, key, true)
-  for (const key of optional) {
-    if (record[key] !== undefined) input[key] = stringField(record, key, true)
-  }
-  return input
-}
-
-function stringField(record: Record<string, unknown>, key: string, required: boolean): string {
-  const value = record[key]
-  if (value === undefined) {
-    if (required) throw new RunnerError(`${key} is required`)
-    return ''
-  }
-  if (typeof value !== 'string' || value === '') {
-    throw new RunnerError(`${key} must be a string`)
-  }
-  return value
-}
-
-function parseJson(text: string): unknown {
-  if (text.trim() === '') throw new RunnerError('body must be a JSON object')
-  try {
-    return JSON.parse(text) as unknown
-  } catch {
-    throw new RunnerError('invalid JSON')
-  }
-}
-
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolveBody, reject) => {
-    const chunks: Buffer[] = []
-    let size = 0
-    let settled = false
-    const fail = (err: unknown) => {
-      if (settled) return
-      settled = true
-      reject(err instanceof Error ? err : new RunnerError(String(err)))
-    }
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.length
-      if (size > MAX_BODY) {
-        fail(new RunnerError('body is too large'))
-        req.destroy()
-        return
-      }
-      chunks.push(chunk)
-    })
-    req.on('end', () => {
-      if (settled) return
-      settled = true
-      resolveBody(Buffer.concat(chunks).toString('utf8'))
-    })
-    req.on('error', fail)
-  })
-}
-
-function send(res: ServerResponse, status: number, body: unknown): void {
-  const payload = JSON.stringify(body)
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'content-length': Buffer.byteLength(payload),
-  })
-  res.end(payload)
-}
-
-function statusOf(err: unknown): number {
-  return err instanceof RunnerError ? 400 : 500
-}
-
-function messageOf(err: unknown): string {
-  if (err instanceof SyntaxError) return 'invalid JSON'
-  return err instanceof Error ? err.message : String(err)
+function log(root: string, message: string): void {
+  const dir = join(root, 'data', 'logs')
+  mkdirSync(dir, { recursive: true })
+  appendFileSync(
+    join(dir, 'runner.log'),
+    `${new Date().toISOString()} ${message}\n`,
+  )
+  console.error(message)
 }
 
 function timeoutMs(raw: string | undefined, fallbackSeconds: number): number {
@@ -239,7 +431,12 @@ function portOf(raw: string | undefined, fallback: number): number {
 
 if (isDirect()) {
   main().catch((err: unknown) => {
-    console.error(messageOf(err))
+    const message = err instanceof Error ? err.message : String(err)
+    try {
+      log(findRepoRoot([process.cwd(), import.meta.dirname]), message)
+    } catch {
+      console.error(message)
+    }
     process.exitCode = 1
   })
 }

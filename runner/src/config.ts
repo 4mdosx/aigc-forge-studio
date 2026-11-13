@@ -8,11 +8,18 @@ export interface AppConfig {
     baseURL: string
   }
   runner: {
-    comfyUiBaseURL: string
+    comfyUiBaseURLs: string[]
     host: string
     port: number
     timeout: number
     out: string
+    db: string
+    llm: {
+      baseURL: string
+      model: string
+      concurrency: number
+      timeout: number
+    } | null
   }
 }
 
@@ -41,11 +48,13 @@ export function loadConfig(path: string): AppConfig {
   return {
     comfyui: { baseURL },
     runner: {
-      comfyUiBaseURL: comfyUrlOf(runner, baseURL, path),
+      comfyUiBaseURLs: comfyUrlsOf(runner, baseURL, path),
       host: hostOf(runner, path),
       port: portOf(runner, path),
       timeout: timeoutOf(runner, path),
       out: outOf(runner, path),
+      db: dbOf(runner),
+      llm: llmOf(runner, path),
     },
   }
 }
@@ -54,7 +63,11 @@ export function findRepoRoot(starts: string[]): string {
   for (const start of starts) {
     let dir = resolve(start)
     for (;;) {
-      if (existsSync(join(dir, 'config.json')) && existsSync(join(dir, 'infra'))) return dir
+      if (
+        existsSync(join(dir, 'config.json')) &&
+        existsSync(join(dir, 'infra'))
+      )
+        return dir
       const parent = dirname(dir)
       if (parent === dir) break
       dir = parent
@@ -63,7 +76,11 @@ export function findRepoRoot(starts: string[]): string {
   throw new RunnerError('config.json not found')
 }
 
-function section(raw: object, key: string, path: string): Record<string, unknown> {
+function section(
+  raw: object,
+  key: string,
+  path: string,
+): Record<string, unknown> {
   const value = (raw as Record<string, unknown>)[key]
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new RunnerError(`${key} missing in ${path}`)
@@ -79,8 +96,35 @@ function urlOf(comfyui: Record<string, unknown>, path: string): string {
   return baseURL.trim().replace(/\/+$/, '')
 }
 
-function comfyUrlOf(runner: Record<string, unknown>, fallback: string, path: string): string {
-  if (!Object.hasOwn(runner, 'comfyUiBaseURL') || runner.comfyUiBaseURL == null) return fallback
+function comfyUrlsOf(
+  runner: Record<string, unknown>,
+  fallback: string,
+  path: string,
+): string[] {
+  const list = runner.comfyUiBaseURLs
+  if (list === undefined) return [comfyUrlOf(runner, fallback, path)]
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new RunnerError(
+      `runner.comfyUiBaseURLs must be a non-empty array in ${path}`,
+    )
+  }
+  return list.map((item, index) => {
+    if (typeof item !== 'string' || item.trim() === '') {
+      throw new RunnerError(
+        `runner.comfyUiBaseURLs[${index}] must be a URL in ${path}`,
+      )
+    }
+    return item.trim().replace(/\/+$/, '')
+  })
+}
+
+function comfyUrlOf(
+  runner: Record<string, unknown>,
+  fallback: string,
+  path: string,
+): string {
+  if (!Object.hasOwn(runner, 'comfyUiBaseURL') || runner.comfyUiBaseURL == null)
+    return fallback
   const value = runner.comfyUiBaseURL
   if (typeof value !== 'string') {
     throw new RunnerError(`runner.comfyUiBaseURL must be a string in ${path}`)
@@ -100,16 +144,29 @@ function hostOf(runner: Record<string, unknown>, path: string): string {
 
 function portOf(runner: Record<string, unknown>, path: string): number {
   const port = runner.port
-  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new RunnerError(`runner.port must be an integer from 1 to 65535 in ${path}`)
+  if (
+    typeof port !== 'number' ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535
+  ) {
+    throw new RunnerError(
+      `runner.port must be an integer from 1 to 65535 in ${path}`,
+    )
   }
   return port
 }
 
 function timeoutOf(runner: Record<string, unknown>, path: string): number {
   const timeout = runner.timeout
-  if (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout < 1) {
-    throw new RunnerError(`runner.timeout must be a positive number of seconds in ${path}`)
+  if (
+    typeof timeout !== 'number' ||
+    !Number.isInteger(timeout) ||
+    timeout < 1
+  ) {
+    throw new RunnerError(
+      `runner.timeout must be a positive number of seconds in ${path}`,
+    )
   }
   return timeout
 }
@@ -120,6 +177,60 @@ function outOf(runner: Record<string, unknown>, path: string): string {
     throw new RunnerError(`runner.out missing in ${path}`)
   }
   return out.trim()
+}
+
+function dbOf(runner: Record<string, unknown>): string {
+  const db = runner.db
+  if (db === undefined) return 'data/runner.sqlite'
+  if (typeof db !== 'string' || db.trim() === '') {
+    throw new RunnerError('runner.db must be a path')
+  }
+  return db.trim()
+}
+
+function llmOf(
+  runner: Record<string, unknown>,
+  path: string,
+): AppConfig['runner']['llm'] {
+  if (!Object.hasOwn(runner, 'llm') || runner.llm == null) return null
+  if (
+    !runner.llm ||
+    typeof runner.llm !== 'object' ||
+    Array.isArray(runner.llm)
+  ) {
+    throw new RunnerError(`runner.llm must be an object in ${path}`)
+  }
+  const llm = runner.llm as Record<string, unknown>
+  const baseURL = llm.baseURL
+  if (typeof baseURL !== 'string' || baseURL.trim() === '') {
+    throw new RunnerError(`runner.llm.baseURL missing in ${path}`)
+  }
+  return {
+    baseURL: baseURL.trim().replace(/\/+$/, ''),
+    model: stringOr(llm.model, 'default', `runner.llm.model in ${path}`),
+    concurrency: positiveInt(
+      llm.concurrency,
+      8,
+      `runner.llm.concurrency in ${path}`,
+    ),
+    timeout: positiveInt(llm.timeout, 60, `runner.llm.timeout in ${path}`),
+  }
+}
+
+function stringOr(value: unknown, fallback: string, label: string): string {
+  if (value === undefined) return fallback
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new RunnerError(`${label} must be a string`)
+  }
+  return value.trim()
+}
+
+function positiveInt(value: unknown, fallback: number, label: string): number {
+  if (value === undefined) return fallback
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new RunnerError(`${label} must be a positive integer`)
+  }
+  return value
 }
 
 function messageOf(err: unknown): string {

@@ -1,6 +1,3 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-
 import { RunnerError } from './errors.ts'
 import type { Prompt } from './workflow.ts'
 
@@ -20,11 +17,6 @@ export interface HistoryEntry {
   }
 }
 
-export interface RunResult {
-  promptId: string
-  files: string[]
-}
-
 export interface ComfyDeps {
   fetch?: typeof fetch
   sleep?: (ms: number) => Promise<void>
@@ -32,19 +24,11 @@ export interface ComfyDeps {
   onPromptId?: (promptId: string) => void
 }
 
-const MIME: Record<string, string> = {
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-  '.avif': 'image/avif',
-}
-
 export function workflowName(name: string): string {
   const parts = name.split('/')
   const bad = parts.some(
-    (part) => part === '' || part === '.' || part === '..' || part.includes('\\'),
+    (part) =>
+      part === '' || part === '.' || part === '..' || part.includes('\\'),
   )
   if (bad) throw new RunnerError('invalid workflow name')
   if (!name.toLowerCase().endsWith('.json')) {
@@ -60,30 +44,6 @@ export class ComfyClient {
   constructor(baseURL: string, deps: ComfyDeps = {}) {
     this.baseURL = baseURL
     this.deps = deps
-  }
-
-  async upload(filePath: string): Promise<string> {
-    const bytes = await readFile(filePath)
-    const form = new FormData()
-    form.append(
-      'image',
-      new Blob([bytes], { type: mimeType(filePath) }),
-      fileName(filePath),
-    )
-    form.append('overwrite', 'true')
-    form.append('type', 'input')
-
-    const res = await this.request('/upload/image', {
-      method: 'POST',
-      body: form,
-    })
-    const body = (await res.json()) as { name?: unknown; subfolder?: unknown }
-    if (typeof body.name !== 'string' || body.name === '') {
-      throw new RunnerError(`upload failed for ${filePath}`)
-    }
-    return typeof body.subfolder === 'string' && body.subfolder !== ''
-      ? `${body.subfolder}/${body.name}`
-      : body.name
   }
 
   async workflows(signal?: AbortSignal): Promise<string[]> {
@@ -125,40 +85,77 @@ export class ComfyClient {
     return body
   }
 
-  async run(
-    prompt: Prompt,
-    outDir: string,
-    timeoutMs: number,
+  async writeWorkflow(
+    name: string,
+    body: unknown,
     signal?: AbortSignal,
-  ): Promise<RunResult> {
-    const promptId = await this.submit(prompt, signal)
-    this.deps.onPromptId?.(promptId)
-    const entry = await pollUntilDone({
-      timeoutMs,
-      signal,
-      poll: () => this.history(promptId, signal),
-      sleep: this.deps.sleep,
-      now: this.deps.now,
-      onGiveUp: async () => {
-        await this.cancel(promptId).catch(() => undefined)
+  ): Promise<void> {
+    const safe = workflowName(name)
+    await this.request(
+      `/userdata/${encodeURIComponent(`workflows/${safe}`)}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal,
       },
-    })
+      { overwrite: 'true' },
+    )
+  }
 
-    assertSuccess(entry)
-    const remote = filesFromHistory(entry)
-    if (remote.length === 0)
-      throw new RunnerError('workflow finished with no output files')
+  async uploadBytes(
+    bytes: Uint8Array,
+    filename: string,
+    subfolder: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const form = new FormData()
+    form.append('image', new Blob([new Uint8Array(bytes)]), filename)
+    form.append('overwrite', 'true')
+    form.append('type', 'input')
+    form.append('subfolder', subfolder)
+    await this.request('/upload/image', { method: 'POST', body: form, signal })
+  }
 
-    await mkdir(outDir, { recursive: true })
-    const files: string[] = []
-    for (const file of remote) {
-      const bytes = await this.download(file, signal)
-      const dest = outputPath(outDir, file.subfolder, file.filename)
-      await mkdir(dirname(dest), { recursive: true })
-      await writeFile(dest, bytes)
-      files.push(dest)
+  async submitPrompt(prompt: Prompt, signal?: AbortSignal): Promise<string> {
+    return this.submit(prompt, signal)
+  }
+
+  async promptHistory(
+    promptId: string,
+    signal?: AbortSignal,
+  ): Promise<HistoryEntry | null> {
+    return this.history(promptId, signal)
+  }
+
+  async cancelJob(promptId: string): Promise<boolean> {
+    const res = await this.request(
+      `/api/jobs/${encodeURIComponent(promptId)}/cancel`,
+      {
+        method: 'POST',
+      },
+    )
+    const body = (await res.json()) as { cancelled?: unknown }
+    return body.cancelled === true
+  }
+
+  async viewFile(
+    type: string,
+    subfolder: string,
+    filename: string,
+    signal?: AbortSignal,
+  ): Promise<{ bytes: Uint8Array; contentType: string }> {
+    const res = await this.request(
+      '/view',
+      { signal },
+      { filename, subfolder, type },
+    )
+    const raw = await res.arrayBuffer()
+    return {
+      bytes: new Uint8Array(raw),
+      contentType:
+        res.headers.get('content-type') ?? 'application/octet-stream',
     }
-    return { promptId, files }
   }
 
   private async submit(prompt: Prompt, signal?: AbortSignal): Promise<string> {
@@ -187,24 +184,6 @@ export class ComfyClient {
     if (isHistoryEntry(wrapped)) return wrapped
     if (isHistoryEntry(body)) return body
     return null
-  }
-
-  private async download(
-    file: RemoteFile,
-    signal?: AbortSignal,
-  ): Promise<Uint8Array> {
-    const res = await this.request(
-      '/view',
-      { signal },
-      { filename: file.filename, subfolder: file.subfolder, type: file.type },
-    )
-    return new Uint8Array(await res.arrayBuffer())
-  }
-
-  private async cancel(promptId: string): Promise<void> {
-    await this.request(`/api/jobs/${encodeURIComponent(promptId)}/cancel`, {
-      method: 'POST',
-    })
   }
 
   private async request(
@@ -318,19 +297,6 @@ export function assertSuccess(entry: HistoryEntry): void {
   throw new RunnerError('execution error')
 }
 
-export function outputPath(
-  outDir: string,
-  subfolder: string,
-  filename: string,
-): string {
-  const parts = subfolder.split(/[\\/]+/).filter((part) => part.length > 0)
-  for (const part of parts) {
-    if (part === '.' || part === '..')
-      throw new RunnerError(`bad subfolder: ${subfolder}`)
-  }
-  return join(outDir, ...parts, fileName(filename))
-}
-
 function isHistoryEntry(value: unknown): value is HistoryEntry {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const entry = value as HistoryEntry
@@ -351,20 +317,6 @@ function endpoint(
       url.searchParams.set(key, value)
   }
   return url.toString()
-}
-
-function mimeType(filePath: string): string {
-  const dot = filePath.lastIndexOf('.')
-  const ext = dot >= 0 ? filePath.slice(dot).toLowerCase() : ''
-  return MIME[ext] ?? 'application/octet-stream'
-}
-
-function fileName(filePath: string): string {
-  const normalized = filePath.replaceAll('\\', '/')
-  const name = normalized.slice(normalized.lastIndexOf('/') + 1)
-  if (!name || name === '.' || name === '..')
-    throw new RunnerError(`bad filename: ${filePath}`)
-  return name
 }
 
 function delay(ms: number, signal?: AbortSignal): Promise<void> {
