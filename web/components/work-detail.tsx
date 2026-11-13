@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { Dialog } from '@/components/dialog'
 import { api } from '@/lib/api'
-import { fail, messageOf, notify } from '@/lib/notify'
+import { fail, messageOf, notify, tell } from '@/lib/notify'
 import type { Adapter, Revision, Task, Work, WorkVersion, Workflow } from '@/lib/types'
 
 type FieldType = 'string' | 'seed' | 'image'
@@ -39,6 +39,7 @@ interface GraphNode {
 interface GraphView {
   version: string
   message: string | null
+  workflow: unknown
   nodes: GraphNode[]
   links: Array<{ from: number; to: number }>
 }
@@ -800,6 +801,7 @@ function VersionDialog({
   useEffect(() => {
     if (!workflowName || !version) return
     let stop = false
+    setGraph(null)
     api<GraphView>(
       `workflows/${encodeURIComponent(workflowName)}/revisions/${version}`,
     )
@@ -814,6 +816,18 @@ function VersionDialog({
     }
   }, [workflowName, version])
 
+  const shown = graph?.version === version ? graph : null
+  const workflowText = shown ? JSON.stringify(shown.workflow, null, 2) : ''
+
+  async function copyWorkflow() {
+    try {
+      await navigator.clipboard.writeText(workflowText)
+      tell('已复制')
+    } catch (err) {
+      fail(messageOf(err))
+    }
+  }
+
   return (
     <Dialog open={workflowName !== ''} title={workflowName} onClose={onClose}>
       <h3>版本图</h3>
@@ -826,7 +840,25 @@ function VersionDialog({
           ? ` · ${revisions.find((item) => item.version === version)?.message}`
           : ''}
       </p>
-      <Graph nodes={graph?.nodes ?? []} links={graph?.links ?? []} />
+      {shown ? (
+        <Graph nodes={shown.nodes} links={shown.links} />
+      ) : (
+        <p className="muted">{version ? '正在读取…' : '还没有版本。'}</p>
+      )}
+      <div className="json-head">
+        <h3>Workflow JSON</h3>
+        <button
+          type="button"
+          className="quiet"
+          disabled={workflowText === ''}
+          onClick={() => void copyWorkflow()}
+        >
+          复制
+        </button>
+      </div>
+      <pre className="workflow-json">
+        {workflowText || (version ? '正在读取…' : '还没有版本。')}
+      </pre>
       <div className="row">
         <button
           type="button"

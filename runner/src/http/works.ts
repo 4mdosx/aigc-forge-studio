@@ -12,7 +12,7 @@ import {
   readAdapterMap,
   resolveAdapter,
   saveAdapter,
-  updateSemantic,
+  saveWork,
   workByName,
   type WorkLink,
 } from '../work/works.ts'
@@ -69,7 +69,9 @@ export function mountWorks(app: Hono, runner: Runner): void {
 
   app.post('/works/:name/semantic', async (c) => {
     const body = await jsonObject(c.req)
-    const work = updateSemantic(runner.db, c.req.param('name'), body.semantic)
+    const current = c.req.param('name')
+    const next = body.name === undefined ? current : stringField(body, 'name')
+    const work = saveWork(runner.db, current, next, body.semantic)
     return c.json({
       name: work.name,
       semantic: JSON.parse(work.semantic_json) as unknown,

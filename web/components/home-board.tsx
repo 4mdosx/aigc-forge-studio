@@ -164,10 +164,10 @@ export function HomeBoard({ initialWork = null }: { initialWork?: string | null 
           {works.length === 0 ? (
             <p className="muted">还没有 Work。</p>
           ) : (
-            <ul className="stack">
+            <ul className="stack rows">
               {works.map((work) => (
                 <li key={work.id} className={selected === work.name ? 'picked' : undefined}>
-                  <div className="item-line">
+                  <div className="item-copy">
                     <button
                       type="button"
                       className="text-button"
@@ -175,12 +175,12 @@ export function HomeBoard({ initialWork = null }: { initialWork?: string | null 
                     >
                       {work.name}
                     </button>
-                    <button type="button" className="quiet" onClick={() => setEditing(work)}>
-                      <Pencil size={14} />
-                      编辑
-                    </button>
+                    <span className="muted">{Object.keys(work.semantic.inputs).join(', ')}</span>
                   </div>
-                  <span className="muted">{Object.keys(work.semantic.inputs).join(', ')}</span>
+                  <button type="button" className="quiet" onClick={() => setEditing(work)}>
+                    <Pencil size={14} />
+                    编辑
+                  </button>
                 </li>
               ))}
             </ul>
@@ -230,17 +230,28 @@ export function HomeBoard({ initialWork = null }: { initialWork?: string | null 
         work={editing}
         busy={busy}
         onClose={() => setEditing(null)}
-        onSave={(name, fields) =>
-          run(async () => {
-            await api(`works/${encodeURIComponent(name)}/semantic`, {
-              method: 'POST',
-              body: JSON.stringify({ semantic: { inputs: inputsOf(fields) } }),
-            })
+        onSave={(name, fields) => {
+          const current = editing
+          if (!current) return Promise.resolve()
+          return run(async () => {
+            const saved = await api<{ name: string }>(
+              `works/${encodeURIComponent(current.name)}/semantic`,
+              {
+                method: 'POST',
+                body: JSON.stringify({
+                  name,
+                  semantic: { inputs: inputsOf(fields) },
+                }),
+              },
+            )
             setEditing(null)
-            if (name === selected) setDetailEpoch((epoch) => epoch + 1)
-            notify(`已保存 ${name}`)
+            if (current.name === selected) {
+              if (saved.name === selected) setDetailEpoch((epoch) => epoch + 1)
+              else choose(saved.name)
+            }
+            notify(`已保存 ${saved.name}`)
           })
-        }
+        }}
       />
       {chatOpen ? (
         <section className="float-panel chat-panel">
@@ -325,14 +336,14 @@ function WorkDialog({
     )
   }, [open, work])
   return (
-    <Dialog open={open} title={title} onClose={onClose}>
+    <Dialog
+      open={open}
+      title={work ? `编辑 ${name.trim() || work.name}` : title}
+      onClose={onClose}
+    >
       <label>
         名称
-        <input
-          value={name}
-          disabled={work !== null}
-          onChange={(event) => setName(event.target.value)}
-        />
+        <input value={name} onChange={(event) => setName(event.target.value)} />
       </label>
       <h3>语义字段</h3>
       <FieldTable fields={fields} onChange={setFields} />

@@ -250,10 +250,12 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
       .get(workflow.id, version) as
       { version: string; message: string | null; ui_json: string } | undefined
     if (!row) throw new RunnerError(`version ${version} not found`, 404)
+    const document = JSON.parse(row.ui_json) as unknown
     return c.json({
       version: row.version,
       message: row.message,
-      ...graphView(JSON.parse(row.ui_json) as unknown),
+      workflow: document,
+      ...graphView(document),
     })
   })
 

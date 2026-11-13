@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import {
   revisionById,
+  transaction,
   workflowByName,
   type WorkRow,
   type WorkflowRow,
@@ -39,6 +40,33 @@ export function createWork(
     `INSERT INTO works (id, name, semantic_json, created_at) VALUES (?, ?, ?, ?)`,
   ).run(id, label, JSON.stringify(parsed), now.toISOString())
   return workByName(db, label)
+}
+
+export function renameWork(
+  db: DatabaseSync,
+  name: string,
+  nextName: string,
+): WorkRow {
+  const work = workByName(db, name)
+  const label = requiredName(nextName)
+  if (label === work.name) return work
+  if (db.prepare('SELECT id FROM works WHERE name = ?').get(label)) {
+    throw new RunnerError(`work ${label} already exists`)
+  }
+  db.prepare('UPDATE works SET name = ? WHERE id = ?').run(label, work.id)
+  return workByName(db, label)
+}
+
+export function saveWork(
+  db: DatabaseSync,
+  name: string,
+  nextName: string,
+  semantic: unknown,
+): WorkRow {
+  return transaction(db, () => {
+    const work = renameWork(db, name, nextName)
+    return updateSemantic(db, work.name, semantic)
+  })
 }
 
 export function updateSemantic(

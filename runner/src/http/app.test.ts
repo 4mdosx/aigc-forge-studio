@@ -226,6 +226,19 @@ test('imports a workflow chosen from the ComfyUI list', async () => {
   )
   assert.match(result.created[0]?.version ?? '', versionId)
   assert.deepEqual(result.unchanged, [])
+  const shown = (await (
+    await app.request(
+      `/workflows/RM_BG/revisions/${result.created[0]?.version}`,
+    )
+  ).json()) as {
+    workflow: typeof graph
+    nodes: Array<{ id: number; type: string }>
+  }
+  assert.deepEqual(shown.workflow, graph)
+  assert.equal(
+    shown.nodes.find((node) => node.id === 6)?.type,
+    'CLIPTextEncode',
+  )
   const noted = await app.request(
     `/workflows/RM_BG/revisions/${result.created[0]?.version}/message`,
     {
