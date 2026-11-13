@@ -1,12 +1,16 @@
 'use client'
 
-import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { MessageSquare, Pencil, Plus, X } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Dialog } from '@/components/dialog'
 import { PromptChat } from '@/components/prompt-chat'
+import { TaskDock } from '@/components/task-dock'
+import { WorkDetail } from '@/components/work-detail'
 import { api } from '@/lib/api'
-import type { Task, Work, Workflow } from '@/lib/types'
+import { fail, messageOf, notify, tell } from '@/lib/notify'
+import { terminal, type Task, type Work } from '@/lib/types'
 
 type FieldType = 'string' | 'seed' | 'image'
 
@@ -20,40 +24,80 @@ const starter: FieldDraft[] = [
   { key: 'seed', type: 'seed' },
 ]
 
-export function HomeBoard() {
+export function HomeBoard({ initialWork = null }: { initialWork?: string | null }) {
+  const router = useRouter()
   const [works, setWorks] = useState<Work[]>([])
-  const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
-  const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<Work | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
+  const [selected, setSelected] = useState<string | null>(initialWork)
+  const [detailEpoch, setDetailEpoch] = useState(0)
+  const [tasksOpen, setTasksOpen] = useState(false)
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+  const freshTasks = useRef<Task[]>([])
+  const knownTasks = useRef<Map<string, Task>>(new Map())
+  const tasksReady = useRef(false)
+  const pollError = useRef('')
+  const fillRef = useRef<((text: string) => void) | null>(null)
+  const bindFill = useCallback((fill: ((text: string) => void) | null) => {
+    fillRef.current = fill
+  }, [])
 
   async function load() {
-    const [library, catalog] = await Promise.all([
-      api<{ workflows: Workflow[] }>('workflows'),
-      api<{ works: Work[] }>('works'),
-    ])
+    const catalog = await api<{ works: Work[] }>('works')
     setWorks(catalog.works)
-    setWorkflows(library.workflows)
   }
 
   useEffect(() => {
-    load().catch((err: unknown) =>
-      setError(err instanceof Error ? err.message : String(err)),
-    )
+    load().catch((err: unknown) => fail(messageOf(err)))
   }, [])
+
+  useEffect(() => {
+    setSelected(initialWork)
+  }, [initialWork])
+
+  function choose(name: string) {
+    setSelected(name)
+    if (name === initialWork) return
+    router.replace(`/?work=${encodeURIComponent(name)}`, { scroll: false })
+  }
 
   useEffect(() => {
     let stop = false
     async function poll() {
       try {
         const body = await api<{ tasks: Task[] }>('tasks')
-        if (!stop) setTasks(body.tasks)
+        if (stop) return
+        pollError.current = ''
+        const listed = new Map(body.tasks.map((task) => [task.id, task]))
+        const extras = freshTasks.current.filter((task) => !listed.has(task.id))
+        const visible = [...extras, ...body.tasks]
+        if (tasksReady.current) {
+          for (const [id, task] of knownTasks.current) {
+            if (listed.has(id) || extras.some((item) => item.id === id)) continue
+            const label = taskLabel(task)
+            void api<Task>(`tasks/${id}`)
+              .then((done) => {
+                if (stop || !terminal.has(done.status)) return
+                const text = outcomeText(label, done)
+                if (done.status === 'failed' || done.status === 'timeout') fail(text)
+                else if (done.status === 'cancelled') tell(text)
+                else notify(text)
+              })
+              .catch(() => undefined)
+          }
+        }
+        tasksReady.current = true
+        knownTasks.current = new Map(visible.map((task) => [task.id, task]))
+        setTasks(visible)
       } catch (err) {
-        if (!stop) setError(err instanceof Error ? err.message : String(err))
+        if (stop) return
+        const message = messageOf(err)
+        if (pollError.current === message) return
+        pollError.current = message
+        fail(message)
       }
     }
     void poll()
@@ -66,89 +110,101 @@ export function HomeBoard() {
 
   async function run(action: () => Promise<void>) {
     setBusy(true)
-    setError('')
-    setNotice('')
     try {
       await action()
       await load()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      fail(messageOf(err))
     } finally {
       setBusy(false)
     }
   }
 
-  const linked = new Set(works.flatMap((work) => work.workflows.map((item) => item.name)))
-  const loose = workflows.filter((item) => !linked.has(item.name))
+  function applyPrompt(text: string) {
+    if (!fillRef.current) {
+      fail('先选择一个 Work')
+      return
+    }
+    fillRef.current(text)
+  }
+
+  function toggleTasks() {
+    setChatOpen(false)
+    if (!tasksOpen && selectedTaskId === null && tasks[0]) setSelectedTaskId(tasks[0].id)
+    setTasksOpen((open) => !open)
+  }
+
+  function toggleChat() {
+    setTasksOpen(false)
+    setChatOpen((open) => !open)
+  }
+
+  function queued(task: Task) {
+    freshTasks.current = [task, ...freshTasks.current.filter((item) => item.id !== task.id)]
+    window.setTimeout(() => {
+      freshTasks.current = freshTasks.current.filter((item) => item.id !== task.id)
+    }, 4000)
+    setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)])
+    setSelectedTaskId(task.id)
+    setTasksOpen(true)
+    setChatOpen(false)
+  }
 
   return (
     <>
-      {notice ? <div className="note">{notice}</div> : null}
-      {error ? <div className="error">{error}</div> : null}
       <div className="board">
-        <section className="column">
-          <h2>进行中</h2>
-          {tasks.length === 0 ? (
-            <p className="muted">没有正在进行的任务。</p>
-          ) : (
-            <ul className="stack">
-              {tasks.map((task) => (
-                <li key={task.id}>
-                  <Link href={`/tasks/${task.id}`}>{task.task}</Link>
-                  <span className={`status ${task.status}`}>{task.status}</span>
-                  <span className="muted">
-                    {[task.workName, task.workflowName].filter(Boolean).join(' · ')}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
         <section className="column">
           <div className="column-head">
             <h2>Work</h2>
             <button type="button" onClick={() => setCreating(true)}>
+              <Plus size={15} />
               新建
             </button>
           </div>
-          {works.length === 0 && loose.length === 0 ? (
+          {works.length === 0 ? (
             <p className="muted">还没有 Work。</p>
           ) : (
             <ul className="stack">
               {works.map((work) => (
-                <li key={work.id}>
+                <li key={work.id} className={selected === work.name ? 'picked' : undefined}>
                   <div className="item-line">
-                    <Link href={`/works/${encodeURIComponent(work.name)}`}>{work.name}</Link>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => choose(work.name)}
+                    >
+                      {work.name}
+                    </button>
                     <button type="button" className="quiet" onClick={() => setEditing(work)}>
+                      <Pencil size={14} />
                       编辑
                     </button>
                   </div>
                   <span className="muted">{Object.keys(work.semantic.inputs).join(', ')}</span>
-                  {work.workflows.length === 0 ? (
-                    <span className="muted">还没有 workflow</span>
-                  ) : (
-                    <ul>
-                      {work.workflows.map((item) => (
-                        <li key={item.id}>
-                          <Link href={`/workflows/${encodeURIComponent(item.name)}`}>
-                            {item.name}
-                          </Link>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </li>
-              ))}
-              {loose.map((item) => (
-                <li key={item.id}>
-                  <Link href={`/workflows/${encodeURIComponent(item.name)}`}>{item.name}</Link>
-                  <span className="muted">未挂到 Work</span>
                 </li>
               ))}
             </ul>
           )}
         </section>
-        <section className="column" aria-label="留空" />
+        {selected ? (
+          <WorkDetail
+            key={`${selected}:${detailEpoch}`}
+            name={selected}
+            onQueued={queued}
+            onBindFill={bindFill}
+          />
+        ) : (
+          <>
+            <section className="column">
+              <h2>详情</h2>
+              <p className="muted">选择一个 Work。</p>
+            </section>
+            <section className="column">
+              <h2>出图</h2>
+              <p className="muted">选择一个 Work 后在这里出图。</p>
+            </section>
+          </>
+        )}
       </div>
       <WorkDialog
         open={creating}
@@ -163,7 +219,8 @@ export function HomeBoard() {
               body: JSON.stringify({ name, semantic: { inputs: inputsOf(fields) } }),
             })
             setCreating(false)
-            setNotice(`已建立 ${name}`)
+            choose(name)
+            notify(`已建立 ${name}`)
           })
         }
       />
@@ -180,26 +237,62 @@ export function HomeBoard() {
               body: JSON.stringify({ semantic: { inputs: inputsOf(fields) } }),
             })
             setEditing(null)
-            setNotice(`已保存 ${name}`)
+            if (name === selected) setDetailEpoch((epoch) => epoch + 1)
+            notify(`已保存 ${name}`)
           })
         }
       />
       {chatOpen ? (
-        <section className="chat-panel">
+        <section className="float-panel chat-panel">
           <div className="column-head">
             <h2>提示词</h2>
-            <button type="button" className="quiet" onClick={() => setChatOpen(false)}>
-              关闭
+            <button type="button" className="quiet icon" aria-label="关闭" title="关闭" onClick={() => setChatOpen(false)}>
+              <X size={16} />
             </button>
           </div>
-          <PromptChat />
+          <PromptChat onUsePrompt={applyPrompt} />
         </section>
       ) : null}
-      <button type="button" className="chat-fab" onClick={() => setChatOpen((open) => !open)}>
-        对话
-      </button>
+      <div className="dock">
+        <TaskDock
+          tasks={tasks}
+          open={tasksOpen}
+          selectedId={selectedTaskId}
+          onToggle={toggleTasks}
+          onSelect={setSelectedTaskId}
+        />
+        <button
+          type="button"
+          className={chatOpen ? 'pressed' : undefined}
+          aria-expanded={chatOpen}
+          onClick={toggleChat}
+        >
+          <MessageSquare size={16} />
+          对话
+        </button>
+      </div>
     </>
   )
+}
+
+function taskLabel(task: Task): string {
+  return [task.workName, task.workflowName].filter(Boolean).join(' · ') || task.task
+}
+
+function outcomeText(label: string, task: Task): string {
+  const name =
+    task.status === 'completed'
+      ? '已完成'
+      : task.status === 'failed'
+        ? '失败'
+        : task.status === 'timeout'
+          ? '超时'
+          : task.status === 'cancelled'
+            ? '已取消'
+            : task.status
+  const error = task.error?.split('\n')[0]?.trim()
+  const brief = error && error.length > 160 ? `${error.slice(0, 160)}…` : error
+  return brief ? `${label} ${name}：${brief}` : `${label} ${name}`
 }
 
 function WorkDialog({

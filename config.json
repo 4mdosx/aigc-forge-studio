@@ -5,7 +5,7 @@
     "port": 8188
   },
   "runner": {
-    "comfyUiBaseURL": "http://127.0.0.1:18188",
+    "comfyUiBaseURL": "http://192.168.8.136:8188",
     "//comfyUiBaseURL": "可选 在不设置的情况下使用 comfyui.baseURL",
     "host": "127.0.0.1",
     "port": 8787,

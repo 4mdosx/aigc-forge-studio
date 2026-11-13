@@ -7,12 +7,13 @@ import type { Runner } from '../task/queue.ts'
 import { createApp } from './app.ts'
 
 test('a chat keeps turns and does not create a task', async () => {
-  const seen: Array<{ model: string; turns: ChatTurn[] }> = []
+  const seen: Array<{ model: string; system: string; turns: ChatTurn[] }> = []
   const runner = testRunner({
     models: ['writer', 'editor'],
-    async complete(model, turns) {
+    async complete(model, turns, system) {
       seen.push({
         model,
+        system,
         turns: turns.map((turn) => ({
           role: turn.role,
           content: turn.content,
@@ -25,7 +26,7 @@ test('a chat keeps turns and does not create a task', async () => {
   const created = await app.request('/chats', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content: 'a knight in red' }),
+    body: JSON.stringify({ content: 'a knight in red', system: 'be brief' }),
   })
   assert.equal(created.status, 201)
   const chat = (await created.json()) as {
@@ -43,13 +44,18 @@ test('a chat keeps turns and does not create a task', async () => {
   )
   assert.deepEqual(seen[0], {
     model: 'writer',
+    system: 'be brief',
     turns: [{ role: 'user', content: 'a knight in red' }],
   })
 
   const next = await app.request(`/chats/${chat.id}/messages`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ content: 'snow field', model: 'editor' }),
+    body: JSON.stringify({
+      content: 'snow field',
+      model: 'editor',
+      system: 'ask once',
+    }),
   })
   assert.equal(next.status, 200)
   const body = (await next.json()) as {
@@ -61,6 +67,7 @@ test('a chat keeps turns and does not create a task', async () => {
   )
   assert.deepEqual(seen[1], {
     model: 'editor',
+    system: 'ask once',
     turns: [
       { role: 'user', content: 'a knight in red' },
       { role: 'assistant', content: 'red armor' },
@@ -70,9 +77,11 @@ test('a chat keeps turns and does not create a task', async () => {
   const listed = (await (await app.request('/chats')).json()) as {
     chats: Array<{ id: string }>
     models: string[]
+    templates?: unknown
   }
   assert.equal(listed.chats[0]?.id, chat.id)
   assert.deepEqual(listed.models, ['writer', 'editor'])
+  assert.equal(listed.templates, undefined)
   const tasks = runner.db
     .prepare('SELECT COUNT(*) AS count FROM tasks')
     .get() as {

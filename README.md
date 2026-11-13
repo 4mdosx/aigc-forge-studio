@@ -123,7 +123,7 @@ npm start
 
 服务听在 `config.json` 的 `runner.host` 和 `runner.port`，默认是 `http://127.0.0.1:8787`。`--host`、`--port`、`--timeout` 只覆盖这一次启动。`npm run dev` 会在源码变化时重启进程。数据库在 `runner.db`，默认 `data/runner.sqlite`。日志在 `data/logs/runner.log`。
 
-SQLite 里 `works` 是逻辑能力，例如生成一张 SDXL 图。语义字段写在 `semantic_json`。一个 Work 挂多个 `workflows`。`workflows` 对应 ComfyUI userdata 里的一个文件，Adapter 写在这行的 `adapter_json`，修改它不产生新版本。`workflow_revisions` 保存界面图和执行图，`version` 只是这个 Workflow 内部递增的序号。覆盖只改写当前头，Commit 才新增一版。`workflow_revision_parents` 记录父节点，分支上的顺序看父节点。`workflow_branches` 是可移动的分支头。`tasks` 记下这次用的 Work、Workflow、版本、ComfyUI 路径和当时的 Adapter。`chats` 和 `chat_messages` 保存提示词对话，不进入任务队列。
+SQLite 里 `works` 是逻辑能力，例如生成一张 SDXL 图。语义字段写在 `semantic_json`。`workflows` 对应 ComfyUI userdata 里的一个文件，不再属于某一个 Work。`workflow_revisions` 保存界面图和执行图。`version` 是这个 Workflow 内部唯一的八位字母数字 id，覆盖不改它，Commit 才新生成一个。`workflow_revision_parents` 记录父节点，分支上的顺序看父节点。`workflow_branches` 是可移动的分支头。`work_workflows` 以 `work_id`、`workflow_id` 唯一。`adapter_json` 是版本号到 Adapter 的映射。同一个 Workflow 挂到不同 Work 时各有一份映射。某一版没有 Adapter 时，出图沿用创建时间最近、而且已经有 Adapter 的那一版，并在页面上标明来源。`tasks` 在创建时把当时实际用的 Adapter 抄进 `adapter_json`，之后只读这份快照。`chats` 和 `chat_messages` 保存提示词对话，不进入任务队列。
 
 从 ComfyUI 拉列表，再由调用方选择入库或更新。列表只比较，不写入：
 
@@ -135,10 +135,12 @@ curl --json '{"action":"update","paths":["RM_BG.json"]}' http://127.0.0.1:8787/c
 
 `import` 只创建还没有的 Workflow、根 Revision 和 `main`。文件已经在库里且内容一致时返回未变化。内容不一致时拒绝，不会覆盖，也不会产生新版本。`update` 只处理已经入库的文件：和当前头不一致就改写这一版的界面图和执行图，版本号不变；一致则不写。新版本只在 Commit 时创建。
 
-也可以指定名称和 Adapter，直接建立：
+也可以指定名称直接建立，再把某一个版本挂到 Work 并写入 Adapter：
 
 ```bash
-curl --json '{"name":"character-generator","comfyPath":"character-generator.json","adapter":{"inputs":{"text":{"class_type":"CLIPTextEncode","name":"positive","input":"text"}},"outputs":{"images":{"class_type":"SaveImage","name":"result"}}}}' http://127.0.0.1:8787/workflows
+curl --json '{"name":"character-generator","comfyPath":"character-generator.json"}' http://127.0.0.1:8787/workflows
+curl --json '{"workflowName":"character-generator"}' http://127.0.0.1:8787/works/picture/workflows
+curl --json '{"workflowName":"character-generator","version":"<version>","adapter":{"inputs":{"text":{"class_type":"CLIPTextEncode","name":"positive","input":"text"}},"outputs":{"images":{"class_type":"SaveImage","name":"result"}}}}' http://127.0.0.1:8787/works/picture/workflows/adapter
 ```
 
 之后的版本操作由客户端按顺序调用。服务端不自动合并，也不自动切换：
@@ -151,7 +153,7 @@ curl --json '{"message":"try another lora"}' http://127.0.0.1:8787/workflows/cha
 curl --json '{"revisionId":"<revision>","expectedHead":"<current head>"}' http://127.0.0.1:8787/workflows/character-generator/branches/main
 ```
 
-切换分支只改 `current_branch`。出图不看当前分支：请求里的 `version` 指定版本号，不传就用 `main` 的头。Checkout 是唯一写回 ComfyUI 的操作，把当前头的 `ui_json` 写到第一台实例的 `comfy_path`。出图只按 Runner 里这一版构造 `/prompt`，不会写回。Commit 从同一路径读回并新建版本，父节点是当时的当前头；已有 Adapter 会按新图再核对一次，对不上就拒绝这次提交。分支头移动时带上原来的头，对不上就返回冲突。把 `main` 指到某次已有 Revision 不新建快照。
+切换分支只改 `current_branch`。出图不看当前分支：请求里的 `version` 是八位 id，不传就用 `main` 的头。Workflow 必须已经挂在该 Work 上。Adapter 从 `work_workflows` 里这一版的条目读取；没有时用最近一份，并在创建任务时写入快照。Checkout 是唯一写回 ComfyUI 的操作，把当前头的 `ui_json` 写到第一台实例的 `comfy_path`。出图只按 Runner 里这一版构造 `/prompt`，不会写回。Commit 从同一路径读回并新建版本，父节点是当时的当前头。新版本不会自动挂到 Work。分支头移动时带上原来的头，对不上就返回冲突。把 `main` 指到某次已有 Revision 不新建快照。
 
 Adapter 用 `class_type` 锁定节点。写了 `name` 时再按节点标题筛选，结果必须恰好一个。`id` 只校验锁定到的节点，变了就失败，需要改 Adapter，这次修改不产生新版本。输入键要和所属 Work 的语义字段一致。`seed` 不传或传 `random` 时生成 `0` 到 `2^32-1` 的整数；传入数字则固定这个值。实际写入的整数记在任务的 `input_json`。
 
@@ -210,4 +212,4 @@ npm run dev
 
 默认打开 `http://127.0.0.1:3000`。Runner 地址用环境变量 `RUNNER_URL`，默认 `http://127.0.0.1:8787`。
 
-顶部是 Work 和 Library。Work 是三列：进行中的任务、Work 及其 workflow、右侧留空。右下角的对话用来多轮写出图提示词，不进入任务队列。新建和编辑 Work 都在弹窗里。Library 管理 ComfyUI 的 input 和 output，上传输入图也在这一页。同一页可以「从 ComfyUI 建立」workflow：一次选一份 JSON，新文件入库，已变化的文件覆盖当前版本，不产生新版本。打开页面不会写入。Work 页把 workflow 挂上来，选择版本后出图；不选版本就用 `main`。工作流页顶部可以新建版本，并在版本列表里改说明、把这一版同步到 ComfyUI、查看或编辑 Adapter。Adapter 仍保存在 workflow 上，保存不产生新版本。任务页轮询状态，并可以取消还没结束的任务。
+顶部是 Work 和 Library。Work 是三列：进行中的任务、Work 及其已挂版本、右侧出图。右下角的对话用来多轮写出图提示词，不进入任务队列。新建和编辑 Work 都在弹窗里。Library 管理 ComfyUI 的 input 和 output，上传输入图也在这一页。同一页可以「从 ComfyUI 建立」workflow：一次选一份 JSON，新文件入库，已变化的文件覆盖当前版本，不产生新版本。打开页面不会写入。Work 页把 workflow 挂上来。点名称可以看版本图和节点图。出图时选择版本并维护这一版的 Adapter；这一版还没有时，页面沿用最近一份并标明来源。工作流页顶部可以新建版本，并在版本列表里改说明、把这一版同步到 ComfyUI。任务页轮询状态，并可以取消还没结束的任务。

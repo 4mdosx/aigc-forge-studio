@@ -1,5 +1,6 @@
 'use client'
 
+import { X } from 'lucide-react'
 import { useEffect, useRef, type ReactNode } from 'react'
 
 export function Dialog({
@@ -30,8 +31,8 @@ export function Dialog({
     >
       <div className="dialog-head">
         <h2>{title}</h2>
-        <button type="button" className="quiet" onClick={onClose}>
-          关闭
+        <button type="button" className="quiet icon" aria-label="关闭" title="关闭" onClick={onClose}>
+          <X size={16} />
         </button>
       </div>
       {children}

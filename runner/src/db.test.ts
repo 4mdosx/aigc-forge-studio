@@ -82,3 +82,94 @@ test('removes llm tasks and the executor column from an existing database', () =
   )
   db.close()
 })
+
+test('moves workflow adapters onto work, workflow, and version', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'aigc-db-')), 'runner.sqlite')
+  const setup = new DatabaseSync(path)
+  setup.exec(`
+    CREATE TABLE works (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      semantic_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE workflows (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      comfy_path TEXT NOT NULL,
+      current_branch TEXT NOT NULL,
+      work_id TEXT,
+      adapter_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE workflow_revisions (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      ui_json TEXT NOT NULL,
+      api_json TEXT NOT NULL,
+      adapter_json TEXT,
+      message TEXT,
+      created_at TEXT NOT NULL,
+      UNIQUE (workflow_id, version)
+    );
+    INSERT INTO works (id, name, semantic_json, created_at)
+    VALUES ('work-1', 'picture', '{"inputs":{"text":{"type":"string"}}}', '2026-01-01T00:00:00.000Z');
+    INSERT INTO workflows
+      (id, name, comfy_path, current_branch, work_id, adapter_json, created_at)
+    VALUES
+      ('wf-1', 'picture-flow', 'picture-flow.json', 'main', 'work-1', '{"inputs":{}}', '2026-01-01T00:00:00.000Z');
+    INSERT INTO workflow_revisions
+      (id, workflow_id, version, ui_json, api_json, adapter_json, message, created_at)
+    VALUES
+      ('rev-1', 'wf-1', 1, '{}', '{}', '{"inputs":{"old":{}}}', NULL, '2026-01-01T00:00:00.000Z');
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY,
+      workflow_name TEXT NOT NULL,
+      head_revision_id TEXT NOT NULL,
+      task TEXT NOT NULL,
+      input_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    INSERT INTO tasks
+      (id, workflow_name, head_revision_id, task, input_json, status, created_at)
+    VALUES
+      ('task-1', 'picture-flow', 'rev-1', 'text2img', '{}', 'completed', '2026-01-01T00:00:00.000Z');
+  `)
+  setup.close()
+
+  const db = openDatabase(path)
+  const workflowColumns = (
+    db.prepare('PRAGMA table_info(workflows)').all() as Array<{ name: string }>
+  ).map((column) => column.name)
+  assert.equal(workflowColumns.includes('work_id'), false)
+  assert.equal(workflowColumns.includes('adapter_json'), false)
+  const revisionColumns = (
+    db.prepare('PRAGMA table_info(workflow_revisions)').all() as Array<{
+      name: string
+    }>
+  ).map((column) => column.name)
+  assert.equal(revisionColumns.includes('adapter_json'), false)
+  const revision = db
+    .prepare('SELECT version FROM workflow_revisions WHERE id = ?')
+    .get('rev-1') as { version: string }
+  assert.match(revision.version, /^[0-9a-z]{8}$/)
+  const binding = db
+    .prepare('SELECT work_id, workflow_id, adapter_json FROM work_workflows')
+    .get() as {
+    work_id: string
+    workflow_id: string
+    adapter_json: string
+  }
+  assert.equal(binding.work_id, 'work-1')
+  assert.equal(binding.workflow_id, 'wf-1')
+  assert.deepEqual(JSON.parse(binding.adapter_json) as unknown, {
+    [revision.version]: { inputs: {} },
+  })
+  const task = db
+    .prepare('SELECT adapter_json FROM tasks WHERE id = ?')
+    .get('task-1') as { adapter_json: string }
+  assert.equal(task.adapter_json, '{"inputs":{}}')
+  db.close()
+})

@@ -68,16 +68,7 @@ const birefnetGraph = {
 }
 
 test('sdxl adapter points text at the positive prompt node', async () => {
-  const { prompt, seen } = await storedPrompt(
-    'text2image_sdxl.json',
-    sdxlGraph,
-    {
-      inputs: {
-        text: { class_type: 'CLIPTextEncode', name: 'positive', input: 'text' },
-      },
-      outputs: { images: { class_type: 'CheckpointLoaderSimple' } },
-    },
-  )
+  const { prompt, seen } = await storedPrompt('text2image_sdxl.json', sdxlGraph)
   const applied = applyAdapter(
     prompt,
     parseAdapter({
@@ -104,11 +95,7 @@ test('sdxl adapter points text at the positive prompt node', async () => {
 })
 
 test('birefnet adapter uploads path onto LoadImage', async () => {
-  const { prompt, seen } = await storedPrompt('RM_BG.json', birefnetGraph, {
-    inputs: {
-      path: { class_type: 'LoadImage', input: 'image', upload: true },
-    },
-  })
+  const { prompt, seen } = await storedPrompt('RM_BG.json', birefnetGraph)
   const applied = applyAdapter(
     prompt,
     parseAdapter({
@@ -131,7 +118,6 @@ test('birefnet adapter uploads path onto LoadImage', async () => {
 async function storedPrompt(
   name: string,
   graph: unknown,
-  adapter: unknown,
 ): Promise<{ prompt: Prompt; seen: string }> {
   let seen = ''
   const fetchImpl: typeof fetch = async (input) => {
@@ -148,7 +134,7 @@ async function storedPrompt(
   const created = await readAndCreate(
     db,
     client,
-    { name: name.replace(/\.json$/i, ''), comfyPath: name, adapter },
+    { name: name.replace(/\.json$/i, ''), comfyPath: name },
     new Date('2026-01-01T00:00:00.000Z'),
   )
   const stored = revisionById(db, created.revision.id)

@@ -3,11 +3,6 @@ import OpenAI from 'openai'
 import { RunnerError } from '../errors.ts'
 import type { GatewayConfig } from './env.ts'
 
-const promptSystem = `你帮用户写出可以直接贴进 ComfyUI 文生图工作流的提示词。
-用用户的语言交谈。缺信息时只追问一件事：主体、风格、构图或光线。
-可以定稿时，先用一句话说明，再单独给出一段英文提示词。
-不要讲模型原理，也不要写和这张图无关的内容。`
-
 export interface ChatTurn {
   role: 'user' | 'assistant'
   content: string
@@ -15,7 +10,7 @@ export interface ChatTurn {
 
 export interface ChatClient {
   models: string[]
-  complete(model: string, turns: ChatTurn[]): Promise<string>
+  complete(model: string, turns: ChatTurn[], system: string): Promise<string>
 }
 
 export const gatewayHint =
@@ -30,15 +25,18 @@ export function gatewayChat(config: GatewayConfig): ChatClient {
   })
   return {
     models: config.models,
-    async complete(model, turns) {
+    async complete(model, turns, system) {
       if (!config.models.includes(model)) {
         throw new RunnerError('model is not available')
       }
+      const prompt = system.trim()
       let result: OpenAI.Chat.Completions.ChatCompletion
       try {
         result = await llm.chat.completions.create({
           model,
-          messages: [{ role: 'system', content: promptSystem }, ...turns],
+          messages: prompt
+            ? [{ role: 'system', content: prompt }, ...turns]
+            : turns,
         })
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err)

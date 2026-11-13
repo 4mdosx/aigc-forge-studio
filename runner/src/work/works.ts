@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
 import {
-  branchOf,
   revisionById,
   workflowByName,
   type WorkRow,
@@ -49,13 +48,10 @@ export function updateSemantic(
 ): WorkRow {
   const work = workByName(db, name)
   const parsed = parseSemantic(semantic)
-  const attached = workflowsOf(db, work.id)
-  for (const workflow of attached) {
-    if (!workflow.adapter_json) continue
-    assertCovers(
-      parseAdapter(JSON.parse(workflow.adapter_json) as unknown),
-      parsed,
-    )
+  for (const link of linksOf(db, work.id)) {
+    for (const adapter of Object.values(readAdapterMap(link.adapter_json))) {
+      assertCovers(adapter, parsed)
+    }
   }
   db.prepare('UPDATE works SET semantic_json = ? WHERE id = ?').run(
     JSON.stringify(parsed),
@@ -71,13 +67,13 @@ export function detachWorkflow(
 ): WorkflowRow {
   const work = workByName(db, workName)
   const workflow = workflowByName(db, workflowName)
-  if (workflow.work_id !== work.id) {
-    throw new RunnerError('workflow is not in this work')
+  const removed = db
+    .prepare('DELETE FROM work_workflows WHERE work_id = ? AND workflow_id = ?')
+    .run(work.id, workflow.id)
+  if (removed.changes !== 1) {
+    throw new RunnerError('workflow is not in this work', 404)
   }
-  db.prepare('UPDATE workflows SET work_id = NULL WHERE id = ?').run(
-    workflow.id,
-  )
-  return workflowByName(db, workflow.name)
+  return workflow
 }
 
 export function attachWorkflow(
@@ -87,43 +83,41 @@ export function attachWorkflow(
 ): WorkflowRow {
   const work = workByName(db, workName)
   const workflow = workflowByName(db, workflowName)
-  if (workflow.adapter_json) {
-    assertCovers(
-      parseAdapter(JSON.parse(workflow.adapter_json) as unknown),
-      parseSemantic(JSON.parse(work.semantic_json) as unknown),
-    )
+  if (linkOf(db, work.id, workflow.id)) {
+    throw new RunnerError('workflow is already in this work')
   }
-  db.prepare('UPDATE workflows SET work_id = ? WHERE id = ?').run(
-    work.id,
-    workflow.id,
-  )
-  return workflowByName(db, workflow.name)
+  db.prepare(
+    `INSERT INTO work_workflows (work_id, workflow_id, adapter_json)
+     VALUES (?, ?, '{}')`,
+  ).run(work.id, workflow.id)
+  return workflow
 }
 
 export function saveAdapter(
   db: DatabaseSync,
+  workName: string,
   workflowName: string,
+  version: string,
   raw: unknown,
-): WorkflowRow {
+): string {
+  const work = workByName(db, workName)
   const workflow = workflowByName(db, workflowName)
+  const link = linkOf(db, work.id, workflow.id)
+  if (!link) throw new RunnerError('workflow is not in this work', 404)
   const adapter = parseAdapter(raw)
-  const main = revisionById(
-    db,
-    branchOf(db, workflow.id, 'main').head_revision_id,
+  const revision = revisionForBinding(db, workflow.id, version)
+  assertAdapter(JSON.parse(revision.api_json) as Prompt, adapter)
+  assertCovers(
+    adapter,
+    parseSemantic(JSON.parse(work.semantic_json) as unknown),
   )
-  assertAdapter(JSON.parse(main.api_json) as Prompt, adapter)
-  if (workflow.work_id) {
-    const work = workById(db, workflow.work_id)
-    assertCovers(
-      adapter,
-      parseSemantic(JSON.parse(work.semantic_json) as unknown),
-    )
-  }
-  db.prepare('UPDATE workflows SET adapter_json = ? WHERE id = ?').run(
-    JSON.stringify(adapter),
-    workflow.id,
-  )
-  return workflowByName(db, workflow.name)
+  const map = readAdapterMap(link.adapter_json)
+  map[revision.version] = adapter
+  db.prepare(
+    `UPDATE work_workflows SET adapter_json = ?
+     WHERE work_id = ? AND workflow_id = ?`,
+  ).run(JSON.stringify(map), work.id, workflow.id)
+  return JSON.stringify(adapter)
 }
 
 export function workByName(db: DatabaseSync, name: string): WorkRow {
@@ -140,10 +134,78 @@ export function workById(db: DatabaseSync, id: string): WorkRow {
   return row
 }
 
-export function workflowsOf(db: DatabaseSync, workId: string): WorkflowRow[] {
+export interface WorkLink {
+  id: string
+  name: string
+  comfy_path: string
+  adapter_json: string
+}
+
+export function linksOf(db: DatabaseSync, workId: string): WorkLink[] {
   return db
-    .prepare('SELECT * FROM workflows WHERE work_id = ? ORDER BY name')
-    .all(workId) as unknown as WorkflowRow[]
+    .prepare(
+      `SELECT w.id, w.name, w.comfy_path, b.adapter_json
+       FROM work_workflows b
+       JOIN workflows w ON w.id = b.workflow_id
+       WHERE b.work_id = ?
+       ORDER BY w.name`,
+    )
+    .all(workId) as unknown as WorkLink[]
+}
+
+export function linkOf(
+  db: DatabaseSync,
+  workId: string,
+  workflowId: string,
+): { adapter_json: string } | undefined {
+  return db
+    .prepare(
+      `SELECT adapter_json FROM work_workflows
+       WHERE work_id = ? AND workflow_id = ?`,
+    )
+    .get(workId, workflowId) as { adapter_json: string } | undefined
+}
+
+export function readAdapterMap(raw: string | null): Record<string, AdapterMap> {
+  if (!raw) return {}
+  const parsed = JSON.parse(raw) as unknown
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new RunnerError('adapter map must be an object')
+  }
+  const map: Record<string, AdapterMap> = {}
+  for (const [version, value] of Object.entries(parsed)) {
+    map[version] = parseAdapter(value)
+  }
+  return map
+}
+
+export function resolveAdapter(
+  map: Record<string, AdapterMap>,
+  version: string,
+  revisions: Array<{ version: string; created_at: string }>,
+): { adapter: AdapterMap | null; borrowedFrom: string | null } {
+  const own = map[version]
+  if (own) return { adapter: own, borrowedFrom: null }
+  const recent = revisions
+    .filter((row) => map[row.version])
+    .sort((left, right) => right.created_at.localeCompare(left.created_at))[0]
+  const adapter = recent ? map[recent.version] : undefined
+  if (!recent || !adapter) return { adapter: null, borrowedFrom: null }
+  return { adapter, borrowedFrom: recent.version }
+}
+
+function revisionForBinding(
+  db: DatabaseSync,
+  workflowId: string,
+  version: string,
+) {
+  const row = db
+    .prepare(
+      'SELECT * FROM workflow_revisions WHERE workflow_id = ? AND version = ?',
+    )
+    .get(workflowId, version)
+  if (!row) throw new RunnerError(`version ${version} not found`, 404)
+  return revisionById(db, (row as { id: string }).id)
 }
 
 export function parseSemantic(raw: unknown): Semantic {

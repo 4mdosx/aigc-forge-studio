@@ -3,7 +3,7 @@ import type { Context } from 'hono'
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { ComfyClient } from '../comfy/client.ts'
-import type { TaskRow } from '../db.ts'
+import { isVersionId, type TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import type { Runner } from '../task/queue.ts'
 import { workById } from '../work/works.ts'
@@ -22,7 +22,7 @@ export function taskJson(
     ? (
         db
           .prepare('SELECT version FROM workflow_revisions WHERE id = ?')
-          .get(task.head_revision_id) as { version: number } | undefined
+          .get(task.head_revision_id) as { version: string } | undefined
       )?.version
     : undefined
   return {
@@ -88,14 +88,10 @@ export function objectField(
 
 export function optionalVersion(
   body: Record<string, unknown>,
-): number | undefined {
+): string | undefined {
   if (body.version === undefined) return undefined
-  if (
-    typeof body.version !== 'number' ||
-    !Number.isInteger(body.version) ||
-    body.version < 1
-  ) {
-    throw new RunnerError('version must be a positive integer')
+  if (typeof body.version !== 'string' || !isVersionId(body.version)) {
+    throw new RunnerError('version must be an 8 character id')
   }
   return body.version
 }

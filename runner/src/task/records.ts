@@ -18,13 +18,18 @@ import { RunnerError } from '../errors.ts'
 import { comfyFilePath, viewTarget } from '../path.ts'
 import { applyAdapter, matchNode, parseAdapter } from '../workflow/binding.ts'
 import type { Prompt } from '../workflow/graph.ts'
-import { workByName } from '../work/works.ts'
+import {
+  linkOf,
+  readAdapterMap,
+  resolveAdapter,
+  workByName,
+} from '../work/works.ts'
 
 export interface TaskInput {
   task: string
   workName?: string
   workflowName?: string
-  version?: number
+  version?: string
   payload?: Record<string, unknown>
   parentTaskId?: string
 }
@@ -42,12 +47,23 @@ export function createTask(
     db,
     required(input.workflowName, 'workflowName'),
   )
-  if (workflow.work_id !== work.id) {
-    throw new RunnerError('workflow is not in this work')
-  }
-  if (!workflow.adapter_json) throw new RunnerError('workflow has no adapter')
   const revision = revisionForRun(db, workflow.id, input.version)
-  const adapter = parseAdapter(JSON.parse(workflow.adapter_json) as unknown)
+  const link = linkOf(db, work.id, workflow.id)
+  if (!link) throw new RunnerError('workflow is not in this work')
+  const history = db
+    .prepare(
+      `SELECT version, created_at FROM workflow_revisions
+       WHERE workflow_id = ? ORDER BY created_at`,
+    )
+    .all(workflow.id) as Array<{ version: string; created_at: string }>
+  const resolved = resolveAdapter(
+    readAdapterMap(link.adapter_json),
+    revision.version,
+    history,
+  )
+  if (!resolved.adapter)
+    throw new RunnerError('workflow version has no adapter')
+  const adapter = resolved.adapter
   const api = JSON.parse(revision.api_json) as Prompt
   const applied = applyAdapter(api, adapter, input.payload ?? {}, randomSeed)
   const id = randomUUID()
@@ -62,7 +78,7 @@ export function createTask(
     workflow.id,
     work.id,
     workflow.comfy_path,
-    workflow.adapter_json,
+    JSON.stringify(adapter),
     revision.api_json,
     revision.id,
     input.parentTaskId ?? null,
@@ -87,20 +103,8 @@ export function preparedPrompt(
   return applied.prompt
 }
 
-export function taskAdapterJson(db: DatabaseSync, task: TaskRow): string {
+export function taskAdapterJson(_db: DatabaseSync, task: TaskRow): string {
   if (task.adapter_json) return task.adapter_json
-  if (task.workflow_name) {
-    try {
-      const workflow = workflowByName(db, task.workflow_name)
-      if (workflow.adapter_json) return workflow.adapter_json
-    } catch {
-      // The workflow may have been removed. Fall through to the revision.
-    }
-  }
-  if (task.head_revision_id) {
-    const revision = revisionById(db, task.head_revision_id)
-    if (revision.adapter_json) return revision.adapter_json
-  }
   throw new RunnerError('task has no adapter')
 }
 
@@ -113,7 +117,7 @@ function taskGraph(db: DatabaseSync, task: TaskRow): string {
 function revisionForRun(
   db: DatabaseSync,
   workflowId: string,
-  version: number | undefined,
+  version: string | undefined,
 ): RevisionRow {
   if (version === undefined) {
     return revisionById(db, branchOf(db, workflowId, 'main').head_revision_id)

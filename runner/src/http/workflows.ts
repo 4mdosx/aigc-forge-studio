@@ -1,6 +1,7 @@
 import type { Hono } from 'hono'
 
 import {
+  isVersionId,
   revisionById,
   workflowByName,
   type TaskRow,
@@ -10,8 +11,6 @@ import { RunnerError } from '../errors.ts'
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { Runner } from '../task/queue.ts'
-import { adapterFit, suggestAdapter } from '../workflow/binding.ts'
-import type { Prompt } from '../workflow/graph.ts'
 import {
   checkout,
   commitHead,
@@ -23,7 +22,6 @@ import {
   switchBranch,
   syncFromComfy,
 } from '../workflow/revisions.ts'
-import { saveAdapter, workById } from '../work/works.ts'
 import { editor, jsonObject, stringField, taskJson } from './request.ts'
 
 export function mountWorkflows(app: Hono, runner: Runner): void {
@@ -99,7 +97,6 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
         ...(body.message === undefined
           ? {}
           : { message: stringField(body, 'message') }),
-        ...(body.adapter === undefined ? {} : { adapter: body.adapter }),
       },
       runner.now(),
     )
@@ -107,17 +104,6 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
       { id: created.workflow.id, revisionId: created.revision.id },
       201,
     )
-  })
-
-  app.post('/workflows/:name/adapter', async (c) => {
-    const body = await jsonObject(c.req)
-    const workflow = saveAdapter(runner.db, c.req.param('name'), body.adapter)
-    return c.json({
-      name: workflow.name,
-      adapter: workflow.adapter_json
-        ? (JSON.parse(workflow.adapter_json) as unknown)
-        : null,
-    })
   })
 
   app.post('/workflows/:name/switch', async (c) => {
@@ -212,7 +198,7 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
     const workflow = workflowByName(runner.db, c.req.param('name'))
     const rows = runner.db
       .prepare(
-        `SELECT r.id, r.version, r.message, r.created_at, r.api_json, r.ui_json,
+        `SELECT r.id, r.version, r.message, r.created_at,
                 r.id = current.head_revision_id AS head,
                 r.id = main.head_revision_id AS main_head
          FROM workflow_revisions r
@@ -221,9 +207,25 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
          JOIN workflow_branches main
            ON main.workflow_id = r.workflow_id AND main.name = 'main'
          WHERE r.workflow_id = ?
-         ORDER BY r.version`,
+         ORDER BY r.created_at`,
       )
       .all(workflow.current_branch, workflow.id) as unknown as RevisionListRow[]
+    const parents = runner.db
+      .prepare(
+        `SELECT child.version AS version, parent.version AS parent_version
+         FROM workflow_revision_parents link
+         JOIN workflow_revisions child ON child.id = link.revision_id
+         JOIN workflow_revisions parent ON parent.id = link.parent_id
+         WHERE child.workflow_id = ?
+         ORDER BY link.parent_order`,
+      )
+      .all(workflow.id) as Array<{ version: string; parent_version: string }>
+    const parentsOf = new Map<string, string[]>()
+    for (const link of parents) {
+      const list = parentsOf.get(link.version) ?? []
+      list.push(link.parent_version)
+      parentsOf.set(link.version, list)
+    }
     return c.json({
       revisions: rows.map((row) => ({
         id: row.id,
@@ -232,11 +234,7 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
         createdAt: row.created_at,
         head: Boolean(row.head),
         main: Boolean(row.main_head),
-        adapter: adapterFit(
-          JSON.parse(row.api_json) as Prompt,
-          workflow.adapter_json,
-        ),
-        suggestedAdapter: suggestAdapter(JSON.parse(row.api_json) as Prompt),
+        parents: parentsOf.get(row.version) ?? [],
       })),
     })
   })
@@ -250,7 +248,7 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
          WHERE workflow_id = ? AND version = ?`,
       )
       .get(workflow.id, version) as
-      { version: number; message: string | null; ui_json: string } | undefined
+      { version: string; message: string | null; ui_json: string } | undefined
     if (!row) throw new RunnerError(`version ${version} not found`, 404)
     return c.json({
       version: row.version,
@@ -270,21 +268,18 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
   })
 }
 
-function versionOf(value: string): number {
-  const version = Number(value)
-  if (!Number.isInteger(version) || version < 1) {
-    throw new RunnerError('version must be a positive integer')
+function versionOf(value: string): string {
+  if (!isVersionId(value)) {
+    throw new RunnerError('version must be an 8 character id')
   }
-  return version
+  return value
 }
 
 interface RevisionListRow {
   id: string
-  version: number
+  version: string
   message: string | null
   created_at: string
-  api_json: string
-  ui_json: string
   head: number
   main_head: number
 }
@@ -342,33 +337,25 @@ interface SyncRow {
   path: string
   name: string
   id: string
-  version: number
+  version: string
 }
 
 function workflowJson(db: DatabaseSync, row: WorkflowRow) {
-  const main = db
+  const works = db
     .prepare(
-      `SELECT r.api_json
-       FROM workflow_branches b
-       JOIN workflow_revisions r ON r.id = b.head_revision_id
-       WHERE b.workflow_id = ? AND b.name = 'main'`,
+      `SELECT DISTINCT works.name
+       FROM work_workflows
+       JOIN works ON works.id = work_workflows.work_id
+       WHERE work_workflows.workflow_id = ?
+       ORDER BY works.name`,
     )
-    .get(row.id) as { api_json: string } | undefined
-  const adapter = row.adapter_json
-    ? (JSON.parse(row.adapter_json) as unknown)
-    : null
+    .all(row.id) as Array<{ name: string }>
   return {
     id: row.id,
     name: row.name,
     comfyPath: row.comfy_path,
     currentBranch: row.current_branch,
-    workId: row.work_id,
-    workName: row.work_id ? workById(db, row.work_id).name : null,
-    adapter,
-    suggestedAdapter:
-      adapter || !main
-        ? null
-        : suggestAdapter(JSON.parse(main.api_json) as Prompt),
+    works: works.map((work) => work.name),
   }
 }
 

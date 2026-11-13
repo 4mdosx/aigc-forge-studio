@@ -1,9 +1,10 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { api, fileHref } from '@/lib/api'
+import { fail, messageOf } from '@/lib/notify'
 import { terminal, type Task } from '@/lib/types'
 
 function outputPaths(value: string | null | undefined): string[] {
@@ -21,10 +22,14 @@ function outputPaths(value: string | null | undefined): string[] {
   return [value]
 }
 
-export function TaskDetail({ id }: { id: string }) {
+function imageFile(path: string): boolean {
+  return /\.(png|jpe?g|webp|gif)$/i.test(path)
+}
+
+export function TaskDetail({ id, embedded = false }: { id: string; embedded?: boolean }) {
   const [task, setTask] = useState<Task | null>(null)
-  const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const reported = useRef('')
 
   useEffect(() => {
     let stop = false
@@ -33,12 +38,16 @@ export function TaskDetail({ id }: { id: string }) {
         const next = await api<Task>(`tasks/${id}`)
         if (stop) return
         setTask(next)
-        setError('')
+        reported.current = ''
         if (!terminal.has(next.status)) {
           window.setTimeout(() => void poll(), 1000)
         }
       } catch (err) {
-        if (!stop) setError(err instanceof Error ? err.message : String(err))
+        if (stop) return
+        const message = messageOf(err)
+        if (reported.current === message) return
+        reported.current = message
+        fail(message)
       }
     }
     void poll()
@@ -49,25 +58,24 @@ export function TaskDetail({ id }: { id: string }) {
 
   async function cancel() {
     setBusy(true)
-    setError('')
     try {
       setTask(await api<Task>(`tasks/${id}/cancel`, { method: 'POST' }))
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      fail(messageOf(err))
     } finally {
       setBusy(false)
     }
   }
 
   const paths = [
-    ...outputPaths(task?.outputPath),
-    ...(task?.process?.map((item) => item.path) ?? []),
+    ...new Set([
+      ...outputPaths(task?.outputPath),
+      ...(task?.process?.map((item) => item.path) ?? []),
+    ]),
   ]
 
   return (
-    <>
-      {error ? <div className="error">{error}</div> : null}
-      <section className="panel">
+    <section className={embedded ? 'task-embedded' : 'panel'}>
         <h2>{task?.task ?? '任务'}</h2>
         {task ? (
           <>
@@ -77,7 +85,7 @@ export function TaskDetail({ id }: { id: string }) {
                 <>
                   {' '}
                   ·{' '}
-                  <Link href={`/works/${encodeURIComponent(task.workName)}`}>
+                  <Link href={`/?work=${encodeURIComponent(task.workName)}`}>
                     {task.workName}
                   </Link>
                 </>
@@ -89,19 +97,23 @@ export function TaskDetail({ id }: { id: string }) {
                   <Link href={`/workflows/${encodeURIComponent(task.workflowName)}`}>
                     {task.workflowName}
                   </Link>
-                  {task.version ? ` v${task.version}` : ''}
+                  {task.version ? ` ${task.version}` : ''}
                 </>
               ) : null}
               {task.comfyPath ? <span className="mono"> · {task.comfyPath}</span> : null}
             </p>
             {task.error ? <div className="error">{task.error}</div> : null}
             {paths.length > 0 ? (
-              <ul>
-                {paths.map((path) => (
-                  <li key={path}>
-                    <a href={fileHref(`tasks/${id}/files/${path}`)}>{path}</a>
-                  </li>
-                ))}
+              <ul className="shots">
+                {paths.map((path) => {
+                  const href = fileHref(`tasks/${id}/files/${path}`)
+                  return (
+                    <li key={path}>
+                      <a href={href}>{path}</a>
+                      {imageFile(path) ? <img className="task-shot" src={href} alt="" /> : null}
+                    </li>
+                  )
+                })}
               </ul>
             ) : null}
             {task.status === 'pending' || task.status === 'running' ? (
@@ -117,7 +129,6 @@ export function TaskDetail({ id }: { id: string }) {
         ) : (
           <p>正在读取…</p>
         )}
-      </section>
-    </>
+    </section>
   )
 }

@@ -5,6 +5,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 
 import { Dialog } from '@/components/dialog'
 import { api } from '@/lib/api'
+import { fail, messageOf, notify } from '@/lib/notify'
 import type { Workflow } from '@/lib/types'
 
 interface LibraryFile {
@@ -26,8 +27,6 @@ export function LibraryBoard() {
   const [inputs, setInputs] = useState<LibraryFile[]>([])
   const [outputs, setOutputs] = useState<LibraryFile[]>([])
   const [filePath, setFilePath] = useState('')
-  const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
   const [view, setView] = useState<'list' | 'grid'>('list')
   const [tab, setTab] = useState<'input' | 'output' | 'workflow'>('input')
@@ -44,9 +43,7 @@ export function LibraryBoard() {
   }
 
   useEffect(() => {
-    load().catch((err: unknown) =>
-      setError(err instanceof Error ? err.message : String(err)),
-    )
+    load().catch((err: unknown) => fail(messageOf(err)))
   }, [])
 
   useEffect(() => {
@@ -60,9 +57,9 @@ export function LibraryBoard() {
           body.workflows.some((item) => item.path === current) ? current : '',
         )
       })
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : String(err)),
-      )
+      .catch((err: unknown) => {
+        if (!stop) fail(messageOf(err))
+      })
     return () => {
       stop = true
     }
@@ -75,12 +72,10 @@ export function LibraryBoard() {
   async function apply() {
     if (!chosen || !action) return
     setBusy(true)
-    setError('')
-    setNotice('')
     try {
       const result = await api<{
         created: Array<{ name: string }>
-        updated: Array<{ name: string; version: number }>
+        updated: Array<{ name: string; version: string }>
         unchanged: Array<{ name: string }>
         failed: Array<{ path: string; error: string }>
       }>('comfy/workflows', {
@@ -92,9 +87,9 @@ export function LibraryBoard() {
       }
       const updated = result.updated[0]
       const created = result.created[0]
-      setNotice(
+      notify(
         updated
-          ? `${updated.name} 的当前版本已覆盖为这份 JSON，版本号仍是 v${updated.version}`
+          ? `${updated.name} 的当前版本已覆盖，版本号仍是 ${updated.version}`
           : created
             ? `${created.name} 已入库`
             : `${chosen.name} 已是当前版本`,
@@ -103,7 +98,7 @@ export function LibraryBoard() {
       setPicked('')
       await load()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      fail(messageOf(err))
     } finally {
       setBusy(false)
     }
@@ -115,16 +110,14 @@ export function LibraryBoard() {
     const data = new FormData(form)
     data.set('path', filePath)
     setBusy(true)
-    setError('')
-    setNotice('')
     try {
       const saved = await api<{ path: string }>('files', { method: 'POST', body: data })
-      setNotice(`已上传到 input/${saved.path}`)
+      notify(`已上传到 input/${saved.path}`)
       setFilePath('')
       form.reset()
       await load()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      fail(messageOf(err))
     } finally {
       setBusy(false)
     }
@@ -132,8 +125,6 @@ export function LibraryBoard() {
 
   return (
     <>
-      {notice ? <div className="note">{notice}</div> : null}
-      {error ? <div className="error">{error}</div> : null}
       <div className="column-head">
         <div className="tabs" role="tablist">
           {(
@@ -236,13 +227,14 @@ export function LibraryBoard() {
                     </Link>
                   </td>
                   <td>
-                    {workflow.workName ? (
-                      <Link href={`/works/${encodeURIComponent(workflow.workName)}`}>
-                        {workflow.workName}
-                      </Link>
-                    ) : (
-                      '—'
-                    )}
+                    {workflow.works.length === 0
+                      ? '—'
+                      : workflow.works.map((workName, index) => (
+                          <span key={workName}>
+                            {index > 0 ? '、' : null}
+                            <Link href={`/?work=${encodeURIComponent(workName)}`}>{workName}</Link>
+                          </span>
+                        ))}
                   </td>
                   <td className="mono">{workflow.comfyPath}</td>
                   <td>

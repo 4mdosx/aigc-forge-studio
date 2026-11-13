@@ -1,12 +1,11 @@
+import type { CreativeIntent } from './intent'
+
 export interface Workflow {
   id: string
   name: string
   comfyPath: string
   currentBranch: string
-  workId: string | null
-  workName: string | null
-  adapter: Adapter | null
-  suggestedAdapter: Adapter | null
+  works: string[]
 }
 
 export interface Work {
@@ -14,12 +13,27 @@ export interface Work {
   name: string
   semantic: { inputs: Record<string, { type: 'string' | 'seed' | 'image' }> }
   createdAt: string
-  workflows: Array<{
-    id: string
-    name: string
-    comfyPath: string
-    hasAdapter?: boolean
-  }>
+  workflows: WorkWorkflow[]
+}
+
+export interface WorkVersion {
+  version: string
+  message: string | null
+  createdAt: string
+  main: boolean
+  head: boolean
+  hasAdapter: boolean
+  borrowedFrom: string | null
+  adapter: Adapter | null
+  adapterStatus: { status: 'missing' | 'ready' | 'mismatch'; error?: string }
+  suggestedAdapter: Adapter | null
+}
+
+export interface WorkWorkflow {
+  id: string
+  name: string
+  comfyPath: string
+  versions?: WorkVersion[]
 }
 
 export interface AdapterBinding {
@@ -36,13 +50,12 @@ export interface Adapter {
 
 export interface Revision {
   id: string
-  version: number
+  version: string
   message: string | null
   createdAt: string
   head: boolean
   main?: boolean
-  adapter?: { status: 'missing' | 'ready' | 'mismatch'; error?: string }
-  suggestedAdapter?: Adapter | null
+  parents?: string[]
 }
 
 export interface ChatMessage {
@@ -50,6 +63,14 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   createdAt: string
+}
+
+export interface PromptTemplate {
+  id: string
+  chatType: string
+  name: string
+  system: string
+  initialResult: CreativeIntent
 }
 
 export interface Chat {
@@ -68,7 +89,7 @@ export interface Task {
   workflowId: string | null
   workflowName: string | null
   comfyPath: string | null
-  version: number | null
+  version: string | null
   headRevisionId: string | null
   parentTaskId: string | null
   status: 'pending' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled'

@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from 'react'
 
 import { Dialog } from '@/components/dialog'
 import { api } from '@/lib/api'
-import type { Adapter, Revision, Task, Work, Workflow } from '@/lib/types'
+import { fail, messageOf, notify } from '@/lib/notify'
+import type { Adapter, Revision, Task, Work, WorkVersion, Workflow } from '@/lib/types'
 
 type FieldType = 'string' | 'seed' | 'image'
 
@@ -36,7 +37,7 @@ interface GraphNode {
 }
 
 interface GraphView {
-  version: number
+  version: string
   message: string | null
   nodes: GraphNode[]
   links: Array<{ from: number; to: number }>
@@ -85,21 +86,29 @@ function outputDrafts(adapter: Adapter | null): OutputDraft[] {
   }))
 }
 
-export function WorkDetail({ name }: { name: string }) {
+export function WorkDetail({
+  name,
+  onQueued,
+  onBindFill,
+}: {
+  name: string
+  onQueued?: (task: Task) => void
+  onBindFill?: (fill: ((text: string) => void) | null) => void
+}) {
   const [work, setWork] = useState<Work | null>(null)
   const [library, setLibrary] = useState<Workflow[]>([])
   const [runWorkflow, setRunWorkflow] = useState('')
   const [attachName, setAttachName] = useState('')
-  const [revisions, setRevisions] = useState<Revision[]>([])
   const [version, setVersion] = useState('')
   const [values, setValues] = useState<Record<string, string>>({})
   const [fields, setFields] = useState<FieldDraft[]>([])
-  const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
+  const [filledKey, setFilledKey] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [adapterOpen, setAdapterOpen] = useState(false)
   const [graphWorkflow, setGraphWorkflow] = useState('')
-  const versionWorkflow = useRef('')
+  const fieldsRef = useRef(fields)
+  const flashTimer = useRef<number | null>(null)
+  fieldsRef.current = fields
   const encoded = encodeURIComponent(name)
 
   async function load() {
@@ -112,83 +121,75 @@ export function WorkDetail({ name }: { name: string }) {
     const nextFields = fieldsFrom(current)
     setFields(nextFields)
     setValues((previous) => valuesFor(nextFields, previous))
-    setRunWorkflow((selected) =>
-      current.workflows.some((item) => item.name === selected)
+    setRunWorkflow((selected) => {
+      const next = current.workflows.some((item) => item.name === selected)
         ? selected
-        : (current.workflows[0]?.name ?? ''),
-    )
+        : (current.workflows[0]?.name ?? '')
+      setVersion((currentVersion) => versionOf(current, next, currentVersion))
+      return next
+    })
   }
 
   useEffect(() => {
-    load().catch((err: unknown) =>
-      setError(err instanceof Error ? err.message : String(err)),
-    )
+    load().catch((err: unknown) => fail(messageOf(err)))
     // Reload when the work route changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name])
 
   useEffect(() => {
-    if (!runWorkflow) {
-      setRevisions([])
-      setVersion('')
-      return
-    }
-    const switching = versionWorkflow.current !== runWorkflow
-    if (switching) {
-      setRevisions([])
-      setVersion('')
-    }
-    let stop = false
-    api<{ revisions: Revision[] }>(
-      `workflows/${encodeURIComponent(runWorkflow)}/revisions`,
-    )
-      .then((body) => {
-        if (stop) return
-        setRevisions(body.revisions)
-        versionWorkflow.current = runWorkflow
-        const stillThere = body.revisions.some(
-          (item) => String(item.version) === version,
-        )
-        if (!switching && stillThere) return
-        const main = body.revisions.find((item) => item.main)
-        setVersion(String(main?.version ?? body.revisions.at(-1)?.version ?? ''))
-      })
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : String(err)),
-      )
+    if (!onBindFill) return
+    onBindFill((text) => {
+      const list = fieldsRef.current
+      const key =
+        list.find((field) => field.key === 'text' && field.type === 'string')?.key ??
+        list.find((field) => field.type === 'string')?.key
+      if (!key) {
+        fail('这个 Work 没有文本字段')
+        return
+      }
+      setValues((current) => ({ ...current, [key]: text }))
+      setFilledKey(key)
+      if (flashTimer.current !== null) window.clearTimeout(flashTimer.current)
+      flashTimer.current = window.setTimeout(() => {
+        setFilledKey((current) => (current === key ? null : current))
+      }, 1600)
+      notify(`已填入 ${key}`)
+      window.setTimeout(() => {
+        document.getElementById(`run-${key}`)?.scrollIntoView({ block: 'nearest' })
+      }, 0)
+    })
     return () => {
-      stop = true
+      onBindFill(null)
+      if (flashTimer.current !== null) window.clearTimeout(flashTimer.current)
     }
-  }, [runWorkflow, work])
+  }, [onBindFill])
 
   async function run(action: () => Promise<void>) {
     setBusy(true)
-    setError('')
-    setNotice('')
     try {
       await action()
       await load()
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      fail(messageOf(err))
     } finally {
       setBusy(false)
     }
   }
 
-  const selected = revisions.find((item) => String(item.version) === version)
-  const workflow = library.find((item) => item.name === runWorkflow) ?? null
-  const unlinked = library.filter((item) => item.workId === null)
-  const adapterStatus = selected?.adapter
+  const bound = work?.workflows ?? []
+  const running = bound.find((item) => item.name === runWorkflow) ?? null
+  const runVersions = running?.versions ?? []
+  const selected = runVersions.find((item) => item.version === version) ?? null
+  const adapterStatus = selected?.adapterStatus
+  const unlinked = library.filter((item) => !bound.some((link) => link.name === item.name))
+  const leadKey =
+    fields.find((field) => field.key === 'text' && field.type === 'string')?.key ??
+    fields.find((field) => field.type === 'string')?.key
 
-  return (
-    <>
-      {notice ? <div className="note">{notice}</div> : null}
-      {error ? <div className="error">{error}</div> : null}
-      <section className="panel">
+  const runSection = (
+      <section className="work-block">
         <h2>出图</h2>
-        <p className="note">
-          用 Runner 里选中的版本构造 /prompt，不写回 ComfyUI。版本留在 main 时就是这张图的 main。
-        </p>
+        <p className="muted">只跑已挂上的版本，不写回 ComfyUI。</p>
         <form
           onSubmit={(event) => {
             event.preventDefault()
@@ -205,11 +206,12 @@ export function WorkDetail({ name }: { name: string }) {
                   task: 'run',
                   workName: name,
                   workflowName: runWorkflow,
-                  ...(version ? { version: Number(version) } : {}),
+                  ...(version ? { version } : {}),
                   payload,
                 }),
               })
-              window.location.href = `/tasks/${task.id}`
+              onQueued?.(task)
+              notify('已加入队列')
             })
           }}
         >
@@ -218,29 +220,26 @@ export function WorkDetail({ name }: { name: string }) {
               workflow
               <select
                 value={runWorkflow}
-                onChange={(event) => setRunWorkflow(event.target.value)}
+                onChange={(event) => {
+                  const next = event.target.value
+                  setRunWorkflow(next)
+                  setVersion(versionOf(work, next, ''))
+                }}
               >
                 <option value="">选择</option>
-                {(work?.workflows ?? []).map((item) => (
+                {bound.map((item) => (
                   <option key={item.id} value={item.name}>
                     {item.name}
                   </option>
                 ))}
               </select>
             </label>
-            <label>
-              版本
-              <select value={version} onChange={(event) => setVersion(event.target.value)}>
-                <option value="">选择</option>
-                {revisions.map((item) => (
-                  <option key={item.id} value={item.version}>
-                    v{item.version}
-                    {item.main ? ' · main' : ''}
-                    {item.message ? ` · ${item.message}` : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <VersionChoices
+              versions={runVersions}
+              value={version}
+              enabled={runWorkflow !== ''}
+              onChange={setVersion}
+            />
           </div>
           <div className="row">
             <span>
@@ -255,25 +254,55 @@ export function WorkDetail({ name }: { name: string }) {
               disabled={!runWorkflow || !selected}
               onClick={() => setAdapterOpen(true)}
             >
-              {adapterStatus?.status === 'ready' ? '查看 Adapter' : '设置 Adapter'}
+              {selected?.borrowedFrom
+                ? '记到这一版'
+                : adapterStatus?.status === 'ready'
+                  ? '查看 Adapter'
+                  : '设置 Adapter'}
             </button>
           </div>
+          {selected?.borrowedFrom ? (
+            <p className="muted">这一版还没有 Adapter，正在用 {selected.borrowedFrom} 的。</p>
+          ) : null}
           {adapterStatus?.error ? <p className="error">{adapterStatus.error}</p> : null}
           <div className="grid">
-            {fields.map((field) => (
-              <label key={field.key}>
-                {field.key}
-                <input
-                  value={values[field.key] ?? ''}
-                  onChange={(event) =>
-                    setValues((current) => ({
-                      ...current,
-                      [field.key]: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-            ))}
+            {fields.map((field) => {
+              const filled = filledKey === field.key
+              return (
+                <label key={field.key}>
+                  <span className="label-line">
+                    {field.key}
+                    <span>{field.type}</span>
+                  </span>
+                  {field.type === 'string' ? (
+                    <textarea
+                      id={`run-${field.key}`}
+                      className={`prose${field.key === leadKey ? ' lead' : ''}${filled ? ' flash' : ''}`}
+                      rows={field.key === leadKey ? 5 : 3}
+                      value={values[field.key] ?? ''}
+                      onChange={(event) =>
+                        setValues((current) => ({
+                          ...current,
+                          [field.key]: event.target.value,
+                        }))
+                      }
+                    />
+                  ) : (
+                    <input
+                      id={`run-${field.key}`}
+                      className={filled ? 'flash' : undefined}
+                      value={values[field.key] ?? ''}
+                      onChange={(event) =>
+                        setValues((current) => ({
+                          ...current,
+                          [field.key]: event.target.value,
+                        }))
+                      }
+                    />
+                  )}
+                </label>
+              )
+            })}
           </div>
           <div className="row">
             <button
@@ -286,7 +315,10 @@ export function WorkDetail({ name }: { name: string }) {
           </div>
         </form>
       </section>
-      <section className="panel">
+  )
+  const detailSection = (
+    <>
+      <section className="work-block">
         <h2>语义字段</h2>
         <p>这些字段决定出图参数。Adapter 按同名字段映射到 workflow 节点。</p>
         <table>
@@ -366,6 +398,7 @@ export function WorkDetail({ name }: { name: string }) {
                   method: 'POST',
                   body: JSON.stringify({ semantic: { inputs } }),
                 })
+                notify('已保存语义')
               })
             }
           >
@@ -373,7 +406,7 @@ export function WorkDetail({ name }: { name: string }) {
           </button>
         </div>
       </section>
-      <section className="panel">
+      <section className="work-block">
         <h2>关联的 workflow</h2>
         <table>
           <thead>
@@ -384,40 +417,40 @@ export function WorkDetail({ name }: { name: string }) {
             </tr>
           </thead>
           <tbody>
-            {(work?.workflows ?? []).length === 0 ? (
+            {bound.length === 0 ? (
               <tr>
                 <td colSpan={3}>还没有挂 workflow。</td>
               </tr>
             ) : (
-              work?.workflows.map((item) => (
+              bound.map((item) => (
                 <tr key={item.id}>
-                  <td>{item.name}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => setGraphWorkflow(item.name)}
+                    >
+                      {item.name}
+                    </button>
+                  </td>
                   <td className="mono">{item.comfyPath}</td>
                   <td>
-                    <div className="row">
-                      <button
-                        type="button"
-                        className="quiet"
-                        onClick={() => setGraphWorkflow(item.name)}
-                      >
-                        版本
-                      </button>
-                      <button
-                        type="button"
-                        className="quiet"
-                        disabled={busy}
-                        onClick={() =>
-                          void run(() =>
-                            api(`works/${encoded}/workflows/detach`, {
-                              method: 'POST',
-                              body: JSON.stringify({ workflowName: item.name }),
-                            }).then(() => undefined),
-                          )
-                        }
-                      >
-                        取消关联
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      className="quiet"
+                      disabled={busy}
+                      onClick={() =>
+                        void run(async () => {
+                          await api(`works/${encoded}/workflows/detach`, {
+                            method: 'POST',
+                            body: JSON.stringify({ workflowName: item.name }),
+                          })
+                          notify(`已取消关联 ${item.name}`)
+                        })
+                      }
+                    >
+                      取消关联
+                    </button>
                   </td>
                 </tr>
               ))
@@ -445,6 +478,7 @@ export function WorkDetail({ name }: { name: string }) {
                   body: JSON.stringify({ workflowName: attachName }),
                 })
                 setAttachName('')
+                notify(`已关联 ${attachName}`)
               })
             }
           >
@@ -452,19 +486,31 @@ export function WorkDetail({ name }: { name: string }) {
           </button>
         </div>
       </section>
+    </>
+  )
+  const dialogs = (
+    <>
       <AdapterDialog
         open={adapterOpen}
-        workflow={workflow}
+        title={`${runWorkflow} ${version}`}
+        borrowedFrom={selected?.borrowedFrom ?? null}
+        adapter={selected?.adapter ?? null}
+        suggested={selected?.suggestedAdapter ?? null}
         fields={fields}
         busy={busy}
         onClose={() => setAdapterOpen(false)}
         onSave={(adapter) =>
           run(async () => {
-            await api(`workflows/${encodeURIComponent(runWorkflow)}/adapter`, {
+            await api(`works/${encoded}/workflows/adapter`, {
               method: 'POST',
-              body: JSON.stringify({ adapter }),
+              body: JSON.stringify({
+                workflowName: runWorkflow,
+                version,
+                adapter,
+              }),
             })
             setAdapterOpen(false)
+            notify('已保存 Adapter')
           })
         }
       />
@@ -478,12 +524,31 @@ export function WorkDetail({ name }: { name: string }) {
               `workflows/${encodeURIComponent(graphWorkflow)}/revisions/${selectedVersion}/checkout`,
               { method: 'POST' },
             )
-            setNotice(`已把 v${selectedVersion} 检出到 ComfyUI`)
+            notify(`已把 ${selectedVersion} 检出到 ComfyUI`)
           })
         }
       />
     </>
   )
+  return (
+    <>
+      <section className="column">
+        <div className="column-head">
+          <h2>{name}</h2>
+        </div>
+        {detailSection}
+      </section>
+      <section className="column">{runSection}</section>
+      {dialogs}
+    </>
+  )
+}
+
+function versionOf(work: Work | null, workflowName: string, current: string): string {
+  const versions =
+    work?.workflows.find((item) => item.name === workflowName)?.versions ?? []
+  if (versions.some((item) => item.version === current)) return current
+  return versions.find((item) => item.main)?.version ?? versions.at(-1)?.version ?? ''
 }
 
 function adapterLabel(
@@ -503,20 +568,26 @@ function adapterTone(status: 'missing' | 'ready' | 'mismatch' | undefined): stri
 
 function AdapterDialog({
   open,
-  workflow,
+  title,
+  borrowedFrom,
+  adapter,
+  suggested,
   fields,
   busy,
   onClose,
   onSave,
 }: {
   open: boolean
-  workflow: Workflow | null
+  title: string
+  borrowedFrom: string | null
+  adapter: Adapter | null
+  suggested: Adapter | null
   fields: FieldDraft[]
   busy: boolean
   onClose: () => void
   onSave: (adapter: Adapter) => Promise<void>
 }) {
-  const source = workflow?.adapter ?? workflow?.suggestedAdapter ?? null
+  const source = adapter ?? suggested
   const [inputs, setInputs] = useState<InputDraft[]>([])
   const [outputs, setOutputs] = useState<OutputDraft[]>([])
 
@@ -524,11 +595,15 @@ function AdapterDialog({
     if (!open) return
     setInputs(inputDrafts(source, fields))
     setOutputs(outputDrafts(source))
-  }, [open, workflow, fields])
+  }, [open, source, fields])
 
   return (
-    <Dialog open={open} title={`${workflow?.name ?? ''} 的 Adapter`} onClose={onClose}>
-      <p>映射保存在这张 workflow 上，不产生新版本。切换版本时会用这一份去对那一版的节点。</p>
+    <Dialog open={open} title={`${title} 的 Adapter`} onClose={onClose}>
+      <p>
+        {borrowedFrom
+          ? `表单里是 ${borrowedFrom} 的 Adapter。保存后记在这一版上，不产生新版本。`
+          : '映射保存在这个 Work 和这一版上，不产生新版本。'}
+      </p>
       <table>
         <thead>
           <tr>
@@ -698,12 +773,11 @@ function VersionDialog({
   workflowName: string
   busy: boolean
   onClose: () => void
-  onCheckout: (version: number) => Promise<void>
+  onCheckout: (version: string) => Promise<void>
 }) {
   const [revisions, setRevisions] = useState<Revision[]>([])
   const [version, setVersion] = useState('')
   const [graph, setGraph] = useState<GraphView | null>(null)
-  const [error, setError] = useState('')
 
   useEffect(() => {
     if (!workflowName) return
@@ -713,11 +787,11 @@ function VersionDialog({
         if (stop) return
         setRevisions(body.revisions)
         const main = body.revisions.find((item) => item.main)
-        setVersion(String(main?.version ?? body.revisions.at(-1)?.version ?? ''))
+        setVersion(main?.version ?? body.revisions.at(-1)?.version ?? '')
       })
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : String(err)),
-      )
+      .catch((err: unknown) => {
+        if (!stop) fail(messageOf(err))
+      })
     return () => {
       stop = true
     }
@@ -732,40 +806,178 @@ function VersionDialog({
       .then((body) => {
         if (!stop) setGraph(body)
       })
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : String(err)),
-      )
+      .catch((err: unknown) => {
+        if (!stop) fail(messageOf(err))
+      })
     return () => {
       stop = true
     }
   }, [workflowName, version])
 
   return (
-    <Dialog open={workflowName !== ''} title={`${workflowName} 的版本`} onClose={onClose}>
-      {error ? <div className="error">{error}</div> : null}
-      <label>
-        版本
-        <select value={version} onChange={(event) => setVersion(event.target.value)}>
-          {revisions.map((item) => (
-            <option key={item.id} value={item.version}>
-              v{item.version}
-              {item.main ? ' · main' : ''}
-              {item.message ? ` · ${item.message}` : ''}
-            </option>
-          ))}
-        </select>
-      </label>
+    <Dialog open={workflowName !== ''} title={workflowName} onClose={onClose}>
+      <h3>版本图</h3>
+      <p className="muted">点一个版本查看节点。</p>
+      <VersionGraph revisions={revisions} selected={version} onSelect={setVersion} />
+      <h3>节点图</h3>
+      <p className="muted">
+        {version}
+        {revisions.find((item) => item.version === version)?.message
+          ? ` · ${revisions.find((item) => item.version === version)?.message}`
+          : ''}
+      </p>
       <Graph nodes={graph?.nodes ?? []} links={graph?.links ?? []} />
       <div className="row">
         <button
           type="button"
           disabled={busy || version === ''}
-          onClick={() => void onCheckout(Number(version))}
+          onClick={() => void onCheckout(version)}
         >
           检出这一版到 ComfyUI
         </button>
       </div>
     </Dialog>
+  )
+}
+
+function VersionChoices({
+  versions,
+  value,
+  enabled,
+  onChange,
+}: {
+  versions: WorkVersion[]
+  value: string
+  enabled: boolean
+  onChange: (version: string) => void
+}) {
+  if (!enabled) {
+    return (
+      <div className="version-field">
+        版本
+        <p className="muted">先选择 workflow。</p>
+      </div>
+    )
+  }
+  const items = [...versions].sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0))
+  return (
+    <div className="version-field">
+      版本
+      {items.length === 0 ? (
+        <p className="muted">还没有版本。</p>
+      ) : (
+        <div className="version-list" role="listbox" aria-label="版本">
+          {items.map((item) => (
+            <button
+              key={item.version}
+              type="button"
+              role="option"
+              aria-selected={item.version === value}
+              className={item.version === value ? 'picked' : undefined}
+              onClick={() => onChange(item.version)}
+            >
+              <span className="version-list-top">
+                <span>
+                  {item.version}
+                  {item.main ? ' (main)' : ''}
+                </span>
+                <span className="version-list-time">{formatVersionTime(item.createdAt)}</span>
+              </span>
+              <span className="version-list-note">{item.message?.trim() || '无说明'}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function formatVersionTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const pad = (part: number) => String(part).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+function VersionGraph({
+  revisions,
+  selected,
+  onSelect,
+}: {
+  revisions: Revision[]
+  selected: string
+  onSelect: (version: string) => void
+}) {
+  if (revisions.length === 0) return <p>还没有版本。</p>
+  const depth = new Map<string, number>()
+  const visiting = new Set<string>()
+  function depthOf(version: string): number {
+    const cached = depth.get(version)
+    if (cached !== undefined) return cached
+    if (visiting.has(version)) return 0
+    visiting.add(version)
+    const parents = revisions.find((item) => item.version === version)?.parents ?? []
+    const value =
+      parents.length === 0 ? 0 : Math.max(...parents.map((parent) => depthOf(parent))) + 1
+    depth.set(version, value)
+    return value
+  }
+  for (const revision of revisions) depthOf(revision.version)
+  const columns = new Map<number, Revision[]>()
+  for (const revision of revisions) {
+    const column = depth.get(revision.version) ?? 0
+    const list = columns.get(column) ?? []
+    list.push(revision)
+    columns.set(column, list)
+  }
+  const colWidth = 168
+  const rowHeight = 72
+  const maxRows = Math.max(...[...columns.values()].map((column) => column.length))
+  const maxColumn = Math.max(...depth.values())
+  const width = (maxColumn + 1) * colWidth + 16
+  const height = maxRows * rowHeight + 16
+  const placed = revisions.map((revision) => {
+    const column = depth.get(revision.version) ?? 0
+    const row = (columns.get(column) ?? []).indexOf(revision)
+    return { ...revision, left: 8 + column * colWidth, top: 8 + row * rowHeight }
+  })
+  const byVersion = new Map(placed.map((node) => [node.version, node]))
+  return (
+    <div className="graph" style={{ width, height }}>
+      <svg width={width} height={height}>
+        {placed.flatMap((node) =>
+          (node.parents ?? []).map((parent) => {
+            const from = byVersion.get(parent)
+            if (!from) return null
+            return (
+              <line
+                key={`${parent}-${node.version}`}
+                x1={from.left + 140}
+                y1={from.top + 26}
+                x2={node.left}
+                y2={node.top + 26}
+                stroke="#8a8175"
+              />
+            )
+          }),
+        )}
+      </svg>
+      {placed.map((node) => (
+        <button
+          key={node.id}
+          type="button"
+          className={`graph-node${node.version === selected ? ' picked' : ''}`}
+          style={{ left: node.left, top: node.top }}
+          onClick={() => onSelect(node.version)}
+        >
+          <strong>{node.version}</strong>
+          <span>
+            {[node.main ? 'main' : '', node.head ? '当前头' : ''].filter(Boolean).join(' · ') ||
+              '版本'}
+          </span>
+        </button>
+      ))}
+    </div>
   )
 }
 

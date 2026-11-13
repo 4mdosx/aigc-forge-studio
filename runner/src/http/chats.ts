@@ -22,8 +22,11 @@ export function mountChats(app: Hono, runner: Runner): void {
     const chat = await continueChat(
       runner.db,
       undefined,
-      stringField(body, 'content'),
-      chosenModel(body, client),
+      {
+        content: stringField(body, 'content'),
+        model: chosenModel(body, client),
+        system: submittedSystem(body),
+      },
       client,
       runner.now(),
     )
@@ -36,13 +39,23 @@ export function mountChats(app: Hono, runner: Runner): void {
     const chat = await continueChat(
       runner.db,
       c.req.param('id'),
-      stringField(body, 'content'),
-      chosenModel(body, client),
+      {
+        content: stringField(body, 'content'),
+        model: chosenModel(body, client),
+        system: submittedSystem(body),
+      },
       client,
       runner.now(),
     )
     return c.json(chat)
   })
+}
+
+function submittedSystem(body: Record<string, unknown>): string {
+  if (body.system === undefined) return ''
+  const system = stringField(body, 'system').trim()
+  if (system === '') throw new RunnerError('system is required')
+  return system
 }
 
 function requireChat(runner: Runner): ChatClient {

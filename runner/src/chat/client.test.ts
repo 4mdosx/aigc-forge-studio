@@ -11,7 +11,7 @@ test('the gateway client only calls a model from the list', async () => {
   })
   assert.deepEqual(client.models, ['writer', 'editor'])
   await assert.rejects(
-    () => client.complete('other', [{ role: 'user', content: 'a knight' }]),
+    () => client.complete('other', [{ role: 'user', content: 'a knight' }], ''),
     /model is not available/,
   )
 })

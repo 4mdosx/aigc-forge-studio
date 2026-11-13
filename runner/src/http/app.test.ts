@@ -65,7 +65,6 @@ test('commit, queue one task per instance, and record paths', async () => {
     body: JSON.stringify({
       name: 'character-generator',
       comfyPath: 'character-generator.json',
-      adapter,
     }),
   })
   assert.equal(created.status, 201)
@@ -98,12 +97,12 @@ test('commit, queue one task per instance, and record paths', async () => {
     headRevisionId: string
     workName: string
     comfyPath: string
-    version: number
+    version: string
   }
   assert.equal(queued.status, 'pending')
   assert.equal(queued.workName, 'picture')
   assert.equal(queued.comfyPath, 'character-generator.json')
-  assert.equal(queued.version, 1)
+  assert.match(queued.version, versionId)
   const active = (await (await app.request('/tasks')).json()) as {
     tasks: Array<{ id: string }>
   }
@@ -170,7 +169,6 @@ test('a second instance runs the next pending task', async () => {
     body: JSON.stringify({
       name: 'character-generator',
       comfyPath: 'character-generator.json',
-      adapter,
     }),
   })
   await attach(app, 'character-generator')
@@ -219,20 +217,23 @@ test('imports a workflow chosen from the ComfyUI list', async () => {
   })
   assert.equal(imported.status, 200)
   const result = (await imported.json()) as {
-    created: Array<{ name: string; version: number }>
+    created: Array<{ name: string; version: string }>
     unchanged: string[]
   }
   assert.deepEqual(
     result.created.map((item) => item.name),
     ['RM_BG'],
   )
-  assert.equal(result.created[0]?.version, 1)
+  assert.match(result.created[0]?.version ?? '', versionId)
   assert.deepEqual(result.unchanged, [])
-  const noted = await app.request('/workflows/RM_BG/revisions/1/message', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ message: '去背景' }),
-  })
+  const noted = await app.request(
+    `/workflows/RM_BG/revisions/${result.created[0]?.version}/message`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: '去背景' }),
+    },
+  )
   assert.equal(noted.status, 200)
 
   const same = (await (await app.request('/comfy/workflows')).json()) as {
@@ -283,12 +284,12 @@ test('imports a workflow chosen from the ComfyUI list', async () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'update', paths: ['RM_BG.json'] }),
     })
-  ).json()) as { updated: Array<{ name: string; version: number }> }
+  ).json()) as { updated: Array<{ name: string; version: string }> }
   assert.equal(revised.updated[0]?.name, 'RM_BG')
-  assert.equal(revised.updated[0]?.version, 1)
+  assert.equal(revised.updated[0]?.version, result.created[0]?.version)
   const history = (await (
     await app.request('/workflows/RM_BG/revisions')
-  ).json()) as { revisions: Array<{ version: number; message: string | null }> }
+  ).json()) as { revisions: Array<{ version: string; message: string | null }> }
   assert.equal(history.revisions.length, 1)
   assert.equal(history.revisions[0]?.message, '去背景')
   const covered = (await (await app.request('/comfy/workflows')).json()) as {
@@ -317,10 +318,9 @@ test('a task uses main when version is omitted, even after another branch moves'
     body: JSON.stringify({
       name: 'character-generator',
       comfyPath: 'character-generator.json',
-      adapter,
     }),
   })
-  await attach(app, 'character-generator')
+  const mainVersion = await attach(app, 'character-generator')
   await app.request('/workflows/character-generator/branches', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -337,6 +337,10 @@ test('a task uses main when version is omitted, even after another branch moves'
     body: JSON.stringify({ message: 'branch only' }),
   })
   assert.equal(committed.status, 201)
+  const branchVersion = ((await committed.json()) as { version: string })
+    .version
+  assert.match(branchVersion, versionId)
+  assert.notEqual(branchVersion, mainVersion)
   const onMain = (await (
     await app.request('/tasks', {
       method: 'POST',
@@ -348,7 +352,7 @@ test('a task uses main when version is omitted, even after another branch moves'
         payload: { text: 'a knight', seed: 1 },
       }),
     })
-  ).json()) as { version: number }
+  ).json()) as { version: string }
   const onBranch = (await (
     await app.request('/tasks', {
       method: 'POST',
@@ -357,29 +361,33 @@ test('a task uses main when version is omitted, even after another branch moves'
         task: 'text2img',
         workName: 'picture',
         workflowName: 'character-generator',
-        version: 2,
+        version: branchVersion,
         payload: { text: 'a knight', seed: 1 },
       }),
     })
-  ).json()) as { version: number }
-  assert.equal(onMain.version, 1)
-  assert.equal(onBranch.version, 2)
+  ).json()) as { version: string }
+  assert.equal(onMain.version, mainVersion)
+  assert.equal(onBranch.version, branchVersion)
 
-  const saved = await app.request('/workflows/character-generator/adapter', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ adapter }),
-  })
-  assert.equal(saved.status, 200)
-  const history = (await (
-    await app.request('/workflows/character-generator/revisions')
-  ).json()) as { revisions: unknown[] }
-  assert.equal(history.revisions.length, 2)
-  const fits = history.revisions as Array<{
-    adapter: { status: string }
-    main: boolean
-  }>
-  assert.equal(fits.find((item) => item.main)?.adapter.status, 'ready')
+  const linked = (await (await app.request('/works/picture')).json()) as {
+    workflows: Array<{
+      versions: Array<{
+        version: string
+        borrowedFrom: string | null
+        adapterStatus: { status: string }
+      }>
+    }>
+  }
+  assert.equal(linked.workflows.length, 1)
+  const versions = linked.workflows[0]?.versions ?? []
+  assert.equal(
+    versions.find((item) => item.version === mainVersion)?.adapterStatus.status,
+    'ready',
+  )
+  assert.equal(
+    versions.find((item) => item.version === branchVersion)?.borrowedFrom,
+    mainVersion,
+  )
 
   const detached = await app.request('/works/picture/workflows/detach', {
     method: 'POST',
@@ -393,10 +401,13 @@ test('a task uses main when version is omitted, even after another branch moves'
   assert.deepEqual(work.workflows, [])
 })
 
+const versionId = /^[0-9a-z]{8}$/
+
 async function attach(
   app: ReturnType<typeof createApp>,
   workflowName: string,
-): Promise<void> {
+  version?: string,
+): Promise<string> {
   const existing = await app.request('/works/picture')
   if (existing.status === 404) {
     const created = await app.request('/works', {
@@ -414,12 +425,27 @@ async function attach(
     })
     assert.equal(created.status, 201)
   }
+  const target =
+    version ??
+    (
+      (await (
+        await app.request(`/workflows/${workflowName}/revisions`)
+      ).json()) as { revisions: Array<{ version: string; main?: boolean }> }
+    ).revisions.find((item) => item.main)?.version
+  if (!target) throw new Error('main version missing')
   const linked = await app.request('/works/picture/workflows', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ workflowName }),
   })
-  assert.equal(linked.status, 200)
+  if (linked.status !== 409) assert.equal(linked.status, 200)
+  const saved = await app.request('/works/picture/workflows/adapter', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ workflowName, version: target, adapter }),
+  })
+  assert.equal(saved.status, 200)
+  return target
 }
 
 function testRunner(clients: ComfyClient[]): Runner {

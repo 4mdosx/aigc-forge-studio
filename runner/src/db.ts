@@ -1,8 +1,12 @@
+import { randomInt } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { RunnerError } from './errors.ts'
+
+const VERSION_LETTERS = 'abcdefghijklmnopqrstuvwxyz'
+const VERSION_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
 
 const taskColumns = `
   id TEXT PRIMARY KEY,
@@ -42,22 +46,27 @@ CREATE TABLE IF NOT EXISTS workflows (
   name TEXT NOT NULL UNIQUE,
   comfy_path TEXT NOT NULL,
   current_branch TEXT NOT NULL,
-  work_id TEXT,
-  adapter_json TEXT,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY (work_id) REFERENCES works(id)
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workflow_revisions (
   id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL,
-  version INTEGER NOT NULL,
+  version TEXT NOT NULL,
   ui_json TEXT NOT NULL,
   api_json TEXT NOT NULL,
-  adapter_json TEXT,
   message TEXT,
   created_at TEXT NOT NULL,
   UNIQUE (workflow_id, version),
+  FOREIGN KEY (workflow_id) REFERENCES workflows(id)
+);
+
+CREATE TABLE IF NOT EXISTS work_workflows (
+  work_id TEXT NOT NULL,
+  workflow_id TEXT NOT NULL,
+  adapter_json TEXT NOT NULL,
+  PRIMARY KEY (work_id, workflow_id),
+  FOREIGN KEY (work_id) REFERENCES works(id),
   FOREIGN KEY (workflow_id) REFERENCES workflows(id)
 );
 
@@ -92,6 +101,8 @@ CREATE INDEX IF NOT EXISTS tasks_by_status ON tasks (status, created_at);
 CREATE TABLE IF NOT EXISTS chats (
   id TEXT PRIMARY KEY,
   title TEXT NOT NULL,
+  chat_type TEXT,
+  system_text TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -121,20 +132,24 @@ export interface WorkflowRow {
   name: string
   comfy_path: string
   current_branch: string
-  work_id: string | null
-  adapter_json: string | null
   created_at: string
 }
 
 export interface RevisionRow {
   id: string
   workflow_id: string
-  version: number
+  version: string
   ui_json: string
   api_json: string
-  adapter_json: string | null
   message: string | null
   created_at: string
+}
+
+export interface WorkWorkflowRow {
+  work_id: string
+  workflow_id: string
+  version: string
+  adapter_json: string | null
 }
 
 export interface BranchRow {
@@ -176,23 +191,320 @@ export function openDatabase(path: string): DatabaseSync {
 }
 
 function migrate(db: DatabaseSync): void {
-  addColumn(db, 'workflows', 'work_id', 'TEXT')
-  addColumn(db, 'workflows', 'adapter_json', 'TEXT')
   addColumn(db, 'tasks', 'workflow_id', 'TEXT')
   addColumn(db, 'tasks', 'work_id', 'TEXT')
   addColumn(db, 'tasks', 'comfy_path', 'TEXT')
   addColumn(db, 'tasks', 'adapter_json', 'TEXT')
   addColumn(db, 'tasks', 'api_json', 'TEXT')
-  db.exec(
-    `UPDATE workflows
-     SET adapter_json = (
-       SELECT adapter_json FROM workflow_revisions
-       WHERE workflow_id = workflows.id AND adapter_json IS NOT NULL
-       ORDER BY version DESC LIMIT 1
-     )
-     WHERE adapter_json IS NULL`,
-  )
+  rewriteVersions(db)
+  moveAdapters(db)
+  backfillTaskAdapters(db)
+  collapseWorkWorkflows(db)
+  backfillTaskAdapters(db)
+  rebuildWorkflows(db)
+  rebuildRevisions(db)
   dropLlmTasks(db)
+  addColumn(db, 'chats', 'chat_type', 'TEXT')
+  addColumn(db, 'chats', 'system_text', 'TEXT')
+}
+
+function rewriteVersions(db: DatabaseSync): void {
+  const rows = db
+    .prepare('SELECT id, workflow_id, version FROM workflow_revisions')
+    .all() as Array<{
+    id: string
+    workflow_id: string
+    version: string | number
+  }>
+  const stale = rows.filter((row) => !isVersionId(String(row.version)))
+  if (stale.length === 0) return
+  const bindings = columnNames(db, 'work_workflows').includes('version')
+  withoutForeignKeys(db, () => {
+    transaction(db, () => {
+      for (const row of stale) {
+        const next = allocateVersion(db, row.workflow_id)
+        if (bindings) {
+          db.prepare(
+            `UPDATE work_workflows SET version = ?
+             WHERE workflow_id = ? AND version = ?`,
+          ).run(next, row.workflow_id, String(row.version))
+        }
+        db.prepare(
+          'UPDATE workflow_revisions SET version = ? WHERE id = ?',
+        ).run(next, row.id)
+      }
+    })
+  })
+}
+
+function moveAdapters(db: DatabaseSync): void {
+  const workflowColumns = columnNames(db, 'workflows')
+  if (!workflowColumns.includes('work_id')) return
+  const revisionHasAdapter = columnNames(db, 'workflow_revisions').includes(
+    'adapter_json',
+  )
+  const workflowHasAdapter = workflowColumns.includes('adapter_json')
+  const perVersion = columnNames(db, 'work_workflows').includes('version')
+  const workflows = db
+    .prepare(
+      `SELECT id, work_id, ${workflowHasAdapter ? 'adapter_json' : 'NULL AS adapter_json'}
+       FROM workflows WHERE work_id IS NOT NULL`,
+    )
+    .all() as Array<{
+    id: string
+    work_id: string
+    adapter_json: string | null
+  }>
+  for (const workflow of workflows) {
+    const revisions = db
+      .prepare(
+        `SELECT version, ${revisionHasAdapter ? 'adapter_json' : 'NULL AS adapter_json'}
+         FROM workflow_revisions WHERE workflow_id = ?`,
+      )
+      .all(workflow.id) as Array<{
+      version: string | number
+      adapter_json: string | null
+    }>
+    if (perVersion) {
+      const insert = db.prepare(
+        `INSERT OR IGNORE INTO work_workflows
+           (work_id, workflow_id, version, adapter_json)
+         VALUES (?, ?, ?, ?)`,
+      )
+      for (const revision of revisions) {
+        insert.run(
+          workflow.work_id,
+          workflow.id,
+          String(revision.version),
+          workflow.adapter_json ?? revision.adapter_json,
+        )
+      }
+      continue
+    }
+    const map: Record<string, unknown> = {}
+    for (const revision of revisions) {
+      const adapter = workflow.adapter_json ?? revision.adapter_json
+      if (!adapter) continue
+      map[String(revision.version)] = JSON.parse(adapter) as unknown
+    }
+    db.prepare(
+      `INSERT OR IGNORE INTO work_workflows (work_id, workflow_id, adapter_json)
+       VALUES (?, ?, ?)`,
+    ).run(workflow.work_id, workflow.id, JSON.stringify(map))
+  }
+}
+
+function backfillTaskAdapters(db: DatabaseSync): void {
+  if (!columnNames(db, 'tasks').includes('adapter_json')) return
+  if (!columnNames(db, 'work_workflows').includes('adapter_json')) return
+  if (columnNames(db, 'work_workflows').includes('version')) {
+    db.exec(
+      `UPDATE tasks
+       SET adapter_json = (
+         SELECT b.adapter_json
+         FROM work_workflows b
+         JOIN workflow_revisions r
+           ON r.workflow_id = b.workflow_id AND r.version = b.version
+         WHERE r.id = tasks.head_revision_id
+           AND b.adapter_json IS NOT NULL
+           AND (tasks.work_id IS NULL OR b.work_id = tasks.work_id)
+       )
+       WHERE adapter_json IS NULL
+         AND (
+           SELECT COUNT(*)
+           FROM work_workflows b
+           JOIN workflow_revisions r
+             ON r.workflow_id = b.workflow_id AND r.version = b.version
+           WHERE r.id = tasks.head_revision_id
+             AND b.adapter_json IS NOT NULL
+             AND (tasks.work_id IS NULL OR b.work_id = tasks.work_id)
+         ) = 1`,
+    )
+    return
+  }
+  const tasks = db
+    .prepare(
+      `SELECT id, work_id, head_revision_id FROM tasks
+       WHERE adapter_json IS NULL AND head_revision_id IS NOT NULL`,
+    )
+    .all() as Array<{
+    id: string
+    work_id: string | null
+    head_revision_id: string
+  }>
+  const update = db.prepare(
+    'UPDATE tasks SET adapter_json = ? WHERE id = ? AND adapter_json IS NULL',
+  )
+  for (const task of tasks) {
+    const revision = db
+      .prepare(
+        'SELECT workflow_id, version FROM workflow_revisions WHERE id = ?',
+      )
+      .get(task.head_revision_id) as
+      { workflow_id: string; version: string } | undefined
+    if (!revision) continue
+    const links = db
+      .prepare(
+        'SELECT work_id, adapter_json FROM work_workflows WHERE workflow_id = ?',
+      )
+      .all(revision.workflow_id) as Array<{
+      work_id: string
+      adapter_json: string
+    }>
+    const matches = links.filter(
+      (link) => task.work_id === null || link.work_id === task.work_id,
+    )
+    if (matches.length !== 1) continue
+    const map = adapterObject(matches[0]?.adapter_json)
+    const own = map[String(revision.version)]
+    if (own === undefined) continue
+    update.run(JSON.stringify(own), task.id)
+  }
+}
+
+function collapseWorkWorkflows(db: DatabaseSync): void {
+  if (!columnNames(db, 'work_workflows').includes('version')) return
+  const rows = db
+    .prepare(
+      'SELECT work_id, workflow_id, version, adapter_json FROM work_workflows',
+    )
+    .all() as Array<{
+    work_id: string
+    workflow_id: string
+    version: string
+    adapter_json: string | null
+  }>
+  const grouped = new Map<string, Record<string, unknown>>()
+  for (const row of rows) {
+    const key = `${row.work_id}\0${row.workflow_id}`
+    const map = grouped.get(key) ?? {}
+    if (row.adapter_json) {
+      map[String(row.version)] = JSON.parse(row.adapter_json) as unknown
+    }
+    grouped.set(key, map)
+  }
+  withoutForeignKeys(db, () => {
+    transaction(db, () => {
+      db.exec(`
+        CREATE TABLE work_workflows_next (
+          work_id TEXT NOT NULL,
+          workflow_id TEXT NOT NULL,
+          adapter_json TEXT NOT NULL,
+          PRIMARY KEY (work_id, workflow_id),
+          FOREIGN KEY (work_id) REFERENCES works(id),
+          FOREIGN KEY (workflow_id) REFERENCES workflows(id)
+        );
+      `)
+      const insert = db.prepare(
+        `INSERT INTO work_workflows_next (work_id, workflow_id, adapter_json)
+         VALUES (?, ?, ?)`,
+      )
+      for (const [key, map] of grouped) {
+        const split = key.indexOf('\0')
+        insert.run(
+          key.slice(0, split),
+          key.slice(split + 1),
+          JSON.stringify(map),
+        )
+      }
+      db.exec(`
+        DROP TABLE work_workflows;
+        ALTER TABLE work_workflows_next RENAME TO work_workflows;
+      `)
+    })
+  })
+}
+
+function adapterObject(raw: string | null): Record<string, unknown> {
+  if (!raw) return {}
+  const parsed = JSON.parse(raw) as unknown
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+  return parsed as Record<string, unknown>
+}
+
+function rebuildWorkflows(db: DatabaseSync): void {
+  const columns = columnNames(db, 'workflows')
+  if (!columns.includes('work_id') && !columns.includes('adapter_json')) return
+  withoutForeignKeys(db, () => {
+    transaction(db, () => {
+      db.exec(`
+        CREATE TABLE workflows_next (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          comfy_path TEXT NOT NULL,
+          current_branch TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        INSERT INTO workflows_next
+          (id, name, comfy_path, current_branch, created_at)
+        SELECT id, name, comfy_path, current_branch, created_at FROM workflows;
+        DROP TABLE workflows;
+        ALTER TABLE workflows_next RENAME TO workflows;
+      `)
+    })
+  })
+}
+
+function rebuildRevisions(db: DatabaseSync): void {
+  if (!columnNames(db, 'workflow_revisions').includes('adapter_json')) return
+  withoutForeignKeys(db, () => {
+    transaction(db, () => {
+      db.exec(`
+        CREATE TABLE workflow_revisions_next (
+          id TEXT PRIMARY KEY,
+          workflow_id TEXT NOT NULL,
+          version TEXT NOT NULL,
+          ui_json TEXT NOT NULL,
+          api_json TEXT NOT NULL,
+          message TEXT,
+          created_at TEXT NOT NULL,
+          UNIQUE (workflow_id, version),
+          FOREIGN KEY (workflow_id) REFERENCES workflows(id)
+        );
+        INSERT INTO workflow_revisions_next
+          (id, workflow_id, version, ui_json, api_json, message, created_at)
+        SELECT id, workflow_id, version, ui_json, api_json, message, created_at
+        FROM workflow_revisions;
+        DROP TABLE workflow_revisions;
+        ALTER TABLE workflow_revisions_next RENAME TO workflow_revisions;
+      `)
+    })
+  })
+}
+
+function withoutForeignKeys(db: DatabaseSync, run: () => void): void {
+  db.exec('PRAGMA foreign_keys = OFF')
+  try {
+    run()
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+function columnNames(db: DatabaseSync, table: string): string[] {
+  return (
+    db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+  ).map((column) => column.name)
+}
+
+export function isVersionId(value: string): boolean {
+  return /^[0-9a-z]{8}$/.test(value)
+}
+
+export function allocateVersion(db: DatabaseSync, workflowId: string): string {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    let version = VERSION_LETTERS[randomInt(VERSION_LETTERS.length)] ?? 'a'
+    for (let index = 0; index < 7; index += 1) {
+      version += VERSION_ALPHABET[randomInt(VERSION_ALPHABET.length)]
+    }
+    const taken = db
+      .prepare(
+        'SELECT 1 FROM workflow_revisions WHERE workflow_id = ? AND version = ?',
+      )
+      .get(workflowId, version)
+    if (!taken) return version
+  }
+  throw new RunnerError('could not allocate a version id')
 }
 
 function dropLlmTasks(db: DatabaseSync): void {

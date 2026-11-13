@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { workflowName, type ComfyClient } from '../comfy/client.ts'
 import { promptFromUi } from '../comfy/prompt.ts'
 import {
+  allocateVersion,
   branchOf,
   revisionById,
   transaction,
@@ -13,7 +14,6 @@ import {
   type WorkflowRow,
 } from '../db.ts'
 import { RunnerError } from '../errors.ts'
-import { assertAdapter, parseAdapter } from './binding.ts'
 import type { Prompt } from './graph.ts'
 
 export type SyncStatus = 'created' | 'updated' | 'unchanged'
@@ -25,7 +25,6 @@ export async function readAndCreate(
     name: string
     comfyPath: string
     message?: string
-    adapter?: unknown
   },
   now: Date,
 ): Promise<{ workflow: WorkflowRow; revision: RevisionRow }> {
@@ -103,7 +102,7 @@ export async function checkout(
   db: DatabaseSync,
   client: ComfyClient,
   name: string,
-  version?: number,
+  version?: string,
 ): Promise<void> {
   const workflow = workflowByName(db, name)
   const revision =
@@ -122,7 +121,7 @@ export async function checkout(
 export function updateRevisionMessage(
   db: DatabaseSync,
   name: string,
-  version: number,
+  version: string,
   message: string | null,
 ): void {
   const workflow = workflowByName(db, name)
@@ -136,7 +135,7 @@ export function updateRevisionMessage(
 function revisionByVersion(
   db: DatabaseSync,
   workflowId: string,
-  version: number,
+  version: string,
 ): RevisionRow {
   const row = db
     .prepare(
@@ -241,32 +240,29 @@ function insertFirst(
   name: string,
   path: string,
   loaded: { ui: unknown; api: Prompt },
-  input: { message?: string; adapter?: unknown },
+  input: { message?: string },
   now: Date,
 ): { workflow: WorkflowRow; revision: RevisionRow } {
   if (db.prepare('SELECT id FROM workflows WHERE name = ?').get(name)) {
     throw new RunnerError(`workflow ${name} already exists`)
   }
-  const adapterJson =
-    input.adapter === undefined
-      ? null
-      : JSON.stringify(checkedAdapter(loaded.api, input.adapter))
   const createdAt = now.toISOString()
   return transaction(db, () => {
     const workflowId = randomUUID()
     const revisionId = randomUUID()
     db.prepare(
       `INSERT INTO workflows
-        (id, name, comfy_path, current_branch, work_id, adapter_json, created_at)
-       VALUES (?, ?, ?, 'main', NULL, ?, ?)`,
-    ).run(workflowId, name, path, adapterJson, createdAt)
+        (id, name, comfy_path, current_branch, created_at)
+       VALUES (?, ?, ?, 'main', ?)`,
+    ).run(workflowId, name, path, createdAt)
     db.prepare(
       `INSERT INTO workflow_revisions
-        (id, workflow_id, version, ui_json, api_json, adapter_json, message, created_at)
-       VALUES (?, ?, 1, ?, ?, NULL, ?, ?)`,
+        (id, workflow_id, version, ui_json, api_json, message, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       revisionId,
       workflowId,
+      allocateVersion(db, workflowId),
       JSON.stringify(loaded.ui),
       JSON.stringify(loaded.api),
       input.message ?? null,
@@ -304,22 +300,16 @@ function appendRevision(
   return transaction(db, () => {
     const parent = headRevision(db, workflow)
     const branch = branchOf(db, workflow.id, workflow.current_branch)
-    if (workflow.adapter_json) {
-      assertAdapter(
-        loaded.api,
-        parseAdapter(JSON.parse(workflow.adapter_json) as unknown),
-      )
-    }
     const revisionId = randomUUID()
     const createdAt = now.toISOString()
     db.prepare(
       `INSERT INTO workflow_revisions
-        (id, workflow_id, version, ui_json, api_json, adapter_json, message, created_at)
-       VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
+        (id, workflow_id, version, ui_json, api_json, message, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       revisionId,
       workflow.id,
-      nextVersion(db, workflow.id),
+      allocateVersion(db, workflow.id),
       JSON.stringify(loaded.ui),
       JSON.stringify(loaded.api),
       input.message ?? null,
@@ -357,21 +347,6 @@ function ordered(value: unknown): unknown {
       .sort()
       .map((key) => [key, ordered((value as Record<string, unknown>)[key])]),
   )
-}
-
-function checkedAdapter(api: Prompt, provided: unknown) {
-  const adapter = parseAdapter(provided)
-  assertAdapter(api, adapter)
-  return adapter
-}
-
-function nextVersion(db: DatabaseSync, workflowId: string): number {
-  const row = db
-    .prepare(
-      'SELECT COALESCE(MAX(version), 0) + 1 AS version FROM workflow_revisions WHERE workflow_id = ?',
-    )
-    .get(workflowId) as { version: number }
-  return row.version
 }
 
 function requiredName(name: string): string {

@@ -12,6 +12,12 @@ interface ChatRow {
   updated_at: string
 }
 
+export interface ChatTurnInput {
+  content: string
+  model: string
+  system: string
+}
+
 interface ChatMessageRow {
   id: string
   chat_id: string
@@ -23,22 +29,25 @@ interface ChatMessageRow {
 export async function continueChat(
   db: DatabaseSync,
   chatId: string | undefined,
-  content: string,
-  model: string,
+  input: ChatTurnInput,
   client: ChatClient,
   now: Date,
 ): Promise<Record<string, unknown>> {
-  const text = content.trim()
+  const text = input.content.trim()
   if (text === '') throw new RunnerError('content is required')
   const existing = chatId === undefined ? undefined : chatById(db, chatId)
   const history = existing ? messagesOf(db, existing.id) : []
-  const reply = await client.complete(model, [
-    ...history.map((message) => ({
-      role: message.role,
-      content: message.content,
-    })),
-    { role: 'user', content: text },
-  ])
+  const reply = await client.complete(
+    input.model,
+    [
+      ...history.map((message) => ({
+        role: message.role,
+        content: message.content,
+      })),
+      { role: 'user' as const, content: text },
+    ],
+    input.system,
+  )
   const stamp = now.toISOString()
   const id = existing?.id ?? randomUUID()
   transaction(db, () => {
