@@ -9,7 +9,7 @@ import { taskById, type TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import { completePrompt } from '../llm.ts'
 import type { Prompt } from '../workflow/graph.ts'
-import { preparedPrompt, resultPaths } from './records.ts'
+import { preparedPrompt, resultPaths, taskAdapterJson } from './records.ts'
 
 export interface Runner {
   db: DatabaseSync
@@ -92,10 +92,7 @@ async function settleComfy(runner: Runner): Promise<void> {
     try {
       assertSuccess(entry)
       const prompt = preparedPrompt(runner.db, task, runner.randomSeed)
-      const revision = runner.db
-        .prepare('SELECT adapter_json FROM workflow_revisions WHERE id = ?')
-        .get(task.head_revision_id) as { adapter_json: string }
-      const paths = resultPaths(prompt, revision.adapter_json, entry)
+      const paths = resultPaths(prompt, taskAdapterJson(runner.db, task), entry)
       finish(runner, task.id, 'completed', paths)
     } catch (err) {
       finish(runner, task.id, 'failed', { error: messageOf(err) })

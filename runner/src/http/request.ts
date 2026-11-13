@@ -1,9 +1,12 @@
 import type { Context } from 'hono'
 
+import type { DatabaseSync } from 'node:sqlite'
+
 import type { ComfyClient } from '../comfy/client.ts'
 import type { TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import type { Runner } from '../task/queue.ts'
+import { workById } from '../work/works.ts'
 
 export function editor(runner: Runner): ComfyClient {
   const client = runner.clients[0]
@@ -11,12 +14,27 @@ export function editor(runner: Runner): ComfyClient {
   return client
 }
 
-export function taskJson(task: TaskRow): Record<string, unknown> {
+export function taskJson(
+  db: DatabaseSync,
+  task: TaskRow,
+): Record<string, unknown> {
+  const version = task.head_revision_id
+    ? (
+        db
+          .prepare('SELECT version FROM workflow_revisions WHERE id = ?')
+          .get(task.head_revision_id) as { version: number } | undefined
+      )?.version
+    : undefined
   return {
     id: task.id,
     executor: task.executor,
     task: task.task,
+    workId: task.work_id,
+    workName: task.work_id ? workById(db, task.work_id).name : null,
+    workflowId: task.workflow_id,
     workflowName: task.workflow_name,
+    comfyPath: task.comfy_path,
+    version: version ?? null,
     headRevisionId: task.head_revision_id,
     parentTaskId: task.parent_task_id,
     status: task.status,
@@ -68,6 +86,20 @@ export function objectField(
     throw new RunnerError(`${key} must be an object`)
   }
   return value as Record<string, unknown>
+}
+
+export function optionalVersion(
+  body: Record<string, unknown>,
+): number | undefined {
+  if (body.version === undefined) return undefined
+  if (
+    typeof body.version !== 'number' ||
+    !Number.isInteger(body.version) ||
+    body.version < 1
+  ) {
+    throw new RunnerError('version must be a positive integer')
+  }
+  return body.version
 }
 
 export function bytesOf(bytes: Uint8Array): ArrayBuffer {

@@ -7,7 +7,11 @@ import {
   type WorkflowRow,
 } from '../db.ts'
 import { RunnerError } from '../errors.ts'
+import type { DatabaseSync } from 'node:sqlite'
+
 import type { Runner } from '../task/queue.ts'
+import { suggestAdapter } from '../workflow/binding.ts'
+import type { Prompt } from '../workflow/graph.ts'
 import {
   checkout,
   commitHead,
@@ -18,6 +22,7 @@ import {
   switchBranch,
   syncFromComfy,
 } from '../workflow/revisions.ts'
+import { saveAdapter, workById } from '../work/works.ts'
 import { editor, jsonObject, stringField, taskJson } from './request.ts'
 
 export function mountWorkflows(app: Hono, runner: Runner): void {
@@ -78,12 +83,7 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
       .prepare('SELECT * FROM workflows ORDER BY name')
       .all() as unknown as WorkflowRow[]
     return c.json({
-      workflows: rows.map((row) => ({
-        id: row.id,
-        name: row.name,
-        comfyPath: row.comfy_path,
-        currentBranch: row.current_branch,
-      })),
+      workflows: rows.map((row) => workflowJson(runner.db, row)),
     })
   })
 
@@ -106,6 +106,17 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
       { id: created.workflow.id, revisionId: created.revision.id },
       201,
     )
+  })
+
+  app.post('/workflows/:name/adapter', async (c) => {
+    const body = await jsonObject(c.req)
+    const workflow = saveAdapter(runner.db, c.req.param('name'), body.adapter)
+    return c.json({
+      name: workflow.name,
+      adapter: workflow.adapter_json
+        ? (JSON.parse(workflow.adapter_json) as unknown)
+        : null,
+    })
   })
 
   app.post('/workflows/:name/switch', async (c) => {
@@ -167,7 +178,6 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
         ...(body.message === undefined
           ? {}
           : { message: stringField(body, 'message') }),
-        ...(body.adapter === undefined ? {} : { adapter: body.adapter }),
       },
       runner.now(),
     )
@@ -178,21 +188,23 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
     const workflow = workflowByName(runner.db, c.req.param('name'))
     const rows = runner.db
       .prepare(
-        `SELECT id, version, message, created_at FROM workflow_revisions
-         WHERE workflow_id = ? ORDER BY version`,
+        `SELECT r.id, r.version, r.message, r.created_at, r.api_json,
+                r.id = b.head_revision_id AS head
+         FROM workflow_revisions r
+         JOIN workflow_branches b
+           ON b.workflow_id = r.workflow_id AND b.name = ?
+         WHERE r.workflow_id = ?
+         ORDER BY r.version`,
       )
-      .all(workflow.id) as unknown as Array<{
-      id: string
-      version: number
-      message: string | null
-      created_at: string
-    }>
+      .all(workflow.current_branch, workflow.id) as unknown as RevisionListRow[]
     return c.json({
       revisions: rows.map((row) => ({
         id: row.id,
         version: row.version,
         message: row.message,
         createdAt: row.created_at,
+        head: Boolean(row.head),
+        suggestedAdapter: suggestAdapter(JSON.parse(row.api_json) as Prompt),
       })),
     })
   })
@@ -204,8 +216,17 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
         'SELECT * FROM tasks WHERE head_revision_id = ? ORDER BY created_at',
       )
       .all(c.req.param('id')) as unknown as TaskRow[]
-    return c.json({ tasks: rows.map(taskJson) })
+    return c.json({ tasks: rows.map((row) => taskJson(runner.db, row)) })
   })
+}
+
+interface RevisionListRow {
+  id: string
+  version: number
+  message: string | null
+  created_at: string
+  api_json: string
+  head: number
 }
 
 interface SyncRow {
@@ -213,6 +234,33 @@ interface SyncRow {
   name: string
   id: string
   version: number
+}
+
+function workflowJson(db: DatabaseSync, row: WorkflowRow) {
+  const main = db
+    .prepare(
+      `SELECT r.api_json
+       FROM workflow_branches b
+       JOIN workflow_revisions r ON r.id = b.head_revision_id
+       WHERE b.workflow_id = ? AND b.name = 'main'`,
+    )
+    .get(row.id) as { api_json: string } | undefined
+  const adapter = row.adapter_json
+    ? (JSON.parse(row.adapter_json) as unknown)
+    : null
+  return {
+    id: row.id,
+    name: row.name,
+    comfyPath: row.comfy_path,
+    currentBranch: row.current_branch,
+    workId: row.work_id,
+    workName: row.work_id ? workById(db, row.work_id).name : null,
+    adapter,
+    suggestedAdapter:
+      adapter || !main
+        ? null
+        : suggestAdapter(JSON.parse(main.api_json) as Prompt),
+  }
 }
 
 function libraryName(path: string): string {

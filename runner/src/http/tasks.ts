@@ -4,7 +4,13 @@ import { taskById } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import { createTask } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
-import { jsonObject, objectField, stringField, taskJson } from './request.ts'
+import {
+  jsonObject,
+  objectField,
+  optionalVersion,
+  stringField,
+  taskJson,
+} from './request.ts'
 
 export function mountTasks(app: Hono, runner: Runner): void {
   app.post('/tasks', async (c) => {
@@ -18,9 +24,15 @@ export function mountTasks(app: Hono, runner: Runner): void {
       {
         executor,
         task: stringField(body, 'task'),
+        ...(body.workName === undefined
+          ? {}
+          : { workName: stringField(body, 'workName') }),
         ...(body.workflowName === undefined
           ? {}
           : { workflowName: stringField(body, 'workflowName') }),
+        ...(optionalVersion(body) === undefined
+          ? {}
+          : { version: optionalVersion(body) }),
         ...(body.payload === undefined
           ? {}
           : { payload: objectField(body, 'payload') }),
@@ -31,11 +43,11 @@ export function mountTasks(app: Hono, runner: Runner): void {
       runner.now(),
       runner.randomSeed,
     )
-    return c.json(taskJson(task), 201)
+    return c.json(taskJson(runner.db, task), 201)
   })
 
   app.get('/tasks/:id', (c) =>
-    c.json(taskJson(taskById(runner.db, c.req.param('id')))),
+    c.json(taskJson(runner.db, taskById(runner.db, c.req.param('id')))),
   )
 
   app.post('/tasks/:id/cancel', async (c) => {
@@ -49,7 +61,7 @@ export function mountTasks(app: Hono, runner: Runner): void {
         .run(now, task.id)
       if (updated.changes !== 1)
         throw new RunnerError('task is no longer pending')
-      return c.json(taskJson(taskById(runner.db, task.id)))
+      return c.json(taskJson(runner.db, taskById(runner.db, task.id)))
     }
     if (task.status !== 'running') throw new RunnerError('task is not running')
     if (task.executor === 'llm') {
@@ -65,6 +77,6 @@ export function mountTasks(app: Hono, runner: Runner): void {
         `UPDATE tasks SET status = 'cancelled', completed_at = ? WHERE id = ? AND status = 'running'`,
       )
       .run(now, task.id)
-    return c.json(taskJson(taskById(runner.db, task.id)))
+    return c.json(taskJson(runner.db, taskById(runner.db, task.id)))
   })
 }

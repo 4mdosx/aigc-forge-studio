@@ -25,6 +25,54 @@ export function parseAdapter(raw: unknown): AdapterMap {
   }
 }
 
+export function suggestAdapter(prompt: Prompt): AdapterMap | null {
+  const inputs: Record<string, Binding> = {}
+  const outputs: Record<string, Binding> = {}
+  const loaders = nodesOf(prompt, 'LoadImage')
+  const loader = loaders[0]
+  if (loaders.length === 1 && loader) {
+    inputs.path = titled(
+      { class_type: 'LoadImage', input: 'image', upload: true },
+      loader[1],
+    )
+  }
+  const clips = nodesOf(prompt, 'CLIPTextEncode')
+  const positive = clips.filter(([, node]) =>
+    /positive/i.test(node._meta?.title ?? ''),
+  )
+  const textNode =
+    positive.length === 1
+      ? positive[0]
+      : clips.length === 1
+        ? clips[0]
+        : undefined
+  if (textNode) {
+    inputs.text = titled(
+      { class_type: 'CLIPTextEncode', input: 'text' },
+      textNode[1],
+    )
+  }
+  const samplers = Object.entries(prompt).filter(([, node]) =>
+    samplerTypes.has(node.class_type),
+  )
+  const sampler = samplers[0]
+  if (samplers.length === 1 && sampler) {
+    inputs.seed = titled(
+      { class_type: sampler[1].class_type, input: 'seed' },
+      sampler[1],
+    )
+  }
+  const saves = Object.entries(prompt).filter(([, node]) =>
+    saveTypes.has(node.class_type),
+  )
+  const save = saves[0]
+  if (saves.length === 1 && save) {
+    outputs.images = titled({ class_type: save[1].class_type }, save[1])
+  }
+  if (Object.keys(inputs).length === 0) return null
+  return { inputs, outputs }
+}
+
 export function assertAdapter(prompt: Prompt, adapter: AdapterMap): void {
   for (const binding of Object.values(adapter.inputs))
     matchNode(prompt, binding)
@@ -84,6 +132,24 @@ export function matchNode(
     )
   }
   return { id, node }
+}
+
+const samplerTypes = new Set(['KSampler', 'KSamplerAdvanced'])
+const saveTypes = new Set(['SaveImage', 'SaveImageAdvanced'])
+
+function nodesOf(
+  prompt: Prompt,
+  classType: string,
+): Array<[string, WorkflowNode]> {
+  return Object.entries(prompt).filter(
+    ([, node]) => node.class_type === classType,
+  )
+}
+
+function titled(binding: Binding, node: WorkflowNode): Binding {
+  const title = node._meta?.title
+  if (title) binding.name = title
+  return binding
 }
 
 function seedValue(

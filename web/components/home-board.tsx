@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { useEffect, useState } from 'react'
 
 import { api } from '@/lib/api'
-import type { Task, Workflow } from '@/lib/types'
+import type { Task, Work, Workflow } from '@/lib/types'
 
 interface ComfyWorkflow {
   path: string
@@ -13,6 +13,11 @@ interface ComfyWorkflow {
 }
 
 export function HomeBoard() {
+  const [works, setWorks] = useState<Work[]>([])
+  const [workName, setWorkName] = useState('')
+  const [semantic, setSemantic] = useState(
+    '{\n  "inputs": {\n    "text": { "type": "string" },\n    "seed": { "type": "seed" }\n  }\n}',
+  )
   const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [remote, setRemote] = useState<ComfyWorkflow[]>([])
   const [selected, setSelected] = useState<string[]>([])
@@ -22,10 +27,12 @@ export function HomeBoard() {
   const [busy, setBusy] = useState(false)
 
   async function load() {
-    const [library, catalog] = await Promise.all([
+    const [library, catalog, jobs] = await Promise.all([
       api<{ workflows: Workflow[] }>('workflows'),
       api<{ workflows: ComfyWorkflow[] }>('comfy/workflows'),
+      api<{ works: Work[] }>('works'),
     ])
+    setWorks(jobs.works)
     setWorkflows(library.workflows)
     setRemote(catalog.workflows)
     setSelected((current) =>
@@ -75,7 +82,7 @@ export function HomeBoard() {
       })
       const lines = [
         ...result.created.map((item) => `${item.name} 已入库`),
-        ...result.updated.map((item) => `${item.name} 已创建版本 v${item.version}`),
+        ...result.updated.map((item) => `${item.name} 已覆盖当前版本`),
         ...result.unchanged.map((item) => `${item.name} 已入库`),
       ]
       setNotice(lines.join('\n'))
@@ -115,6 +122,71 @@ export function HomeBoard() {
     <>
       {notice ? <div className="note">{notice}</div> : null}
       {error ? <div className="error">{error}</div> : null}
+      <section className="panel">
+        <h2>Work</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>字段</th>
+              <th>workflow</th>
+            </tr>
+          </thead>
+          <tbody>
+            {works.length === 0 ? (
+              <tr>
+                <td colSpan={3}>还没有 Work。</td>
+              </tr>
+            ) : (
+              works.map((work) => (
+                <tr key={work.id}>
+                  <td>
+                    <Link href={`/works/${encodeURIComponent(work.name)}`}>{work.name}</Link>
+                  </td>
+                  <td className="mono">{Object.keys(work.semantic.inputs).join(', ')}</td>
+                  <td>{work.workflows.map((item) => item.name).join(', ') || '—'}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            void (async () => {
+              setBusy(true)
+              setError('')
+              try {
+                const parsed = JSON.parse(semantic) as unknown
+                await api('works', {
+                  method: 'POST',
+                  body: JSON.stringify({ name: workName, semantic: parsed }),
+                })
+                setWorkName('')
+                await load()
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err))
+              } finally {
+                setBusy(false)
+              }
+            })()
+          }}
+        >
+          <div className="grid">
+            <label>
+              名称
+              <input value={workName} onChange={(event) => setWorkName(event.target.value)} />
+            </label>
+            <label>
+              语义配置
+              <textarea value={semantic} onChange={(event) => setSemantic(event.target.value)} />
+            </label>
+          </div>
+          <div className="row">
+            <button disabled={busy || workName.trim() === ''}>建立 Work</button>
+          </div>
+        </form>
+      </section>
       <section className="panel">
         <h2>工作流</h2>
         <table>
@@ -175,7 +247,7 @@ export function HomeBoard() {
                         aria-label={item.path}
                       />
                     )}
-                    {item.status === 'updated' ? ' 有更新' : ''}
+                    {item.status === 'updated' ? ' 可覆盖' : ''}
                   </td>
                   <td className="mono">{item.path}</td>
                   <td>{item.name}</td>
@@ -196,7 +268,7 @@ export function HomeBoard() {
             disabled={busy || selectedPaths('update').length === 0}
             onClick={() => void runSelected('update')}
           >
-            更新
+            覆盖
           </button>
         </div>
       </section>

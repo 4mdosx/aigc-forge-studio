@@ -69,6 +69,7 @@ test('commit, queue one task per instance, and record paths', async () => {
     }),
   })
   assert.equal(created.status, 201)
+  await attach(app, 'character-generator')
 
   const branched = await app.request(
     '/workflows/character-generator/branches',
@@ -86,6 +87,7 @@ test('commit, queue one task per instance, and record paths', async () => {
     body: JSON.stringify({
       executor: 'comfyui',
       task: 'text2img',
+      workName: 'picture',
       workflowName: 'character-generator',
       payload: { text: 'a knight', seed: 'random' },
     }),
@@ -95,8 +97,14 @@ test('commit, queue one task per instance, and record paths', async () => {
     id: string
     status: string
     headRevisionId: string
+    workName: string
+    comfyPath: string
+    version: number
   }
   assert.equal(queued.status, 'pending')
+  assert.equal(queued.workName, 'picture')
+  assert.equal(queued.comfyPath, 'character-generator.json')
+  assert.equal(queued.version, 1)
 
   await tick(runner)
   assert.equal(submitted.length, 1)
@@ -152,6 +160,7 @@ test('a second instance runs the next pending task', async () => {
       adapter,
     }),
   })
+  await attach(app, 'character-generator')
   for (const text of ['one', 'two']) {
     await app.request('/tasks', {
       method: 'POST',
@@ -159,6 +168,7 @@ test('a second instance runs the next pending task', async () => {
       body: JSON.stringify({
         executor: 'comfyui',
         task: 'text2img',
+        workName: 'picture',
         workflowName: 'character-generator',
         payload: { text, seed: 7 },
       }),
@@ -287,7 +297,7 @@ test('imports a workflow chosen from the ComfyUI list', async () => {
     })
   ).json()) as { updated: unknown[]; failed: Array<{ error: string }> }
   assert.deepEqual(blocked.updated, [])
-  assert.match(blocked.failed[0]?.error ?? '', /请使用更新/)
+  assert.match(blocked.failed[0]?.error ?? '', /请使用覆盖/)
   const revised = (await (
     await app.request('/comfy/workflows', {
       method: 'POST',
@@ -296,7 +306,18 @@ test('imports a workflow chosen from the ComfyUI list', async () => {
     })
   ).json()) as { updated: Array<{ name: string; version: number }> }
   assert.equal(revised.updated[0]?.name, 'RM_BG')
-  assert.equal(revised.updated[0]?.version, 2)
+  assert.equal(revised.updated[0]?.version, 1)
+  const history = (await (
+    await app.request('/workflows/RM_BG/revisions')
+  ).json()) as { revisions: Array<{ version: number }> }
+  assert.equal(history.revisions.length, 1)
+  const covered = (await (await app.request('/comfy/workflows')).json()) as {
+    workflows: Array<{ path: string; status: string }>
+  }
+  assert.equal(
+    covered.workflows.find((item) => item.path === 'RM_BG.json')?.status,
+    'unchanged',
+  )
 
   const library = (await (await app.request('/workflows')).json()) as {
     workflows: Array<{ name: string; comfyPath: string; currentBranch: string }>
@@ -306,6 +327,106 @@ test('imports a workflow chosen from the ComfyUI list', async () => {
   assert.equal(library.workflows[0]?.comfyPath, 'RM_BG.json')
   assert.equal(library.workflows[0]?.currentBranch, 'main')
 })
+
+test('a task uses main when version is omitted, even after another branch moves', async () => {
+  const runner = testRunner([fakeClient('http://gpu-a', [], () => null)])
+  const app = createApp(runner)
+  await app.request('/workflows', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: 'character-generator',
+      comfyPath: 'character-generator.json',
+      adapter,
+    }),
+  })
+  await attach(app, 'character-generator')
+  await app.request('/workflows/character-generator/branches', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'lora-a' }),
+  })
+  await app.request('/workflows/character-generator/switch', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ branch: 'lora-a' }),
+  })
+  const committed = await app.request('/workflows/character-generator/commit', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ message: 'branch only' }),
+  })
+  assert.equal(committed.status, 201)
+  const onMain = (await (
+    await app.request('/tasks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        executor: 'comfyui',
+        task: 'text2img',
+        workName: 'picture',
+        workflowName: 'character-generator',
+        payload: { text: 'a knight', seed: 1 },
+      }),
+    })
+  ).json()) as { version: number }
+  const onBranch = (await (
+    await app.request('/tasks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        executor: 'comfyui',
+        task: 'text2img',
+        workName: 'picture',
+        workflowName: 'character-generator',
+        version: 2,
+        payload: { text: 'a knight', seed: 1 },
+      }),
+    })
+  ).json()) as { version: number }
+  assert.equal(onMain.version, 1)
+  assert.equal(onBranch.version, 2)
+
+  const saved = await app.request('/workflows/character-generator/adapter', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ adapter }),
+  })
+  assert.equal(saved.status, 200)
+  const history = (await (
+    await app.request('/workflows/character-generator/revisions')
+  ).json()) as { revisions: unknown[] }
+  assert.equal(history.revisions.length, 2)
+})
+
+async function attach(
+  app: ReturnType<typeof createApp>,
+  workflowName: string,
+): Promise<void> {
+  const existing = await app.request('/works/picture')
+  if (existing.status === 404) {
+    const created = await app.request('/works', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'picture',
+        semantic: {
+          inputs: {
+            text: { type: 'string' },
+            seed: { type: 'seed' },
+          },
+        },
+      }),
+    })
+    assert.equal(created.status, 201)
+  }
+  const linked = await app.request('/works/picture/workflows', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ workflowName }),
+  })
+  assert.equal(linked.status, 200)
+}
 
 function testRunner(clients: ComfyClient[]): Runner {
   return {

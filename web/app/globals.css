@@ -111,6 +111,13 @@ textarea {
   padding: 0.45rem 0.55rem;
 }
 
+select {
+  border: 1px solid #c9beae;
+  background: #fffdf8;
+  color: #241f1a;
+  padding: 0.45rem 0.55rem;
+}
+
 textarea {
   min-height: 6.5rem;
   resize: vertical;

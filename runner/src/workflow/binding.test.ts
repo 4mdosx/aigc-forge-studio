@@ -3,7 +3,7 @@ import { test } from 'node:test'
 
 import { RunnerError } from '../errors.ts'
 import { relativePath } from '../path.ts'
-import { applyAdapter, parseAdapter } from './binding.ts'
+import { applyAdapter, parseAdapter, suggestAdapter } from './binding.ts'
 import type { Prompt } from './graph.ts'
 
 const prompt: Prompt = {
@@ -51,6 +51,49 @@ test('same class_type nodes are locked by title, and seed can be random or fixed
         () => 1,
       ),
     RunnerError,
+  )
+})
+
+test('a unique positive prompt, sampler, and save node become the suggested adapter', () => {
+  const suggested = suggestAdapter({
+    ...prompt,
+    '9': { class_type: 'SaveImage', inputs: { images: ['3', 0] } },
+  })
+  assert.deepEqual(suggested, {
+    inputs: {
+      text: {
+        class_type: 'CLIPTextEncode',
+        name: 'positive',
+        input: 'text',
+      },
+      seed: { class_type: 'KSampler', input: 'seed' },
+    },
+    outputs: { images: { class_type: 'SaveImage' } },
+  })
+})
+
+test('an upload workflow suggests the image path and the advanced save node', () => {
+  const suggested = suggestAdapter({
+    '2': { class_type: 'LoadImage', inputs: { image: 'a.png' } },
+    '4': { class_type: 'SaveImageAdvanced', inputs: { images: ['2', 0] } },
+  })
+  assert.deepEqual(suggested, {
+    inputs: {
+      path: { class_type: 'LoadImage', input: 'image', upload: true },
+    },
+    outputs: { images: { class_type: 'SaveImageAdvanced' } },
+  })
+})
+
+test('ambiguous nodes are left out of the suggestion', () => {
+  assert.equal(
+    suggestAdapter({
+      '6': { class_type: 'CLIPTextEncode', inputs: { text: '' } },
+      '7': { class_type: 'CLIPTextEncode', inputs: { text: '' } },
+      '3': { class_type: 'KSampler', inputs: { seed: 1 } },
+      '4': { class_type: 'KSampler', inputs: { seed: 1 } },
+    }),
+    null,
   )
 })
 

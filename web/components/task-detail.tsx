@@ -74,6 +74,15 @@ export function TaskDetail({ id }: { id: string }) {
             <p>
               <span className={`status ${task.status}`}>{task.status}</span>{' '}
               {task.executor}
+              {task.workName ? (
+                <>
+                  {' '}
+                  ·{' '}
+                  <Link href={`/works/${encodeURIComponent(task.workName)}`}>
+                    {task.workName}
+                  </Link>
+                </>
+              ) : null}
               {task.workflowName ? (
                 <>
                   {' '}
@@ -81,8 +90,10 @@ export function TaskDetail({ id }: { id: string }) {
                   <Link href={`/workflows/${encodeURIComponent(task.workflowName)}`}>
                     {task.workflowName}
                   </Link>
+                  {task.version ? ` v${task.version}` : ''}
                 </>
               ) : null}
+              {task.comfyPath ? <span className="mono"> · {task.comfyPath}</span> : null}
             </p>
             {task.error ? <div className="error">{task.error}</div> : null}
             {task.outputText ? <div className="output">{task.outputText}</div> : null}

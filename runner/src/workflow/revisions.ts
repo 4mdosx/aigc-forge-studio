@@ -76,20 +76,14 @@ export async function syncFromComfy(
     if (sameDocument(head.ui_json, loaded.ui)) {
       return { status: 'unchanged', workflow, revision: head }
     }
-    throw new RunnerError('文件已变化，请使用更新')
+    throw new RunnerError('文件已变化，请使用覆盖')
   }
   if (!workflow) throw new RunnerError('尚未入库')
   const head = headRevision(db, workflow)
   if (sameDocument(head.ui_json, loaded.ui)) {
     return { status: 'unchanged', workflow, revision: head }
   }
-  const revision = appendRevision(
-    db,
-    workflow,
-    loaded,
-    { message: '从 ComfyUI 同步' },
-    now,
-  )
+  const revision = overwriteHead(db, head, loaded)
   return { status: 'updated', workflow, revision }
 }
 
@@ -97,7 +91,7 @@ export async function commitHead(
   db: DatabaseSync,
   client: ComfyClient,
   name: string,
-  input: { message?: string; adapter?: unknown },
+  input: { message?: string },
   now: Date,
 ): Promise<RevisionRow> {
   const workflow = workflowByName(db, name)
@@ -219,25 +213,28 @@ function insertFirst(
   if (db.prepare('SELECT id FROM workflows WHERE name = ?').get(name)) {
     throw new RunnerError(`workflow ${name} already exists`)
   }
-  const adapterJson = adapterText(loaded.api, input.adapter, null)
+  const adapterJson =
+    input.adapter === undefined
+      ? null
+      : JSON.stringify(checkedAdapter(loaded.api, input.adapter))
   const createdAt = now.toISOString()
   return transaction(db, () => {
     const workflowId = randomUUID()
     const revisionId = randomUUID()
     db.prepare(
-      `INSERT INTO workflows (id, name, comfy_path, current_branch, created_at)
-       VALUES (?, ?, ?, 'main', ?)`,
-    ).run(workflowId, name, path, createdAt)
+      `INSERT INTO workflows
+        (id, name, comfy_path, current_branch, work_id, adapter_json, created_at)
+       VALUES (?, ?, ?, 'main', NULL, ?, ?)`,
+    ).run(workflowId, name, path, adapterJson, createdAt)
     db.prepare(
       `INSERT INTO workflow_revisions
         (id, workflow_id, version, ui_json, api_json, adapter_json, message, created_at)
-       VALUES (?, ?, 1, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, 1, ?, ?, NULL, ?, ?)`,
     ).run(
       revisionId,
       workflowId,
       JSON.stringify(loaded.ui),
       JSON.stringify(loaded.api),
-      adapterJson,
       input.message ?? null,
       createdAt,
     )
@@ -252,34 +249,45 @@ function insertFirst(
   })
 }
 
+function overwriteHead(
+  db: DatabaseSync,
+  head: RevisionRow,
+  loaded: { ui: unknown; api: Prompt },
+): RevisionRow {
+  db.prepare(
+    `UPDATE workflow_revisions SET ui_json = ?, api_json = ? WHERE id = ?`,
+  ).run(JSON.stringify(loaded.ui), JSON.stringify(loaded.api), head.id)
+  return revisionById(db, head.id)
+}
+
 function appendRevision(
   db: DatabaseSync,
   workflow: WorkflowRow,
   loaded: { ui: unknown; api: Prompt },
-  input: { message?: string; adapter?: unknown },
+  input: { message?: string },
   now: Date,
 ): RevisionRow {
   return transaction(db, () => {
     const parent = headRevision(db, workflow)
     const branch = branchOf(db, workflow.id, workflow.current_branch)
-    const adapterJson = adapterText(
-      loaded.api,
-      input.adapter,
-      parent.adapter_json,
-    )
+    if (workflow.adapter_json) {
+      assertAdapter(
+        loaded.api,
+        parseAdapter(JSON.parse(workflow.adapter_json) as unknown),
+      )
+    }
     const revisionId = randomUUID()
     const createdAt = now.toISOString()
     db.prepare(
       `INSERT INTO workflow_revisions
         (id, workflow_id, version, ui_json, api_json, adapter_json, message, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
     ).run(
       revisionId,
       workflow.id,
       nextVersion(db, workflow.id),
       JSON.stringify(loaded.ui),
       JSON.stringify(loaded.api),
-      adapterJson,
       input.message ?? null,
       createdAt,
     )
@@ -317,19 +325,10 @@ function ordered(value: unknown): unknown {
   )
 }
 
-function adapterText(
-  api: Prompt,
-  provided: unknown,
-  parent: string | null,
-): string | null {
-  if (provided === undefined) {
-    if (!parent) return null
-    assertAdapter(api, parseAdapter(JSON.parse(parent) as unknown))
-    return parent
-  }
+function checkedAdapter(api: Prompt, provided: unknown) {
   const adapter = parseAdapter(provided)
   assertAdapter(api, adapter)
-  return JSON.stringify(adapter)
+  return adapter
 }
 
 function nextVersion(db: DatabaseSync, workflowId: string): number {

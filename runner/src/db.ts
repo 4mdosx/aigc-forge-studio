@@ -5,12 +5,22 @@ import { DatabaseSync } from 'node:sqlite'
 import { RunnerError } from './errors.ts'
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS works (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  semantic_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS workflows (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   comfy_path TEXT NOT NULL,
   current_branch TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  work_id TEXT,
+  adapter_json TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (work_id) REFERENCES works(id)
 );
 
 CREATE TABLE IF NOT EXISTS workflow_revisions (
@@ -51,6 +61,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   executor TEXT NOT NULL,
   workflow_name TEXT,
+  workflow_id TEXT,
+  work_id TEXT,
+  comfy_path TEXT,
+  adapter_json TEXT,
+  api_json TEXT,
   head_revision_id TEXT,
   parent_task_id TEXT,
   task TEXT NOT NULL,
@@ -78,11 +93,20 @@ CREATE INDEX IF NOT EXISTS tasks_by_revision ON tasks (head_revision_id);
 CREATE INDEX IF NOT EXISTS tasks_by_executor_status ON tasks (executor, status, created_at);
 `
 
+export interface WorkRow {
+  id: string
+  name: string
+  semantic_json: string
+  created_at: string
+}
+
 export interface WorkflowRow {
   id: string
   name: string
   comfy_path: string
   current_branch: string
+  work_id: string | null
+  adapter_json: string | null
   created_at: string
 }
 
@@ -107,6 +131,11 @@ export interface TaskRow {
   id: string
   executor: 'comfyui' | 'llm'
   workflow_name: string | null
+  workflow_id: string | null
+  work_id: string | null
+  comfy_path: string | null
+  adapter_json: string | null
+  api_json: string | null
   head_revision_id: string | null
   parent_task_id: string | null
   task: string
@@ -128,7 +157,40 @@ export function openDatabase(path: string): DatabaseSync {
   const db = new DatabaseSync(path)
   db.exec('PRAGMA foreign_keys = ON')
   db.exec(SCHEMA)
+  migrate(db)
   return db
+}
+
+function migrate(db: DatabaseSync): void {
+  addColumn(db, 'workflows', 'work_id', 'TEXT')
+  addColumn(db, 'workflows', 'adapter_json', 'TEXT')
+  addColumn(db, 'tasks', 'workflow_id', 'TEXT')
+  addColumn(db, 'tasks', 'work_id', 'TEXT')
+  addColumn(db, 'tasks', 'comfy_path', 'TEXT')
+  addColumn(db, 'tasks', 'adapter_json', 'TEXT')
+  addColumn(db, 'tasks', 'api_json', 'TEXT')
+  db.exec(
+    `UPDATE workflows
+     SET adapter_json = (
+       SELECT adapter_json FROM workflow_revisions
+       WHERE workflow_id = workflows.id AND adapter_json IS NOT NULL
+       ORDER BY version DESC LIMIT 1
+     )
+     WHERE adapter_json IS NULL`,
+  )
+}
+
+function addColumn(
+  db: DatabaseSync,
+  table: string,
+  column: string,
+  type: string,
+): void {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string
+  }>
+  if (rows.some((row) => row.name === column)) return
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
 }
 
 export function transaction<T>(db: DatabaseSync, run: () => T): T {

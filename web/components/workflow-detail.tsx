@@ -6,6 +6,15 @@ import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import type { Revision, Task, Workflow } from '@/lib/types'
 
+function adapterValue(text: string): unknown {
+  if (text.trim() === '') return undefined
+  const value = JSON.parse(text) as unknown
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Adapter 必须是 JSON 对象')
+  }
+  return value
+}
+
 export function WorkflowDetail({ name }: { name: string }) {
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
   const [revisions, setRevisions] = useState<Revision[]>([])
@@ -14,8 +23,7 @@ export function WorkflowDetail({ name }: { name: string }) {
   const [error, setError] = useState('')
   const [branch, setBranch] = useState('')
   const [message, setMessage] = useState('')
-  const [payload, setPayload] = useState('{\n  "text": ""\n}')
-  const [parentTaskId, setParentTaskId] = useState('')
+  const [adapterText, setAdapterText] = useState('')
   const [filePath, setFilePath] = useState('jobs/image.png')
   const [busy, setBusy] = useState(false)
 
@@ -29,8 +37,11 @@ export function WorkflowDetail({ name }: { name: string }) {
       `workflows/${encoded}/revisions`,
     )
     setRevisions(history.revisions)
+    const head = history.revisions.find((item) => item.head) ?? null
+    const mapping = current?.adapter ?? current?.suggestedAdapter ?? null
+    setAdapterText(mapping ? JSON.stringify(mapping, null, 2) : '')
     const selected =
-      revisionId || history.revisions[history.revisions.length - 1]?.id || ''
+      head?.id || history.revisions[history.revisions.length - 1]?.id || ''
     setRevisionId(selected)
     if (selected) {
       const body = await api<{ tasks: Task[] }>(`revisions/${selected}/tasks`)
@@ -61,34 +72,6 @@ export function WorkflowDetail({ name }: { name: string }) {
     }
   }
 
-  async function queueTask(event: React.FormEvent) {
-    event.preventDefault()
-    let parsed: Record<string, unknown>
-    try {
-      const value = JSON.parse(payload) as unknown
-      if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        throw new Error('payload 必须是 JSON 对象')
-      }
-      parsed = value as Record<string, unknown>
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      return
-    }
-    await run(async () => {
-      const task = await api<Task>('tasks', {
-        method: 'POST',
-        body: JSON.stringify({
-          executor: 'comfyui',
-          task: 'run',
-          workflowName: name,
-          payload: parsed,
-          ...(parentTaskId ? { parentTaskId } : {}),
-        }),
-      })
-      window.location.href = `/tasks/${task.id}`
-    })
-  }
-
   async function upload(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const data = new FormData(event.currentTarget)
@@ -106,6 +89,17 @@ export function WorkflowDetail({ name }: { name: string }) {
         <p>
           当前分支 {workflow?.currentBranch ?? '…'} · 图{' '}
           <span className="mono">{workflow?.comfyPath}</span>
+          {workflow?.workName ? (
+            <>
+              {' '}
+              · Work{' '}
+              <Link href={`/works/${encodeURIComponent(workflow.workName)}`}>
+                {workflow.workName}
+              </Link>
+            </>
+          ) : (
+            ' · 尚未挂到 Work'
+          )}
         </p>
         <div className="row">
           <label>
@@ -157,15 +151,39 @@ export function WorkflowDetail({ name }: { name: string }) {
         <form
           onSubmit={(event) => {
             event.preventDefault()
-            void run(() =>
-              api(`workflows/${encoded}/commit`, {
+            void run(async () => {
+              await api(`workflows/${encoded}/commit`, {
                 method: 'POST',
                 body: JSON.stringify(message ? { message } : {}),
-              }).then(() => undefined),
-            )
+              })
+            })
           }}
         >
+          <label>
+            Adapter
+            <textarea
+              value={adapterText}
+              onChange={(event) => setAdapterText(event.target.value)}
+            />
+          </label>
+          <p className="note">
+            保存 Adapter 只改映射，不产生新版本。提交当前图才会从 ComfyUI 收一个新版本。
+          </p>
           <div className="row">
+            <button
+              type="button"
+              disabled={busy || adapterText.trim() === ''}
+              onClick={() =>
+                void run(async () => {
+                  await api(`workflows/${encoded}/adapter`, {
+                    method: 'POST',
+                    body: JSON.stringify({ adapter: adapterValue(adapterText) }),
+                  })
+                })
+              }
+            >
+              保存 Adapter
+            </button>
             <label>
               提交说明
               <input value={message} onChange={(event) => setMessage(event.target.value)} />
@@ -238,28 +256,6 @@ export function WorkflowDetail({ name }: { name: string }) {
             )}
           </tbody>
         </table>
-      </section>
-      <section className="panel">
-        <h2>出图任务</h2>
-        <form onSubmit={queueTask}>
-          <div className="grid">
-            <label>
-              参数 JSON
-              <textarea value={payload} onChange={(event) => setPayload(event.target.value)} />
-            </label>
-            <label>
-              上游任务
-              <input
-                value={parentTaskId}
-                placeholder="LLM 任务 id，可空"
-                onChange={(event) => setParentTaskId(event.target.value)}
-              />
-            </label>
-          </div>
-          <div className="row">
-            <button disabled={busy}>加入队列</button>
-          </div>
-        </form>
       </section>
       <section className="panel">
         <h2>上传到 ComfyUI input</h2>

@@ -18,7 +18,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               AIGC<span>Runner</span>
             </Link>
             <nav>
-              <Link href="/">工作流</Link>
+              <Link href="/">Work</Link>
             </nav>
           </header>
           {children}

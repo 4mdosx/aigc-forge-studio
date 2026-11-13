@@ -5,6 +5,7 @@ import type { Runner } from '../task/queue.ts'
 import { mountFiles } from './files.ts'
 import { mountTasks } from './tasks.ts'
 import { mountWorkflows } from './workflows.ts'
+import { mountWorks } from './works.ts'
 
 export function createApp(runner: Runner): Hono {
   const app = new Hono()
@@ -14,6 +15,7 @@ export function createApp(runner: Runner): Hono {
     return c.json({ error: message }, status as 400)
   })
   app.notFound((c) => c.json({ error: 'not found' }, 404))
+  mountWorks(app, runner)
   mountWorkflows(app, runner)
   mountTasks(app, runner)
   mountFiles(app, runner)

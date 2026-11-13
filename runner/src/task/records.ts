@@ -11,17 +11,21 @@ import {
   revisionById,
   taskById,
   workflowByName,
+  type RevisionRow,
   type TaskRow,
 } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import { comfyFilePath, viewTarget } from '../path.ts'
 import { applyAdapter, matchNode, parseAdapter } from '../workflow/binding.ts'
 import type { Prompt } from '../workflow/graph.ts'
+import { workByName } from '../work/works.ts'
 
 export interface TaskInput {
   executor: 'comfyui' | 'llm'
   task: string
+  workName?: string
   workflowName?: string
+  version?: number
   payload?: Record<string, unknown>
   parentTaskId?: string
 }
@@ -55,22 +59,33 @@ export function createTask(
   }
   if (input.executor !== 'comfyui')
     throw new RunnerError('executor must be comfyui or llm')
-  const workflowName = required(input.workflowName, 'workflowName')
-  const workflow = workflowByName(db, workflowName)
-  const branch = branchOf(db, workflow.id, workflow.current_branch)
-  const revision = revisionById(db, branch.head_revision_id)
-  if (!revision.adapter_json) throw new RunnerError('revision has no adapter')
-  const adapter = parseAdapter(JSON.parse(revision.adapter_json) as unknown)
+  const work = workByName(db, required(input.workName, 'workName'))
+  const workflow = workflowByName(
+    db,
+    required(input.workflowName, 'workflowName'),
+  )
+  if (workflow.work_id !== work.id) {
+    throw new RunnerError('workflow is not in this work')
+  }
+  if (!workflow.adapter_json) throw new RunnerError('workflow has no adapter')
+  const revision = revisionForRun(db, workflow.id, input.version)
+  const adapter = parseAdapter(JSON.parse(workflow.adapter_json) as unknown)
   const api = JSON.parse(revision.api_json) as Prompt
   const applied = applyAdapter(api, adapter, input.payload ?? {}, randomSeed)
   const id = randomUUID()
   db.prepare(
     `INSERT INTO tasks
-      (id, executor, workflow_name, head_revision_id, parent_task_id, task, input_json, status, created_at)
-     VALUES (?, 'comfyui', ?, ?, ?, ?, ?, 'pending', ?)`,
+      (id, executor, workflow_name, workflow_id, work_id, comfy_path, adapter_json, api_json,
+       head_revision_id, parent_task_id, task, input_json, status, created_at)
+     VALUES (?, 'comfyui', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
   ).run(
     id,
     workflow.name,
+    workflow.id,
+    work.id,
+    workflow.comfy_path,
+    workflow.adapter_json,
+    revision.api_json,
     revision.id,
     input.parentTaskId ?? null,
     task,
@@ -85,16 +100,53 @@ export function preparedPrompt(
   task: TaskRow,
   randomSeed: () => number,
 ): Prompt {
-  if (!task.head_revision_id) throw new RunnerError('task has no revision')
-  const revision = revisionById(db, task.head_revision_id)
-  if (!revision.adapter_json) throw new RunnerError('revision has no adapter')
   const applied = applyAdapter(
-    JSON.parse(revision.api_json) as Prompt,
-    parseAdapter(JSON.parse(revision.adapter_json) as unknown),
+    JSON.parse(taskGraph(db, task)) as Prompt,
+    parseAdapter(JSON.parse(taskAdapterJson(db, task)) as unknown),
     JSON.parse(task.input_json) as Record<string, unknown>,
     randomSeed,
   )
   return applied.prompt
+}
+
+export function taskAdapterJson(db: DatabaseSync, task: TaskRow): string {
+  if (task.adapter_json) return task.adapter_json
+  if (task.workflow_name) {
+    try {
+      const workflow = workflowByName(db, task.workflow_name)
+      if (workflow.adapter_json) return workflow.adapter_json
+    } catch {
+      // The workflow may have been removed. Fall through to the revision.
+    }
+  }
+  if (task.head_revision_id) {
+    const revision = revisionById(db, task.head_revision_id)
+    if (revision.adapter_json) return revision.adapter_json
+  }
+  throw new RunnerError('task has no adapter')
+}
+
+function taskGraph(db: DatabaseSync, task: TaskRow): string {
+  if (task.api_json) return task.api_json
+  if (!task.head_revision_id) throw new RunnerError('task has no revision')
+  return revisionById(db, task.head_revision_id).api_json
+}
+
+function revisionForRun(
+  db: DatabaseSync,
+  workflowId: string,
+  version: number | undefined,
+): RevisionRow {
+  if (version === undefined) {
+    return revisionById(db, branchOf(db, workflowId, 'main').head_revision_id)
+  }
+  const row = db
+    .prepare(
+      'SELECT * FROM workflow_revisions WHERE workflow_id = ? AND version = ?',
+    )
+    .get(workflowId, version) as RevisionRow | undefined
+  if (!row) throw new RunnerError(`version ${version} not found`, 404)
+  return row
 }
 
 export function resultPaths(
