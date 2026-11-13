@@ -1,0 +1,20 @@
+{
+  "name": "aigc-runner",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "test": "node --test src/*.test.ts",
+    "check": "tsc --noEmit",
+    "format": "prettier --write src task",
+    "format:check": "prettier --check src task"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3"
+  }
+}

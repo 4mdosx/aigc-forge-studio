@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "comfyui": {
+    "repository": "https://github.com/Comfy-Org/ComfyUI.git",
+    "commit": "2c75dc1b379a59e0880619d029607af5169a62ef",
+    "tag": null
+  },
+  "python": "3.12.10",
+  "pytorch": "2.11.0+cu128",
+  "torchvision": "0.26.0+cu128",
+  "torchaudio": "2.11.0+cu128",
+  "cuda": "12.8",
+  "gpu": null,
+  "frontend": "1.57.6",
+  "plugins": [
+    {
+      "name": "ComfyUI-RMBG",
+      "repository": "https://github.com/1038lab/ComfyUI-RMBG",
+      "commit": "a66a5e641a54988d80ed6aad18946081c85f309e"
+    }
+  ],
+  "models": {
+    "checkpoints": [
+      "animagine-xl-4.0-opt.safetensors"
+    ],
+    "loras": []
+  },
+  "modelPathsYaml": "aigc_shared:\n  base_path: C:/AIGC/models\n  checkpoints: checkpoints\n  diffusion_models: diffusion_models\n  text_encoders: text_encoders\n  vae: vae\n  loras: loras\n  controlnet: controlnet\n  upscale_models: upscale_models\n"
+}

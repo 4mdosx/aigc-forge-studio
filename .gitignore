@@ -1,0 +1,63 @@
+
+# ========================================
+# ComfyUI runtime
+# ========================================
+# Installed ComfyUI, its checkout metadata, Python venv, custom nodes.
+# Version pin lives in infra/data/environment.json.
+/runtime/
+
+# ========================================
+# Models and generated assets
+# ========================================
+/models/
+/outputs/
+/output/
+/input/
+/temp/
+/datasets/
+
+# ========================================
+# User data and local state
+# ========================================
+/user/
+/cache/
+/logs/
+
+# ========================================
+# Python
+# ========================================
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# ========================================
+# OS / editors
+# ========================================
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/
+*.log
+
+# ========================================
+# Secrets
+# ========================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ========================================
+# Runner
+# ========================================
+/runner/node_modules/
+
+# ========================================
+# Keep deployment reference
+# ========================================
+!/infra/

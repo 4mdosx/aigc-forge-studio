@@ -1,0 +1,7 @@
+{
+  "model": "birefnet",
+  "workflow": "user/default/workflows/RM_BG.json",
+  "inputs": {
+    "path": { "node": "2", "input": "image", "upload": true }
+  }
+}
