@@ -14,7 +14,8 @@ Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
 | `infra/data/environment.json` | ComfyUI、插件、Python、PyTorch 的版本钉扎 |
 | `runtime/comfyui-prod` | ComfyUI 本体和虚拟环境，不进版本库 |
 | `models/` | 共享权重，不进版本库 |
-| `runner/src/` | HTTP 服务、SQLite、版本操作和任务队列 |
+| `runner/src/` | HTTP 服务。`http` 是接口，`workflow` 是版本，`task` 是队列，`comfy` 是 ComfyUI 客户端 |
+| `web/` | Next.js 界面，通过 Runner 的 HTTP 接口操作 |
 | `data/` | Runner 的数据库和日志，不进版本库 |
 | `datasets/` | 训练数据集。启动 ComfyUI 时作为数据集节点的默认目录 |
 | `user/default/workflows/` | ComfyUI 自己的界面图，Runner 只通过 `/userdata` 读写 |
@@ -45,7 +46,8 @@ Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
     "host": "127.0.0.1",
     "port": 8787,
     "timeout": 600,
-    "out": "outputs/runner"
+    "out": "outputs/runner",
+    "db": "data/runner.sqlite"
   }
 }
 ```
@@ -112,20 +114,30 @@ infra\install-shortcuts.ps1 -Startup
 ```bash
 cd runner
 npm install
-node src/server.ts
+npm start
 ```
 
-服务听在 `config.json` 的 `runner.host` 和 `runner.port`，默认是 `http://127.0.0.1:8787`。`--host`、`--port`、`--timeout` 只覆盖这一次启动。`npm run dev` 会在源码变化时重启进程。
+服务听在 `config.json` 的 `runner.host` 和 `runner.port`，默认是 `http://127.0.0.1:8787`。`--host`、`--port`、`--timeout` 只覆盖这一次启动。`npm run dev` 会在源码变化时重启进程。数据库在 `runner.db`，默认 `data/runner.sqlite`。日志在 `data/logs/runner.log`。
 
-队列在 Runner 里。`POST /tasks` 写入 `pending` 后立即返回。出图消费按实例列表分配，一台实例同时只有一条 `running` 任务。LLM 消费使用 `runner.llm`，和出图分开计数。客户端查询只读数据库，不会触发一次新的检查。任务完成后只记录 ComfyUI 上的文件路径，不把文件下载到 Runner。
+SQLite 里有五张表。`workflows` 是逻辑身份，对应 ComfyUI userdata 里的一个文件和当前分支。`workflow_revisions` 是不可变快照，`version` 只是这个 Workflow 内部递增的序号。`workflow_revision_parents` 记录父节点，分支上的顺序看父节点。`workflow_branches` 是可移动的分支头。`tasks` 是一次执行。界面图存在 `ui_json`，提交给 `/prompt` 的执行图存在 `api_json`，任务参数映射存在 `adapter_json`。Adapter 写在对应的 Revision 上，没有单独的版本历史。
 
-第一次提交从 ComfyUI 的 userdata 读出界面图，创建 Workflow、根 Revision 和 `main`：
+从 ComfyUI 拉列表，再由调用方选择入库或更新。列表只比较，不写入：
+
+```bash
+curl http://127.0.0.1:8787/comfy/workflows
+curl --json '{"action":"import","paths":["RM_BG.json"]}' http://127.0.0.1:8787/comfy/workflows
+curl --json '{"action":"update","paths":["RM_BG.json"]}' http://127.0.0.1:8787/comfy/workflows
+```
+
+`import` 只创建还没有的 Workflow、根 Revision 和 `main`。文件已经在库里且内容一致时返回未变化。内容不一致时拒绝，不会顺带产生新版本。`update` 只处理已经入库的文件：和当前头不一致就在当前分支提交新版本，一致则不写。
+
+也可以指定名称和 Adapter，直接建立：
 
 ```bash
 curl --json '{"name":"character-generator","comfyPath":"character-generator.json","adapter":{"inputs":{"text":{"class_type":"CLIPTextEncode","name":"positive","input":"text"}},"outputs":{"images":{"class_type":"SaveImage","name":"result"}}}}' http://127.0.0.1:8787/workflows
 ```
 
-之后的版本操作：
+之后的版本操作由客户端按顺序调用。服务端不自动合并，也不自动切换：
 
 ```bash
 curl --json '{"name":"lora-a"}' http://127.0.0.1:8787/workflows/character-generator/branches
@@ -135,9 +147,11 @@ curl --json '{"message":"try another lora"}' http://127.0.0.1:8787/workflows/cha
 curl --json '{"revisionId":"<revision>","expectedHead":"<current head>"}' http://127.0.0.1:8787/workflows/character-generator/branches/main
 ```
 
-Checkout 把当前头的界面图写回第一台实例。Commit 从同一路径读回，父节点是当时的当前头。Adapter 用 `class_type` 和可选的节点标题锁定节点，`id` 只做校验。`seed` 不传或传 `random` 时生成整数；传入数字则固定这个值。
+切换分支只改 `current_branch`。Checkout 把当前头的 `ui_json` 写回第一台实例的 `comfy_path`。Commit 从同一路径读回，父节点是当时的当前头；请求可以带新的 `adapter`，缺省则沿用父 Revision，并对新图重新核对。分支头移动时带上原来的头，对不上就返回冲突。把 `main` 指到某次已有 Revision 不新建快照。
 
-执行任务：
+Adapter 用 `class_type` 锁定节点。写了 `name` 时再按节点标题筛选，结果必须恰好一个。`id` 只校验锁定到的节点，变了就失败，需要改 Adapter 后重新 Commit。`seed` 不传或传 `random` 时生成 `0` 到 `2^32-1` 的整数；传入数字则固定这个值。实际写入的整数记在任务的 `input_json`。
+
+队列在 Runner 里，出图和 LLM 各有一条消费循环。`POST /tasks` 写入 `pending` 后立即返回。出图按实例列表分配，一台实例同时只有一条 `running` 任务。实例连不上时任务留在 `pending`；`/prompt` 拒绝时写成 `failed`。LLM 按 `runner.llm.concurrency` 计数，默认 8。没有 `llm` 配置时，LLM 任务不会被执行。客户端查询只读数据库。任务完成后只记录路径，不把文件下载到 Runner。
 
 ```bash
 curl --json '{"executor":"llm","task":"prompt","payload":{"prompt":"describe a knight"}}' http://127.0.0.1:8787/tasks
@@ -147,9 +161,11 @@ curl -X POST http://127.0.0.1:8787/tasks/<task id>/cancel
 curl http://127.0.0.1:8787/revisions/<revision id>/tasks
 ```
 
-LLM 任务完成后，文本在 `outputText`。出图任务的最终文件在 `outputPath`，其余产出在 `process`，每项含 `path`、`name` 和 `id`。
+状态是 `pending`、`running`、`completed`、`failed`、`timeout`、`cancelled`。出图超时从 `started_at` 起算，默认 600 秒，不算排队。超时后写成 `timeout`，不再查看，也不取消 ComfyUI 上的执行。LLM 默认 60 秒。`pending` 的取消只改 Runner 状态；`running` 的出图任务会调用该实例的 `POST /api/jobs/{prompt_id}/cancel`。LLM 完成后不会自动创建出图任务。
 
-上传只进入每台实例的 `input`。路径必须是相对路径：
+LLM 的文本在 `outputText`。出图的最终文件在 `outputPath`，同一节点多张图时是 JSON 数组。其余产出在 `process`，每项含 `path`、`name` 和 `id`。对比图片由客户端按两次 Revision 查出任务后自己做。
+
+上传只进入每台实例的 `input`。路径必须是相对路径，拒绝 `..`、绝对路径和反斜杠：
 
 ```bash
 curl -F file=@face.png -F path=jobs/face.png http://127.0.0.1:8787/files
@@ -158,7 +174,7 @@ curl http://127.0.0.1:8787/tasks/<task id>/files
 curl http://127.0.0.1:8787/tasks/<task id>/files/output/a.png
 ```
 
-按 task 下载只允许这条任务已经记下的路径，并从它记录的那台实例读取。`..`、绝对路径和反斜杠会被拒绝。
+按 task 下载只允许这条任务已经记下的路径，并从它记录的那台实例读取。
 
 ### 开发
 
@@ -170,3 +186,17 @@ npm run check
 ```
 
 `npm test` 不连 GPU，也不读 `user/default/workflows`。`npm run check` 做类型检查。
+
+## Web
+
+界面在 `web/`，请求由 Next.js 转到 Runner，浏览器不直连 `8787`。
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+默认打开 `http://127.0.0.1:3000`。Runner 地址用环境变量 `RUNNER_URL`，默认 `http://127.0.0.1:8787`。
+
+首页从 ComfyUI 列出工作流。内容和库里的当前头一致时显示「已入库」。新文件要勾选后点「入库」。已入库但内容有变化的文件要勾选后点「更新」，才会在当前分支创建新版本。打开页面不会写入。工作流页可以切换分支、检出、提交、排队出图和上传输入图。任务页轮询状态，并可以取消还没结束的任务。

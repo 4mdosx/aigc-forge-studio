@@ -7,9 +7,9 @@ import {
   filesFromHistory,
   pollUntilDone,
   type HistoryEntry,
-} from './comfy.ts'
-import { RunnerError } from './errors.ts'
-import type { Prompt } from './workflow.ts'
+} from './client.ts'
+import { RunnerError } from '../errors.ts'
+import type { Prompt } from '../workflow/graph.ts'
 
 const prompt: Prompt = {
   '9': {

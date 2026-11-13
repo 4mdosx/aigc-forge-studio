@@ -1,5 +1,5 @@
-import { RunnerError } from './errors.ts'
-import type { Prompt } from './workflow.ts'
+import { RunnerError } from '../errors.ts'
+import type { Prompt } from '../workflow/graph.ts'
 
 export interface RemoteFile {
   nodeId: string

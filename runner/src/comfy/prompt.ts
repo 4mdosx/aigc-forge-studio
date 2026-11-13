@@ -1,5 +1,5 @@
-import { RunnerError } from './errors.ts'
-import type { Prompt } from './workflow.ts'
+import { RunnerError } from '../errors.ts'
+import type { Prompt } from '../workflow/graph.ts'
 
 const SKIP_TYPES = new Set(['Note', 'MarkdownNote'])
 const SKIP_INPUTS = new Set(['upload'])

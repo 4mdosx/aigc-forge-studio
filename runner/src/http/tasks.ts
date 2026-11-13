@@ -1,0 +1,70 @@
+import type { Hono } from 'hono'
+
+import { taskById } from '../db.ts'
+import { RunnerError } from '../errors.ts'
+import { createTask } from '../task/records.ts'
+import type { Runner } from '../task/queue.ts'
+import { jsonObject, objectField, stringField, taskJson } from './request.ts'
+
+export function mountTasks(app: Hono, runner: Runner): void {
+  app.post('/tasks', async (c) => {
+    const body = await jsonObject(c.req)
+    const executor = stringField(body, 'executor')
+    if (executor !== 'comfyui' && executor !== 'llm') {
+      throw new RunnerError('executor must be comfyui or llm')
+    }
+    const task = createTask(
+      runner.db,
+      {
+        executor,
+        task: stringField(body, 'task'),
+        ...(body.workflowName === undefined
+          ? {}
+          : { workflowName: stringField(body, 'workflowName') }),
+        ...(body.payload === undefined
+          ? {}
+          : { payload: objectField(body, 'payload') }),
+        ...(body.parentTaskId === undefined
+          ? {}
+          : { parentTaskId: stringField(body, 'parentTaskId') }),
+      },
+      runner.now(),
+      runner.randomSeed,
+    )
+    return c.json(taskJson(task), 201)
+  })
+
+  app.get('/tasks/:id', (c) =>
+    c.json(taskJson(taskById(runner.db, c.req.param('id')))),
+  )
+
+  app.post('/tasks/:id/cancel', async (c) => {
+    const task = taskById(runner.db, c.req.param('id'))
+    const now = runner.now().toISOString()
+    if (task.status === 'pending') {
+      const updated = runner.db
+        .prepare(
+          `UPDATE tasks SET status = 'cancelled', completed_at = ? WHERE id = ? AND status = 'pending'`,
+        )
+        .run(now, task.id)
+      if (updated.changes !== 1)
+        throw new RunnerError('task is no longer pending')
+      return c.json(taskJson(taskById(runner.db, task.id)))
+    }
+    if (task.status !== 'running') throw new RunnerError('task is not running')
+    if (task.executor === 'llm') {
+      runner.stops.get(task.id)?.abort()
+    } else if (task.prompt_id && task.comfy_base_url) {
+      const client = runner.clients.find(
+        (item) => item.baseURL === task.comfy_base_url,
+      )
+      if (client) await client.cancelJob(task.prompt_id)
+    }
+    runner.db
+      .prepare(
+        `UPDATE tasks SET status = 'cancelled', completed_at = ? WHERE id = ? AND status = 'running'`,
+      )
+      .run(now, task.id)
+    return c.json(taskJson(taskById(runner.db, task.id)))
+  })
+}

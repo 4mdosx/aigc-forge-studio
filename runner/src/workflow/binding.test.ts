@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
+import { RunnerError } from '../errors.ts'
+import { relativePath } from '../path.ts'
 import { applyAdapter, parseAdapter } from './binding.ts'
-import { RunnerError } from './errors.ts'
-import { relativePath } from './path.ts'
-import type { Prompt } from './workflow.ts'
+import type { Prompt } from './graph.ts'
 
 const prompt: Prompt = {
   '6': {

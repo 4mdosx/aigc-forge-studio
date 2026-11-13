@@ -1,4 +1,4 @@
-import { RunnerError } from './errors.ts'
+import { RunnerError } from '../errors.ts'
 
 export interface WorkflowNode {
   class_type: string

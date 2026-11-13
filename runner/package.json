@@ -6,9 +6,9 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "start": "node src/server.ts",
-    "dev": "node --watch src/server.ts",
-    "test": "node --test src/*.test.ts",
+    "start": "node src/main.ts",
+    "dev": "node --watch src/main.ts",
+    "test": "node --test src",
     "check": "tsc --noEmit",
     "format": "prettier --write src",
     "format:check": "prettier --check src"

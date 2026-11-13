@@ -1,11 +1,15 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { assertSuccess, type ComfyClient, type HistoryEntry } from './comfy.ts'
-import { taskById, type TaskRow } from './db.ts'
-import { RunnerError } from './errors.ts'
-import { completePrompt } from './llm.ts'
-import { preparedPrompt, resultPaths } from './tasks.ts'
-import type { Prompt } from './workflow.ts'
+import {
+  assertSuccess,
+  type ComfyClient,
+  type HistoryEntry,
+} from '../comfy/client.ts'
+import { taskById, type TaskRow } from '../db.ts'
+import { RunnerError } from '../errors.ts'
+import { completePrompt } from '../llm.ts'
+import type { Prompt } from '../workflow/graph.ts'
+import { preparedPrompt, resultPaths } from './records.ts'
 
 export interface Runner {
   db: DatabaseSync

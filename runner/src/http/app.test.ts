@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import type { ComfyClient, HistoryEntry } from './comfy.ts'
-import { openDatabase } from './db.ts'
-import { tick, type Runner } from './queue.ts'
-import { createApp } from './server.ts'
-import type { Prompt } from './workflow.ts'
+import type { ComfyClient, HistoryEntry } from '../comfy/client.ts'
+import { openDatabase } from '../db.ts'
+import { tick, type Runner } from '../task/queue.ts'
+import type { Prompt } from '../workflow/graph.ts'
+import { createApp } from './app.ts'
 
 const graph = {
   nodes: [
@@ -210,6 +210,103 @@ test('llm tasks use their own concurrency and do not submit to ComfyUI', async (
   assert.equal(done.outputText, 'a knight in red')
 })
 
+test('imports a workflow chosen from the ComfyUI list', async () => {
+  const client = fakeClient('http://gpu-a', [], () => null)
+  client.workflows = async () => ['text2image_sdxl.json', 'RM_BG.json']
+  const app = createApp(testRunner([client]))
+
+  const listed = await app.request('/comfy/workflows')
+  assert.equal(listed.status, 200)
+  const catalog = (await listed.json()) as {
+    workflows: Array<{ path: string; status: string }>
+  }
+  assert.deepEqual(
+    catalog.workflows.map((item) => item.path),
+    ['text2image_sdxl.json', 'RM_BG.json'],
+  )
+  assert.equal(
+    catalog.workflows.every((item) => item.status === 'new'),
+    true,
+  )
+
+  const imported = await app.request('/comfy/workflows', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'import', paths: ['RM_BG.json'] }),
+  })
+  assert.equal(imported.status, 200)
+  const result = (await imported.json()) as {
+    created: Array<{ name: string; version: number }>
+    unchanged: string[]
+  }
+  assert.deepEqual(
+    result.created.map((item) => item.name),
+    ['RM_BG'],
+  )
+  assert.equal(result.created[0]?.version, 1)
+  assert.deepEqual(result.unchanged, [])
+
+  const same = (await (await app.request('/comfy/workflows')).json()) as {
+    workflows: Array<{ path: string; status: string }>
+  }
+  assert.equal(
+    same.workflows.find((item) => item.path === 'RM_BG.json')?.status,
+    'unchanged',
+  )
+
+  const again = (await (
+    await app.request('/comfy/workflows', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'import', paths: ['RM_BG.json'] }),
+    })
+  ).json()) as { unchanged: Array<{ name: string }>; updated: unknown[] }
+  assert.equal(again.unchanged[0]?.name, 'RM_BG')
+  assert.deepEqual(again.updated, [])
+
+  client.workflow = async () => ({
+    ...graph,
+    nodes: graph.nodes.map((node) =>
+      node.id === 6
+        ? { ...node, widgets_values_named: { text: 'edited' } }
+        : node,
+    ),
+  })
+  const changed = (await (await app.request('/comfy/workflows')).json()) as {
+    workflows: Array<{ path: string; status: string }>
+  }
+  assert.equal(
+    changed.workflows.find((item) => item.path === 'RM_BG.json')?.status,
+    'updated',
+  )
+  const blocked = (await (
+    await app.request('/comfy/workflows', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'import', paths: ['RM_BG.json'] }),
+    })
+  ).json()) as { updated: unknown[]; failed: Array<{ error: string }> }
+  assert.deepEqual(blocked.updated, [])
+  assert.match(blocked.failed[0]?.error ?? '', /请使用更新/)
+  const revised = (await (
+    await app.request('/comfy/workflows', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'update', paths: ['RM_BG.json'] }),
+    })
+  ).json()) as { updated: Array<{ name: string; version: number }> }
+  assert.equal(revised.updated[0]?.name, 'RM_BG')
+  assert.equal(revised.updated[0]?.version, 2)
+
+  const library = (await (await app.request('/workflows')).json()) as {
+    workflows: Array<{ name: string; comfyPath: string; currentBranch: string }>
+  }
+  assert.equal(library.workflows.length, 1)
+  assert.equal(library.workflows[0]?.name, 'RM_BG')
+  assert.equal(library.workflows[0]?.comfyPath, 'RM_BG.json')
+  assert.equal(library.workflows[0]?.currentBranch, 'main')
+})
+
 function testRunner(clients: ComfyClient[]): Runner {
   return {
     db: openDatabase(':memory:'),
@@ -229,6 +326,7 @@ function fakeClient(
 ): ComfyClient {
   return {
     baseURL,
+    workflows: async () => ['character-generator.json'],
     workflow: async () => graph,
     writeWorkflow: async () => undefined,
     submitPrompt: async (prompt: Prompt) => {

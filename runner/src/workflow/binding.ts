@@ -1,5 +1,5 @@
-import { RunnerError } from './errors.ts'
-import type { Prompt, WorkflowNode } from './workflow.ts'
+import { RunnerError } from '../errors.ts'
+import type { Prompt, WorkflowNode } from './graph.ts'
 
 export interface Binding {
   class_type: string

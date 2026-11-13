@@ -1,22 +1,22 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
-import { applyAdapter, matchNode, parseAdapter } from './binding.ts'
-import { comfyFilePath, viewTarget } from './path.ts'
+import {
+  filesFromHistory,
+  type HistoryEntry,
+  type RemoteFile,
+} from '../comfy/client.ts'
 import {
   branchOf,
   revisionById,
   taskById,
   workflowByName,
   type TaskRow,
-} from './db.ts'
-import { RunnerError } from './errors.ts'
-import type { Prompt } from './workflow.ts'
-import {
-  filesFromHistory,
-  type HistoryEntry,
-  type RemoteFile,
-} from './comfy.ts'
+} from '../db.ts'
+import { RunnerError } from '../errors.ts'
+import { comfyFilePath, viewTarget } from '../path.ts'
+import { applyAdapter, matchNode, parseAdapter } from '../workflow/binding.ts'
+import type { Prompt } from '../workflow/graph.ts'
 
 export interface TaskInput {
   executor: 'comfyui' | 'llm'

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
+import { ComfyClient } from '../comfy/client.ts'
+import { openDatabase, revisionById } from '../db.ts'
 import { applyAdapter, parseAdapter } from './binding.ts'
-import { ComfyClient } from './comfy.ts'
-import { openDatabase, revisionById } from './db.ts'
+import type { Prompt } from './graph.ts'
 import { readAndCreate } from './revisions.ts'
-import type { Prompt } from './workflow.ts'
 
 const sdxlGraph = {
   nodes: [
