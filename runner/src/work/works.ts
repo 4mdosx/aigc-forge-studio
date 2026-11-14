@@ -88,6 +88,18 @@ export function updateSemantic(
   return workByName(db, work.name)
 }
 
+export function deleteWork(db: DatabaseSync, name: string): void {
+  const work = workByName(db, name)
+  const links = linksOf(db, work.id)
+  if (links.length > 0) {
+    throw new RunnerError(
+      `work ${name} still has ${links.length} bound workflows; detach them first`,
+      400,
+    )
+  }
+  db.prepare('DELETE FROM works WHERE id = ?').run(work.id)
+}
+
 export function detachWorkflow(
   db: DatabaseSync,
   workName: string,

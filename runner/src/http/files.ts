@@ -1,11 +1,12 @@
 import type { Hono } from 'hono'
 
+import { type ComfyClient } from '../comfy/client.ts'
 import { taskById } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import { relativePath, splitRelative, viewTarget } from '../path.ts'
 import { assertStoredPath, storedPaths } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
-import { bytesOf, editor, jsonObject } from './request.ts'
+import { bytesOf, editor, jsonObject, stringField } from './request.ts'
 
 export function mountFiles(app: Hono, runner: Runner): void {
   app.get('/tasks/:id/files', (c) => {
@@ -69,9 +70,18 @@ export function mountFiles(app: Hono, runner: Runner): void {
       throw new RunnerError('paths must be a non-empty array')
     }
     if (paths.length > 16) throw new RunnerError('too many paths')
+    const kind =
+      body.kind === undefined ? 'misc' : stringField(body, 'kind')
+    if (!/^[a-z][a-z0-9_-]*$/i.test(kind)) {
+      throw new RunnerError('kind must be a simple name (letters/digits/-/_)')
+    }
     if (runner.clients.length === 0)
       throw new RunnerError('no ComfyUI instance')
+    // input 按日期+类型维护：input/<yyyy-MM-dd>/<kind>/<filename>
+    const date = runner.now().toISOString().slice(0, 10)
+    const subfolder = `${date}/${kind}`
     const published: string[] = []
+    const skipped: string[] = []
     for (const item of paths) {
       if (typeof item !== 'string' || item.trim() === '') {
         throw new RunnerError('paths must be strings')
@@ -80,21 +90,32 @@ export function mountFiles(app: Hono, runner: Runner): void {
       if (target.type !== 'output') {
         throw new RunnerError(`only output files can be published: ${item}`)
       }
+      const filename = target.filename.split('/').pop() ?? target.filename
       const file = await editor(runner).viewFile(
         target.type,
         target.subfolder,
         target.filename,
       )
+      // 下发前嗅探：目标文件已在推理机 input 则跳过上传
+      const stale: ComfyClient[] = []
       for (const client of runner.clients) {
-        await client.uploadBytes(file.bytes, target.filename, target.subfolder)
+        let exists = false
+        try {
+          await client.viewFile('input', subfolder, filename)
+          exists = true
+        } catch {
+          exists = false
+        }
+        if (!exists) {
+          await client.uploadBytes(file.bytes, filename, subfolder)
+          stale.push(client)
+        }
       }
-      published.push(
-        target.subfolder
-          ? `input/${target.subfolder}/${target.filename}`
-          : `input/${target.filename}`,
-      )
+      const path = `input/${subfolder}/${filename}`
+      if (stale.length === 0) skipped.push(path)
+      else published.push(path)
     }
-    return c.json({ paths: published }, 201)
+    return c.json({ paths: published, skipped }, 201)
   })
 
   app.get('/files/*', async (c) => {

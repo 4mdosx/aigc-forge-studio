@@ -7,6 +7,7 @@ import type { Prompt } from '../workflow/graph.ts'
 import {
   attachWorkflow,
   createWork,
+  deleteWork,
   detachWorkflow,
   linksOf,
   readAdapterMap,
@@ -65,6 +66,11 @@ export function mountWorks(app: Hono, runner: Runner): void {
         linkJson(runner.db, link),
       ),
     })
+  })
+
+  app.delete('/works/:name', (c) => {
+    deleteWork(runner.db, c.req.param('name'))
+    return c.json({ ok: true })
   })
 
   app.post('/works/:name/semantic', async (c) => {

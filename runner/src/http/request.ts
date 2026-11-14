@@ -6,12 +6,20 @@ import type { ComfyClient } from '../comfy/client.ts'
 import { isVersionId, type TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import type { Runner } from '../task/queue.ts'
-import { workById } from '../work/works.ts'
 
 export function editor(runner: Runner): ComfyClient {
   const client = runner.clients[0]
   if (!client) throw new RunnerError('no ComfyUI instance')
   return client
+}
+
+// 删除 work 后历史任务的 work_id 变悬空引用，回看时降级为 null
+function workNameOf(db: DatabaseSync, workId: string | null): string | null {
+  if (!workId) return null
+  const row = db
+    .prepare('SELECT name FROM works WHERE id = ?')
+    .get(workId) as { name: string } | undefined
+  return row?.name ?? null
 }
 
 export function taskJson(
@@ -29,7 +37,7 @@ export function taskJson(
     id: task.id,
     task: task.task,
     workId: task.work_id,
-    workName: task.work_id ? workById(db, task.work_id).name : null,
+    workName: workNameOf(db, task.work_id),
     workflowId: task.workflow_id,
     workflowName: task.workflow_name,
     comfyPath: task.comfy_path,

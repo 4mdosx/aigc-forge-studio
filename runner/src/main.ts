@@ -33,6 +33,7 @@ async function main(): Promise<void> {
     ),
     chat: gateway ? gatewayChat(gateway) : null,
     timeoutMs: timeoutMs(values.timeout, config.runner.timeout),
+    dataDir: resolve(root, config.runner.dataDir),
     now: () => new Date(),
     randomSeed: () => Math.floor(Math.random() * 2 ** 32),
   }

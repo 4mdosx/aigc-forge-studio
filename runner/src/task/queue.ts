@@ -17,6 +17,7 @@ export interface Runner {
   clients: ComfyClient[]
   chat: ChatClient | null
   timeoutMs: number
+  dataDir: string
   now: () => Date
   randomSeed: () => number
 }

@@ -14,6 +14,7 @@ export interface AppConfig {
     timeout: number
     out: string
     db: string
+    dataDir: string
   }
 }
 
@@ -48,6 +49,7 @@ export function loadConfig(path: string): AppConfig {
       timeout: timeoutOf(runner, path),
       out: outOf(runner, path),
       db: dbOf(runner),
+      dataDir: dataDirOf(runner),
     },
   }
 }
@@ -179,6 +181,15 @@ function dbOf(runner: Record<string, unknown>): string {
     throw new RunnerError('runner.db must be a path')
   }
   return db.trim()
+}
+
+function dataDirOf(runner: Record<string, unknown>): string {
+  const dataDir = runner.dataDir
+  if (dataDir === undefined) return 'data'
+  if (typeof dataDir !== 'string' || dataDir.trim() === '') {
+    throw new RunnerError('runner.dataDir must be a path')
+  }
+  return dataDir.trim()
 }
 
 function messageOf(err: unknown): string {
