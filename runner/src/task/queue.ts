@@ -9,7 +9,8 @@ import type { ChatClient } from '../chat/client.ts'
 import { taskById, type TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import type { Prompt } from '../workflow/graph.ts'
-import { preparedPrompt, resultPaths, taskAdapterJson } from './records.ts'
+import { expandPath, preparedPrompt, resultPaths, taskAdapterJson } from './records.ts'
+import { findDegenerateOutputs } from './validate.ts'
 
 export interface Runner {
   db: DatabaseSync
@@ -73,7 +74,15 @@ async function settleComfy(runner: Runner): Promise<void> {
     try {
       assertSuccess(entry)
       const prompt = preparedPrompt(runner.db, task, runner.randomSeed)
-      const paths = resultPaths(prompt, taskAdapterJson(runner.db, task), entry)
+      const paths = resultPaths(prompt, taskAdapterJson(task), entry)
+      const finalPaths = expandPath(paths.outputPath)
+      const degenerate = await findDegenerateOutputs(client, finalPaths)
+      if (degenerate.length > 0) {
+        finish(runner, task.id, 'failed', {
+          error: `output validation failed (degenerate image, e.g. empty skeleton): ${degenerate.join(', ')}`,
+        })
+        continue
+      }
       finish(runner, task.id, 'completed', paths)
     } catch (err) {
       finish(runner, task.id, 'failed', { error: messageOf(err) })
@@ -186,12 +195,4 @@ function errorOf(entry: HistoryEntry): string {
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
-}
-
-export function promptOf(
-  task: TaskRow,
-  db: DatabaseSync,
-  randomSeed: () => number,
-): Prompt {
-  return preparedPrompt(db, task, randomSeed)
 }

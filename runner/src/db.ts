@@ -145,13 +145,6 @@ export interface RevisionRow {
   created_at: string
 }
 
-export interface WorkWorkflowRow {
-  work_id: string
-  workflow_id: string
-  version: string
-  adapter_json: string | null
-}
-
 export interface BranchRow {
   workflow_id: string
   name: string

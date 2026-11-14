@@ -89,6 +89,31 @@ export function createTask(
   return taskById(db, id)
 }
 
+// 输出路径约定（2026-11-14 token 定）：SaveImage 一律落到
+// <yyyy-MM-dd>/<task 名>/<workflow 原前缀>/ 下；img2pose 类工作流的
+// 原前缀只剩类型名（skeleton/depth），最终形态即 /日期/任务id/类型。
+const stampedSaveTypes = new Set(['SaveImage', 'SaveImageAdvanced'])
+
+function outputDateDir(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return 'unknown-date'
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function stampOutputPath(prompt: Prompt, task: TaskRow): Prompt {
+  const dir = `${outputDateDir(task.created_at)}/${task.task}`
+  for (const node of Object.values(prompt)) {
+    if (!stampedSaveTypes.has(node.class_type)) continue
+    const prefix = node.inputs.filename_prefix
+    if (typeof prefix !== 'string' || prefix.startsWith('[')) continue
+    node.inputs.filename_prefix = `${dir}/${prefix}`
+  }
+  return prompt
+}
+
 export function preparedPrompt(
   db: DatabaseSync,
   task: TaskRow,
@@ -96,14 +121,14 @@ export function preparedPrompt(
 ): Prompt {
   const applied = applyAdapter(
     JSON.parse(taskGraph(db, task)) as Prompt,
-    parseAdapter(JSON.parse(taskAdapterJson(db, task)) as unknown),
+    parseAdapter(JSON.parse(taskAdapterJson(task)) as unknown),
     JSON.parse(task.input_json) as Record<string, unknown>,
     randomSeed,
   )
-  return applied.prompt
+  return stampOutputPath(applied.prompt, task)
 }
 
-export function taskAdapterJson(_db: DatabaseSync, task: TaskRow): string {
+export function taskAdapterJson(task: TaskRow): string {
   if (task.adapter_json) return task.adapter_json
   throw new RunnerError('task has no adapter')
 }
@@ -178,7 +203,7 @@ export function assertStoredPath(task: TaskRow, path: string): void {
     throw new RunnerError('file is not part of this task', 404)
 }
 
-function expandPath(value: string): string[] {
+export function expandPath(value: string): string[] {
   if (value.startsWith('[')) {
     const parsed = JSON.parse(value) as unknown
     if (!Array.isArray(parsed)) return []

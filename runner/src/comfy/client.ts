@@ -273,8 +273,11 @@ export function filesFromHistory(entry: HistoryEntry): RemoteFile[] {
           typeof record.type !== 'string'
         )
           continue
+        // ComfyUI 在 Windows 上回传的 subfolder 用 \ 分隔，统一归一化成 /
         const subfolder =
-          typeof record.subfolder === 'string' ? record.subfolder : ''
+          typeof record.subfolder === 'string'
+            ? record.subfolder.replaceAll('\\', '/')
+            : ''
         const key = `${record.type}\0${subfolder}\0${record.filename}`
         if (seen.has(key)) continue
         seen.add(key)

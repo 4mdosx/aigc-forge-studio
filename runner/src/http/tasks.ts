@@ -24,6 +24,7 @@ export function mountTasks(app: Hono, runner: Runner): void {
 
   app.post('/tasks', async (c) => {
     const body = await jsonObject(c.req)
+    const version = optionalVersion(body)
     const task = createTask(
       runner.db,
       {
@@ -34,9 +35,7 @@ export function mountTasks(app: Hono, runner: Runner): void {
         ...(body.workflowName === undefined
           ? {}
           : { workflowName: stringField(body, 'workflowName') }),
-        ...(optionalVersion(body) === undefined
-          ? {}
-          : { version: optionalVersion(body) }),
+        ...(version === undefined ? {} : { version }),
         ...(body.payload === undefined
           ? {}
           : { payload: objectField(body, 'payload') }),

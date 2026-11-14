@@ -264,14 +264,11 @@ export function parseSemantic(raw: unknown): Semantic {
 }
 
 function assertCovers(adapter: AdapterMap, semantic: Semantic): void {
-  const wanted = Object.keys(semantic.inputs).sort()
-  const got = Object.keys(adapter.inputs).sort()
-  if (wanted.join('\0') !== got.join('\0')) {
-    throw new RunnerError('adapter inputs must match the work fields')
-  }
-  for (const [key, field] of Object.entries(semantic.inputs)) {
-    const binding = adapter.inputs[key]
-    if (!binding) throw new RunnerError(`adapter is missing ${key}`)
+  for (const [key, binding] of Object.entries(adapter.inputs)) {
+    const field = semantic.inputs[key]
+    if (!field) {
+      throw new RunnerError(`adapter input ${key} is not a work field`)
+    }
     if (field.type === 'seed' && binding.input !== 'seed') {
       throw new RunnerError(`${key} must map to seed`)
     }

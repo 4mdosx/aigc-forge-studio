@@ -44,22 +44,30 @@ export function gatewayChat(config: GatewayConfig): ChatClient {
         throw new RunnerError('model is not available')
       }
       const prompt = system.trim()
+      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] =
+        prompt
+          ? [
+              { role: 'system', content: prompt },
+              ...turns.map(
+                (turn) =>
+                  ({
+                    role: turn.role,
+                    content: turn.content,
+                  }) as OpenAI.Chat.Completions.ChatCompletionMessageParam,
+              ),
+            ]
+          : turns.map(
+              (turn) =>
+                ({
+                  role: turn.role,
+                  content: turn.content,
+                }) as OpenAI.Chat.Completions.ChatCompletionMessageParam,
+            )
       let result: OpenAI.Chat.Completions.ChatCompletion
       try {
         result = await llm.chat.completions.create({
           model,
-          messages: prompt
-            ? [
-                { role: 'system', content: prompt },
-                ...turns.map((turn) => ({
-                  role: turn.role,
-                  content: turn.content as OpenAI.Chat.Completions.ChatCompletionMessageParam['content'],
-                })),
-              ]
-            : turns.map((turn) => ({
-                role: turn.role,
-                content: turn.content as OpenAI.Chat.Completions.ChatCompletionMessageParam['content'],
-              })),
+          messages,
         })
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err)

@@ -25,7 +25,7 @@ export function mountChats(app: Hono, runner: Runner): void {
       undefined,
       {
         content: stringField(body, 'content'),
-        images: body.images,
+        images: submittedImages(body),
         model: chosenModel(body, client),
         system: submittedSystem(body),
       },
@@ -43,7 +43,7 @@ export function mountChats(app: Hono, runner: Runner): void {
       c.req.param('id'),
       {
         content: stringField(body, 'content'),
-        images: body.images,
+        images: submittedImages(body),
         model: chosenModel(body, client),
         system: submittedSystem(body),
       },
@@ -52,6 +52,18 @@ export function mountChats(app: Hono, runner: Runner): void {
     )
     return c.json(chat)
   })
+}
+
+function submittedImages(body: Record<string, unknown>): string[] | undefined {
+  if (body.images === undefined) return undefined
+  const images = body.images
+  if (
+    !Array.isArray(images) ||
+    !images.every((item) => typeof item === 'string')
+  ) {
+    throw new RunnerError('images must be an array of strings')
+  }
+  return images
 }
 
 function submittedSystem(body: Record<string, unknown>): string {

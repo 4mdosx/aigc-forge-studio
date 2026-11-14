@@ -5,7 +5,7 @@ import { RunnerError } from '../errors.ts'
 import { relativePath, splitRelative, viewTarget } from '../path.ts'
 import { assertStoredPath, storedPaths } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
-import { bytesOf, editor } from './request.ts'
+import { bytesOf, editor, jsonObject } from './request.ts'
 
 export function mountFiles(app: Hono, runner: Runner): void {
   app.get('/tasks/:id/files', (c) => {
@@ -60,6 +60,41 @@ export function mountFiles(app: Hono, runner: Runner): void {
       await client.uploadBytes(bytes, filename, subfolder)
     }
     return c.json({ path }, 201)
+  })
+
+  app.post('/files/publish', async (c) => {
+    const body = await jsonObject(c.req)
+    const paths = body.paths
+    if (!Array.isArray(paths) || paths.length === 0) {
+      throw new RunnerError('paths must be a non-empty array')
+    }
+    if (paths.length > 16) throw new RunnerError('too many paths')
+    if (runner.clients.length === 0)
+      throw new RunnerError('no ComfyUI instance')
+    const published: string[] = []
+    for (const item of paths) {
+      if (typeof item !== 'string' || item.trim() === '') {
+        throw new RunnerError('paths must be strings')
+      }
+      const target = viewTarget(item)
+      if (target.type !== 'output') {
+        throw new RunnerError(`only output files can be published: ${item}`)
+      }
+      const file = await editor(runner).viewFile(
+        target.type,
+        target.subfolder,
+        target.filename,
+      )
+      for (const client of runner.clients) {
+        await client.uploadBytes(file.bytes, target.filename, target.subfolder)
+      }
+      published.push(
+        target.subfolder
+          ? `input/${target.subfolder}/${target.filename}`
+          : `input/${target.filename}`,
+      )
+    }
+    return c.json({ paths: published }, 201)
   })
 
   app.get('/files/*', async (c) => {

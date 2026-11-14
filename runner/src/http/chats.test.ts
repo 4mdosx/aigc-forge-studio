@@ -151,7 +151,12 @@ test('a message with images sends image parts and stores a marker', async () => 
   })
   assert.equal(created.status, 201)
   const chat = (await created.json()) as {
-    messages: Array<{ role: string; content: string }>
+    messages: Array<{
+      id: string
+      role: string
+      content: string
+      createdAt: string
+    }>
   }
   assert.deepEqual(chat.messages[0], {
     id: chat.messages[0]?.id,

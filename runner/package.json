@@ -15,12 +15,14 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "@types/pngjs": "^6.0.5",
     "prettier": "^3.6.2",
     "typescript": "^5.9.3"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.8",
     "hono": "^4.13.18",
-    "openai": "^7.56.0"
+    "openai": "^7.56.0",
+    "pngjs": "^7.0.0"
   }
 }

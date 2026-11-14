@@ -3,7 +3,8 @@ import { test } from 'node:test'
 
 import { openDatabase } from '../db.ts'
 import { RunnerError } from '../errors.ts'
-import { createWork, saveWork, workByName } from './works.ts'
+import { parseAdapter } from '../workflow/binding.ts'
+import { createWork, saveWork, updateSemantic, workByName } from './works.ts'
 
 const semantic = {
   inputs: {

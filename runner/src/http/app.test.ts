@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { PNG } from 'pngjs'
 
 import type { ComfyClient, HistoryEntry } from '../comfy/client.ts'
 import { openDatabase } from '../db.ts'
@@ -472,6 +473,18 @@ function testRunner(clients: ComfyClient[]): Runner {
   }
 }
 
+function tinyPng(): Uint8Array {
+  // 4x4、16 个颜色各异的像素：deviation = 1 - 1/16 ≈ 0.94，远高于退化阈值 0.001
+  const png = new PNG({ width: 4, height: 4 })
+  for (let i = 0; i < 16; i += 1) {
+    png.data[i * 4] = (i * 37) % 256
+    png.data[i * 4 + 1] = (i * 61) % 256
+    png.data[i * 4 + 2] = (i * 97) % 256
+    png.data[i * 4 + 3] = 255
+  }
+  return new Uint8Array(PNG.sync.write(png))
+}
+
 function fakeClient(
   baseURL: string,
   submitted: Prompt[],
@@ -490,7 +503,7 @@ function fakeClient(
     cancelJob: async () => true,
     uploadBytes: async () => undefined,
     viewFile: async () => ({
-      bytes: Uint8Array.from([1]),
+      bytes: tinyPng(),
       contentType: 'image/png',
     }),
   } as unknown as ComfyClient
