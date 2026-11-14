@@ -36,6 +36,7 @@ test('a blank gateway file stays off, and models must be a list', () => {
       apiKey: 'key',
       baseURL: 'http://127.0.0.1:11434/v1',
       models: ['writer', 'editor'],
+      visionModel: '',
     },
   )
 })
@@ -54,5 +55,6 @@ export const AI_GATEWAY_MODEL = ['writer', 'editor']
     apiKey: 'key',
     baseURL: 'http://127.0.0.1:11434/v1',
     models: ['writer', 'editor'],
+    visionModel: '',
   })
 })

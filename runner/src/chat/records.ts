@@ -14,6 +14,7 @@ interface ChatRow {
 
 export interface ChatTurnInput {
   content: string
+  images?: string[]
   model: string
   system: string
 }
@@ -35,8 +36,10 @@ export async function continueChat(
 ): Promise<Record<string, unknown>> {
   const text = input.content.trim()
   if (text === '') throw new RunnerError('content is required')
+  const images = normalizeImages(input.images)
   const existing = chatId === undefined ? undefined : chatById(db, chatId)
   const history = existing ? messagesOf(db, existing.id) : []
+  const turn = imageTurn(text, images)
   const reply = await client.complete(
     input.model,
     [
@@ -44,12 +47,13 @@ export async function continueChat(
         role: message.role,
         content: message.content,
       })),
-      { role: 'user' as const, content: text },
+      { role: 'user' as const, content: turn },
     ],
     input.system,
   )
   const stamp = now.toISOString()
   const id = existing?.id ?? randomUUID()
+  const stored = images.length > 0 ? `[图片 ×${images.length}] ${text}` : text
   transaction(db, () => {
     if (!existing) {
       db.prepare(
@@ -62,11 +66,38 @@ export async function continueChat(
       `INSERT INTO chat_messages (id, chat_id, role, content, created_at)
        VALUES (?, ?, ?, ?, ?)`,
     )
-    insert.run(randomUUID(), id, 'user', text, stamp)
+    insert.run(randomUUID(), id, 'user', stored, stamp)
     insert.run(randomUUID(), id, 'assistant', reply, stamp)
   })
   return chatJson(db, id)
 }
+
+function normalizeImages(raw: unknown): string[] {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) throw new RunnerError('images must be a list')
+  if (raw.length > 4) throw new RunnerError('at most 4 images per message')
+  return raw.map((item, index) => {
+    if (typeof item !== 'string') throw new RunnerError(`images[${index}] must be a data URL string`)
+    if (item.length > 12_000_000) throw new RunnerError(`images[${index}] is too large`)
+    if (!item.startsWith('data:image/')) {
+      throw new RunnerError(`images[${index}] must be a data:image/ URL`)
+    }
+    return item
+  })
+}
+
+function imageTurn(text: string, images: string[]): ChatTurnContent {
+  if (images.length === 0) return text
+  return [
+    ...images.map((url) => ({
+      type: 'image_url' as const,
+      image_url: { url },
+    })),
+    { type: 'text' as const, text },
+  ]
+}
+
+type ChatTurnContent = import('./client.ts').ChatContent
 
 export function listChats(db: DatabaseSync): Array<Record<string, unknown>> {
   const rows = db

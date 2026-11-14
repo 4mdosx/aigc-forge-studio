@@ -3,13 +3,26 @@ import OpenAI from 'openai'
 import { RunnerError } from '../errors.ts'
 import type { GatewayConfig } from './env.ts'
 
+export interface ChatImagePart {
+  type: 'image_url'
+  image_url: { url: string }
+}
+
+export interface ChatTextPart {
+  type: 'text'
+  text: string
+}
+
+export type ChatContent = string | Array<ChatImagePart | ChatTextPart>
+
 export interface ChatTurn {
   role: 'user' | 'assistant'
-  content: string
+  content: ChatContent
 }
 
 export interface ChatClient {
   models: string[]
+  visionModel: string
   complete(model: string, turns: ChatTurn[], system: string): Promise<string>
 }
 
@@ -25,8 +38,9 @@ export function gatewayChat(config: GatewayConfig): ChatClient {
   })
   return {
     models: config.models,
+    visionModel: config.visionModel,
     async complete(model, turns, system) {
-      if (!config.models.includes(model)) {
+      if (!config.models.includes(model) && model !== config.visionModel) {
         throw new RunnerError('model is not available')
       }
       const prompt = system.trim()
@@ -35,8 +49,17 @@ export function gatewayChat(config: GatewayConfig): ChatClient {
         result = await llm.chat.completions.create({
           model,
           messages: prompt
-            ? [{ role: 'system', content: prompt }, ...turns]
-            : turns,
+            ? [
+                { role: 'system', content: prompt },
+                ...turns.map((turn) => ({
+                  role: turn.role,
+                  content: turn.content as OpenAI.Chat.Completions.ChatCompletionMessageParam['content'],
+                })),
+              ]
+            : turns.map((turn) => ({
+                role: turn.role,
+                content: turn.content as OpenAI.Chat.Completions.ChatCompletionMessageParam['content'],
+              })),
         })
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err)

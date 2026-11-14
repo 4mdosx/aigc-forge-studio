@@ -886,6 +886,25 @@ button.task-pick.current {
   font-size: 0.84rem;
 }
 
+.intent-prompt-block {
+  margin-top: 0.45rem;
+  padding-top: 0.4rem;
+  border-top: 1px dashed #e4dacd;
+}
+
+.intent-label {
+  margin: 0 0 0.2rem;
+  font-size: 0.72rem;
+  color: #746c63;
+}
+
+.intent-prompt-block .intent-prompt {
+  margin: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 0.76rem;
+  word-break: break-all;
+}
+
 .intent-row {
   display: grid;
   grid-template-columns: 2.6rem 1fr;
@@ -961,6 +980,58 @@ button.task-pick.current {
   gap: 0.45rem;
   align-items: end;
   margin-top: 0.55rem;
+}
+
+.composer-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 0.45rem;
+  align-items: end;
+}
+
+.composer-attach {
+  min-height: 2.6rem;
+  padding: 0 0.6rem;
+}
+
+.chat-image-row {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.chat-image-thumb {
+  position: relative;
+  width: 3.2rem;
+  height: 3.2rem;
+}
+
+.chat-image-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid #e4dacd;
+}
+
+.chat-image-thumb button {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  border-radius: 50%;
+  line-height: 1;
+  font-size: 0.75rem;
+}
+
+.chat-image-hint {
+  font-size: 0.72rem;
+  color: #746c63;
 }
 
 .composer textarea {

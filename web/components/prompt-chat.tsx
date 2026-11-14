@@ -1,7 +1,7 @@
 'use client'
 
-import { ImagePlus, Send } from 'lucide-react'
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
+import { ImagePlus, Paperclip, Send } from 'lucide-react'
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
 
 import { api } from '@/lib/api'
 import { applyPatch, modelSystem, parseReply, type CreativeIntent } from '@/lib/intent'
@@ -23,26 +23,30 @@ export function PromptChat({ onUsePrompt }: { onUsePrompt: (text: string) => voi
   const [systemText, setSystemText] = useState('')
   const [result, setResult] = useState<CreativeIntent | null>(null)
   const [models, setModels] = useState<string[]>([])
+  const [visionModel, setVisionModel] = useState('')
   const [model, setModel] = useState('')
+  const [images, setImages] = useState<string[]>([])
   const [chat, setChat] = useState<Chat | null>(null)
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState('')
   const [busy, setBusy] = useState(false)
   const log = useRef<HTMLDivElement>(null)
   const sending = useRef(false)
+  const fileInput = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     let stop = false
     async function load() {
       try {
         const [listed, templates] = await Promise.all([
-          api<{ chats: ChatSummary[]; models: string[] }>('chats'),
+          api<{ chats: ChatSummary[]; models: string[]; visionModel?: string }>('chats'),
           fetchTemplates(),
         ])
         if (stop) return
         setChats(listed.chats)
         setTemplates(templates)
         setModels(listed.models)
+        setVisionModel(listed.visionModel ?? '')
         setModel((current) =>
           current && listed.models.includes(current) ? current : (listed.models[0] ?? ''),
         )
@@ -104,17 +108,21 @@ export function PromptChat({ onUsePrompt }: { onUsePrompt: (text: string) => voi
     event.preventDefault()
     const content = draft.trim()
     const template = templates.find((item) => item.id === templateId)
-    if (content === '' || !template || !result || sending.current) return
+    if ((content === '' && images.length === 0) || !template || !result || sending.current) return
+    const useModel = images.length > 0 && visionModel ? visionModel : model
     sending.current = true
     setBusy(true)
-    setPending(content)
+    setPending(content || `[图片 ×${images.length}]`)
     setDraft('')
+    const sentImages = images
+    setImages([])
     try {
       const next = await api<Chat>(chat ? `chats/${chat.id}/messages` : 'chats', {
         method: 'POST',
         body: JSON.stringify({
           content,
-          ...(model ? { model } : {}),
+          ...(sentImages.length > 0 ? { images: sentImages } : {}),
+          ...(useModel ? { model: useModel } : {}),
           system: modelSystem(systemText, result),
         }),
       })
@@ -134,11 +142,31 @@ export function PromptChat({ onUsePrompt }: { onUsePrompt: (text: string) => voi
       ])
     } catch (err) {
       setDraft(content)
+      setImages(sentImages)
       setPending('')
       fail(messageOf(err))
     } finally {
       sending.current = false
       setBusy(false)
+    }
+  }
+
+  function onPickImages(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    const remaining = 4 - images.length
+    const picked = files.slice(0, remaining)
+    if (picked.length === 0) return
+    let loaded = 0
+    const urls: string[] = []
+    for (const file of picked) {
+      const reader = new FileReader()
+      reader.onload = () => {
+        if (typeof reader.result === 'string') urls.push(reader.result)
+        loaded += 1
+        if (loaded === picked.length) setImages((current) => [...current, ...urls])
+      }
+      reader.readAsDataURL(file)
     }
   }
 
@@ -215,25 +243,50 @@ export function PromptChat({ onUsePrompt }: { onUsePrompt: (text: string) => voi
             {view.rows.length === 0 ? (
               <p className="muted">说出主体、场景或风格，意图会写在这里。</p>
             ) : (
-              <>
-                <p className="intent-prompt">{view.prompt}</p>
-                <dl>
-                  {view.rows.map((row) => (
-                    <div className="intent-row" key={row.label}>
-                      <dt>{row.label}</dt>
-                      <dd>{row.value}</dd>
-                    </div>
-                  ))}
-                </dl>
-              </>
+              <dl>
+                {view.rows.map((row) => (
+                  <div className="intent-row" key={row.label}>
+                    <dt>{row.label}</dt>
+                    <dd>{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
             )}
+            {view.positive ? (
+              <div className="intent-prompt-block">
+                <p className="intent-label">正面提示词</p>
+                <p className="intent-prompt">{view.positive}</p>
+              </div>
+            ) : null}
+            {view.negative ? (
+              <div className="intent-prompt-block">
+                <p className="intent-label">负面提示词</p>
+                <p className="intent-prompt">{view.negative}</p>
+              </div>
+            ) : null}
+            {view.repaint ? (
+              <div className="intent-prompt-block">
+                <p className="intent-label">局部重绘 · {view.repaint.target || '未指定部位'}</p>
+                <p className="intent-prompt">{view.repaint.prompt || '（缺局部提示词）'}</p>
+              </div>
+            ) : null}
           </div>
-          {view.prompt ? (
+          {view.positive ? (
             <div className="intent-actions">
-              <button type="button" className="quiet" onClick={() => void copy(view.prompt)}>
-                复制
+              <button type="button" className="quiet" onClick={() => void copy(view.positive)}>
+                复制正面
               </button>
-              <button type="button" onClick={() => onUsePrompt(view.prompt)}>
+              {view.negative ? (
+                <button type="button" className="quiet" onClick={() => void copy(view.negative)}>
+                  复制负面
+                </button>
+              ) : null}
+              {view.repaint?.prompt ? (
+                <button type="button" className="quiet" onClick={() => void copy(view.repaint!.prompt)}>
+                  复制局部
+                </button>
+              ) : null}
+              <button type="button" onClick={() => onUsePrompt(view.positive)}>
                 <ImagePlus size={15} />
                 用于出图
               </button>
@@ -274,17 +327,54 @@ export function PromptChat({ onUsePrompt }: { onUsePrompt: (text: string) => voi
         {!chat?.messages.length && !pending ? <p className="muted">从一句话开始。</p> : null}
       </div>
       <form className="composer" onSubmit={(event) => void send(event)}>
-        <textarea
-          value={draft}
-          placeholder="描述你想画的图，Enter 发送"
-          disabled={busy}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={onComposeKey}
-        />
-        <button disabled={busy || draft.trim() === '' || systemText.trim() === '' || !result}>
-          <Send size={15} />
-          {busy ? '等待' : '发送'}
-        </button>
+        {images.length > 0 ? (
+          <div className="chat-image-row">
+            {images.map((url, index) => (
+              <div className="chat-image-thumb" key={`${index}-${url.slice(-12)}`}>
+                <img src={url} alt={`附件 ${index + 1}`} />
+                <button
+                  type="button"
+                  aria-label="移除图片"
+                  onClick={() => setImages((current) => current.filter((_, i) => i !== index))}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            {visionModel ? <span className="chat-image-hint">识图模型 {visionModel}</span> : null}
+          </div>
+        ) : null}
+        <div className="composer-row">
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*"
+            multiple
+            hidden
+            onChange={onPickImages}
+          />
+          <button
+            type="button"
+            className="quiet composer-attach"
+            aria-label="添加图片"
+            title="添加图片（最多 4 张，识图拆解）"
+            disabled={busy || images.length >= 4}
+            onClick={() => fileInput.current?.click()}
+          >
+            <Paperclip size={15} />
+          </button>
+          <textarea
+            value={draft}
+            placeholder="描述你想画的图，或贴图让我拆解，Enter 发送"
+            disabled={busy}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={onComposeKey}
+          />
+          <button disabled={busy || (draft.trim() === '' && images.length === 0) || systemText.trim() === '' || !result}>
+            <Send size={15} />
+            {busy ? '等待' : '发送'}
+          </button>
+        </div>
       </form>
     </>
   )
@@ -343,7 +433,12 @@ function replyOf(message: ChatMessage): { message: string; patch: unknown } | nu
   }
 }
 
-function intentView(intent: CreativeIntent): { rows: Array<{ label: string; value: string }>; prompt: string } {
+function intentView(intent: CreativeIntent): {
+  rows: Array<{ label: string; value: string }>
+  positive: string
+  negative: string
+  repaint: { target: string; prompt: string } | null
+} {
   const rows = [
     ['主体', joinText([intent.subject.type, intent.subject.description])],
     ['服装', joinText([intent.outfit.clothing, ...intent.outfit.accessories])],
@@ -352,14 +447,19 @@ function intentView(intent: CreativeIntent): { rows: Array<{ label: string; valu
     ['环境', intent.environment.background.trim()],
     ['光线', intent.lighting.type.trim()],
     ['风格', joinText([intent.style.genre, intent.style.rendering])],
-    ['排除', intent.constraints.exclude.map((item) => item.trim()).filter(Boolean).join('、')],
   ]
     .filter((row): row is [string, string] => row[1] !== '')
     .map(([label, value]) => ({ label, value }))
-  const body = rows.filter((row) => row.label !== '排除').map((row) => row.value)
-  const exclude = rows.find((row) => row.label === '排除')?.value.replaceAll('、', ', ')
-  const prompt = [...body, ...(exclude ? [`without ${exclude}`] : [])].join(', ')
-  return { rows, prompt }
+  const positive = rows.map((row) => row.value).join(', ')
+  const negative = intent.constraints.exclude
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join(', ')
+  const repaint =
+    intent.repaint.target.trim() !== '' || intent.repaint.prompt.trim() !== ''
+      ? { target: intent.repaint.target.trim(), prompt: intent.repaint.prompt.trim() }
+      : null
+  return { rows, positive, negative, repaint }
 }
 
 function joinText(parts: string[]): string {

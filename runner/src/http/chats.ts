@@ -11,6 +11,7 @@ export function mountChats(app: Hono, runner: Runner): void {
     c.json({
       chats: listChats(runner.db),
       models: runner.chat?.models ?? [],
+      visionModel: runner.chat?.visionModel ?? '',
     }),
   )
 
@@ -24,6 +25,7 @@ export function mountChats(app: Hono, runner: Runner): void {
       undefined,
       {
         content: stringField(body, 'content'),
+        images: body.images,
         model: chosenModel(body, client),
         system: submittedSystem(body),
       },
@@ -41,6 +43,7 @@ export function mountChats(app: Hono, runner: Runner): void {
       c.req.param('id'),
       {
         content: stringField(body, 'content'),
+        images: body.images,
         model: chosenModel(body, client),
         system: submittedSystem(body),
       },
@@ -69,7 +72,7 @@ function chosenModel(
 ): string {
   const model =
     body.model === undefined ? client.models[0] : stringField(body, 'model')
-  if (!model || !client.models.includes(model)) {
+  if (!model || (!client.models.includes(model) && model !== client.visionModel)) {
     throw new RunnerError('model is not available')
   }
   return model

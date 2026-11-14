@@ -50,6 +50,10 @@ export const intentSchema: IntentField = object({
   constraints: object({
     exclude: list,
   }),
+  repaint: object({
+    target: text,
+    prompt: text,
+  }),
 })
 
 export interface CreativeIntent {
@@ -61,6 +65,7 @@ export interface CreativeIntent {
   lighting: { type: string }
   style: { genre: string; rendering: string }
   constraints: { exclude: string[] }
+  repaint: { target: string; prompt: string }
 }
 
 export const initialIntent = emptyField(intentSchema) as CreativeIntent

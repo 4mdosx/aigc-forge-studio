@@ -8,6 +8,7 @@ export interface GatewayConfig {
   apiKey: string
   baseURL: string
   models: string[]
+  visionModel: string
 }
 
 export async function loadGateway(root: string): Promise<GatewayConfig | null> {
@@ -33,6 +34,7 @@ export function readGateway(
     apiKey,
     baseURL,
     models: modelList(source.AI_GATEWAY_MODEL),
+    visionModel: text(source.AI_GATEWAY_VISION_MODEL),
   }
 }
 

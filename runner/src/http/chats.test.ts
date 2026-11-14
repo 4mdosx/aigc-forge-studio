@@ -10,6 +10,7 @@ test('a chat keeps turns and does not create a task', async () => {
   const seen: Array<{ model: string; system: string; turns: ChatTurn[] }> = []
   const runner = testRunner({
     models: ['writer', 'editor'],
+    visionModel: 'seer',
     async complete(model, turns, system) {
       seen.push({
         model,
@@ -103,6 +104,7 @@ test('chat reports a missing gateway and does not keep a failed turn', async () 
 
   runner.chat = {
     models: ['writer'],
+    visionModel: 'seer',
     async complete() {
       throw new Error('down')
     },
@@ -121,6 +123,60 @@ test('chat reports a missing gateway and does not keep a failed turn', async () 
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ content: 'a knight', model: 'other' }),
+  })
+  assert.equal(rejected.status, 400)
+})
+
+test('a message with images sends image parts and stores a marker', async () => {
+  const seen: Array<{ model: string; turns: ChatTurn[] }> = []
+  const runner = testRunner({
+    models: ['writer', 'seer'],
+    visionModel: 'seer',
+    async complete(model, turns) {
+      seen.push({ model, turns })
+      return 'a knight'
+    },
+  })
+  const app = createApp(runner)
+  const dataUrl = 'data:image/png;base64,aGVsbG8='
+  const created = await app.request('/chats', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      content: 'look at this',
+      images: [dataUrl],
+      model: 'seer',
+      system: 'be brief',
+    }),
+  })
+  assert.equal(created.status, 201)
+  const chat = (await created.json()) as {
+    messages: Array<{ role: string; content: string }>
+  }
+  assert.deepEqual(chat.messages[0], {
+    id: chat.messages[0]?.id,
+    role: 'user',
+    content: '[图片 ×1] look at this',
+    createdAt: chat.messages[0]?.createdAt,
+  })
+  assert.deepEqual(seen[0]?.turns, [
+    {
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: dataUrl } },
+        { type: 'text', text: 'look at this' },
+      ],
+    },
+  ])
+  const rejected = await app.request('/chats', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      content: 'bad image',
+      images: ['data:text/plain;base64,aGVsbG8='],
+      model: 'seer',
+      system: 'be brief',
+    }),
   })
   assert.equal(rejected.status, 400)
 })
