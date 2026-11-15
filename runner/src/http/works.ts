@@ -1,8 +1,12 @@
 import type { Hono } from 'hono'
 import type { DatabaseSync } from 'node:sqlite'
+import { randomUUID as uuid } from 'node:crypto'
+
+import { RunnerError } from '../errors.ts'
 
 import type { Runner } from '../task/queue.ts'
 import { adapterFit, suggestAdapter } from '../workflow/binding.ts'
+import { workflowByName } from '../db.ts'
 import type { Prompt } from '../workflow/graph.ts'
 import {
   attachWorkflow,
@@ -118,6 +122,94 @@ export function mountWorks(app: Hono, runner: Runner): void {
       stringField(body, 'workflowName'),
     )
     return c.json({ name: workflow.name })
+  })
+
+  // 内部端点：从库内既有 revision 复制出新 workflow 并挂到 work 上。
+  // 用途：ComfyUI userdata GET 被代理污染时（import/commit 链路全瘫），
+  // 仍能以数据层方式复制 workflow。runner 进程自己写 DB 不经外部进程。
+  app.post('/internal/import-workflow-copy', async (c) => {
+    const body = await jsonObject(c.req)
+    const name = stringField(body, 'name')
+    const sourceWorkflow = workflowByName(
+      runner.db,
+      stringField(body, 'sourceWorkflow'),
+    )
+    const sourceVersion = stringField(body, 'sourceVersion')
+    const work = workByName(runner.db, stringField(body, 'workName'))
+    const source = runner.db
+      .prepare(
+        `SELECT id, ui_json, api_json FROM workflow_revisions
+         WHERE workflow_id = ? AND version = ?`,
+      )
+      .get(sourceWorkflow.id, sourceVersion) as
+      | { id: string; ui_json: string; api_json: string }
+      | undefined
+    if (!source)
+      throw new RunnerError(
+        `version ${sourceVersion} not found in ${sourceWorkflow.name}`,
+      )
+    // 版本号沿用 runner 字符集，全局查重
+    const letters = 'abcdefghijklmnopqrstuvwxyz'
+    const alphabet = letters + '0123456789'
+    let version: string
+    for (;;) {
+      version = letters[Math.floor(Math.random() * letters.length)] ?? 'a'
+      for (let i = 0; i < 7; i += 1) {
+        version += alphabet[Math.floor(Math.random() * alphabet.length)]
+      }
+      const hit = runner.db
+        .prepare('SELECT 1 FROM workflow_revisions WHERE version = ?')
+        .get(version)
+      if (!hit) break
+    }
+    const workflowId = uuid()
+    const revisionId = uuid()
+    const now = runner.now().toISOString()
+    const message =
+      body.message === undefined
+        ? `copy of ${sourceWorkflow.name} ${sourceVersion}`
+        : stringField(body, 'message')
+    // adapter：复制源 workflow 绑定的 adapter map 并挂新版本键
+    const sourceLink = linksOf(runner.db, work.id).find(
+      (link) => link.name === sourceWorkflow.name,
+    )
+    const adapterMap = sourceLink
+      ? JSON.parse(sourceLink.adapter_json)
+      : {}
+    const latestKey = Object.keys(adapterMap).at(-1)
+    if (latestKey) adapterMap[version] = adapterMap[latestKey]
+    const db = runner.db
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      db.prepare(
+        `INSERT INTO workflows (id, name, comfy_path, current_branch, created_at)
+         VALUES (?, ?, ?, 'main', ?)`,
+      ).run(
+        workflowId,
+        name,
+        body.comfyPath === undefined
+          ? sourceWorkflow.comfy_path
+          : stringField(body, 'comfyPath'),
+        now,
+      )
+      db.prepare(
+        `INSERT INTO workflow_revisions (id, workflow_id, version, ui_json, api_json, message, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(revisionId, workflowId, version, source.ui_json, source.api_json, message, now)
+      db.prepare(
+        `INSERT INTO workflow_branches (workflow_id, name, head_revision_id)
+         VALUES (?, 'main', ?)`,
+      ).run(workflowId, revisionId)
+      db.prepare(
+        `INSERT INTO work_workflows (work_id, workflow_id, adapter_json)
+         VALUES (?, ?, ?)`,
+      ).run(work.id, workflowId, JSON.stringify(adapterMap))
+      db.exec('COMMIT')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
+    }
+    return c.json({ id: workflowId, version, revisionId }, 201)
   })
 }
 
