@@ -15,6 +15,10 @@ const PART_SUFFIX = '.part'
 const PROGRESS_FLUSH_MS = 1000
 // 停滞超时：一次尝试内连续无数据多久算死连接
 const STALL_TIMEOUT_MS = 30_000
+// 停滞判定按速率算：窗口内字节增量低于「最低速率 × 窗口」视为死连接（涓涓细流也算）
+const STALL_MIN_RATE_BPS = 32 * 1024
+// 但速率阈值有个下限，防止测试用短窗口时阈值趋零误伤
+const STALL_MIN_FLOOR = 64 * 1024
 // 自动重试上限（含首次）；超过则落 failed
 const MAX_ATTEMPTS = 20
 // 重试间隔
@@ -384,15 +388,21 @@ async function attemptOnce(
       id,
     )
 
-  // 停滞计时器：无数据超过 stallTimeoutMs 就 abort 本次尝试
-  let stallTimer: ReturnType<typeof setTimeout> | undefined
-  const touch = (): void => {
-    clearTimeout(stallTimer)
-    stallTimer = setTimeout(() => controller.abort(STALL_REASON), stallTimeoutMs)
-  }
+  // 停滞看护：周期性检查字节增量，增量不足（含完全停滞）就 abort 本次尝试。
+  // 不能只看「有没有字节」——hf-mirror 会把死连接吊成涓涓细流骗过纯时间判定。
+  const stallMinBytes = Math.max(
+    STALL_MIN_FLOOR,
+    Math.floor((STALL_MIN_RATE_BPS * stallTimeoutMs) / 1000),
+  )
+  let lastTickBytes = done
+  const stallTimer = setInterval(() => {
+    if (done - lastTickBytes < stallMinBytes) {
+      controller.abort(STALL_REASON)
+    }
+    lastTickBytes = done
+  }, stallTimeoutMs)
 
   try {
-    touch()
     const headers: Record<string, string> = {}
     if (offset > 0) headers.Range = `bytes=${offset}-`
     const response = await fetch(row.url, {
@@ -409,6 +419,7 @@ async function attemptOnce(
       offset = 0
       done = 0
       append = false
+      lastTickBytes = 0
       trainer.db
         .prepare('UPDATE downloads SET resumed_from = NULL WHERE id = ?')
         .run(id)
@@ -430,7 +441,6 @@ async function attemptOnce(
       ),
       async function* (source: AsyncIterable<Uint8Array>) {
         for await (const chunk of source) {
-          touch()
           done += chunk.length
           const now = Date.now()
           if (now - lastFlush > PROGRESS_FLUSH_MS) {
@@ -446,7 +456,7 @@ async function attemptOnce(
       },
       createWriteStream(partPath, { flags: append ? 'a' : 'w' }),
     )
-    clearTimeout(stallTimer)
+    clearInterval(stallTimer)
 
     if (total !== null && done !== total) {
       throw new Error(`size mismatch: got ${done}, expected ${total}`)
@@ -462,7 +472,7 @@ async function attemptOnce(
       )
       .run(done, total, sha256, trainer.now().toISOString(), id)
   } finally {
-    clearTimeout(stallTimer)
+    clearInterval(stallTimer)
   }
 }
 
