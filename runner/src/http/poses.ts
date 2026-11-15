@@ -250,6 +250,9 @@ function dualNegative(runner: Runner, character: string): string {
       'extra digits', 'fewer digits', 'cropped', 'worst quality', 'low quality',
       'low score', 'bad score', 'average score', 'signature', 'watermark',
       'username', 'blurry', 'nsfw', 'explicit',
+      // depth ControlNet 会把黑背景解释成「远」，渲染成环境灰蓝渐变——
+      // 接受为链路特征，此处只做轻度压制，不强求全白背景。
+      'gradient background', 'colored background', 'depth of field',
     ],
     extra,
   ).join(', ')
