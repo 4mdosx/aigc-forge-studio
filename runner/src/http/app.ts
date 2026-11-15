@@ -5,6 +5,7 @@ import type { Runner } from '../task/queue.ts'
 import { mountChats } from './chats.ts'
 import { mountData } from './data.ts'
 import { mountFiles } from './files.ts'
+import { mountPoses } from './poses.ts'
 import { mountTasks } from './tasks.ts'
 import { mountWorkflows } from './workflows.ts'
 import { mountWorks } from './works.ts'
@@ -23,5 +24,6 @@ export function createApp(runner: Runner): Hono {
   mountChats(app, runner)
   mountFiles(app, runner)
   mountData(app, runner)
+  mountPoses(app, runner)
   return app
 }
