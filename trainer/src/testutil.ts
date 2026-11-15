@@ -9,6 +9,8 @@ export interface Fixture {
   rangeRequests: number
   /** 可运行时切换的失败开关 */
   fail: boolean
+  /** 暂停发流（连接保持但不写数据，测停滞超时） */
+  paused: boolean
   close: () => Promise<void>
 }
 
@@ -35,7 +37,7 @@ export async function startFixture(
   const sha256 = createHash('sha256').update(buffer).digest('hex')
   const chunkSize = options.chunkSize ?? 64 * 1024
   const dripMs = options.dripMs ?? 0
-  const state = { fail: options.fail ?? false }
+  const state = { fail: options.fail ?? false, paused: false }
   const server: Server = createServer((req, res) => {
     if (state.fail) {
       res.writeHead(500)
@@ -83,6 +85,12 @@ export async function startFixture(
     set fail(v: boolean) {
       state.fail = v
     },
+    get paused() {
+      return state.paused
+    },
+    set paused(v: boolean) {
+      state.paused = v
+    },
     get rangeRequests() {
       return rangeRequests
     },
@@ -95,6 +103,9 @@ export async function startFixture(
     data: Buffer,
   ): Promise<void> {
     for (let i = 0; i < data.length; i += chunkSize) {
+      if (res.destroyed) return
+      // 暂停时挂住不发数据，连接保持——客户端侧表现为停滞
+      while (state.paused && !res.destroyed) await sleep(50)
       if (res.destroyed) return
       res.write(data.subarray(i, i + chunkSize))
       if (dripMs > 0) await sleep(dripMs)

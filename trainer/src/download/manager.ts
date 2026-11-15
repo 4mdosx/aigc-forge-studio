@@ -13,6 +13,18 @@ import { resolveInRoot, type RootRegistry } from '../roots.ts'
 
 const PART_SUFFIX = '.part'
 const PROGRESS_FLUSH_MS = 1000
+// 停滞超时：一次尝试内连续无数据多久算死连接
+const STALL_TIMEOUT_MS = 30_000
+// 自动重试上限（含首次）；超过则落 failed
+const MAX_ATTEMPTS = 20
+// 重试间隔
+const RETRY_DELAY_MS = 3_000
+
+export interface RetryOptions {
+  stallTimeoutMs?: number
+  maxAttempts?: number
+  retryDelayMs?: number
+}
 
 export type DownloadStatus =
   | 'pending'
@@ -46,6 +58,8 @@ export interface Trainer {
   /** 运行中的下载：id → run promise，cancel 用它等状态落库 */
   runs: Map<string, Promise<void>>
   now: () => Date
+  /** 重试参数覆盖（测试用；缺省用内置常量） */
+  retry?: RetryOptions
 }
 
 export interface DownloadJson {
@@ -252,17 +266,98 @@ async function start(
   }
 }
 
+// 单次尝试的终止信号：controller.abort('stall') 时 signal.reason === 'stall'
+const STALL_REASON = 'stall'
+
+// 下载执行外层：自动重试循环。
+// 瞬时错误（网络中断、停滞超时）→ 断点续传重试；用户取消或穷尽重试才落终态。
 async function run(
   trainer: Trainer,
   id: string,
   resume: boolean,
 ): Promise<void> {
+  const opts = {
+    stallTimeoutMs: trainer.retry?.stallTimeoutMs ?? STALL_TIMEOUT_MS,
+    maxAttempts: trainer.retry?.maxAttempts ?? MAX_ATTEMPTS,
+    retryDelayMs: trainer.retry?.retryDelayMs ?? RETRY_DELAY_MS,
+  }
+  for (let attempt = 1; ; attempt += 1) {
+    // 重试间隔里可能被 cancel 直接写库，循环顶重新读状态
+    const row = rowOf(trainer.db, id)
+    if (!row) return
+    if (row.status !== 'pending' && row.status !== 'running') return
+    const target = resolveInRoot(trainer.roots, row.root, row.path.split('/'))
+    const partPath = `${target}${PART_SUFFIX}`
+    const controller = new AbortController()
+    trainer.controllers.set(id, controller)
+    try {
+      await attemptOnce(
+        trainer,
+        id,
+        controller,
+        partPath,
+        attempt > 1 || resume,
+        opts.stallTimeoutMs,
+      )
+      return
+    } catch (err) {
+      const reason = controller.signal.reason
+      const cancelledByUser =
+        controller.signal.aborted && reason !== STALL_REASON
+      const bytes = statSyncSafe(partPath) ?? 0
+      if (cancelledByUser) {
+        trainer.db
+          .prepare(
+            `UPDATE downloads
+             SET status = 'cancelled', bytes_done = ?, error = 'cancelled by request', completed_at = ?
+             WHERE id = ?`,
+          )
+          .run(bytes, trainer.now().toISOString(), id)
+        return
+      }
+      const message =
+        reason === STALL_REASON
+          ? `stalled: no data for ${opts.stallTimeoutMs}ms`
+          : err instanceof Error
+            ? err.message
+            : String(err)
+      if (attempt >= opts.maxAttempts) {
+        trainer.db
+          .prepare(
+            `UPDATE downloads
+             SET status = 'failed', bytes_done = ?, error = ?, completed_at = ?
+             WHERE id = ?`,
+          )
+          .run(bytes, `${message} (after ${attempt} attempts)`, trainer.now().toISOString(), id)
+        return
+      }
+      // 瞬时失败：记一笔，断点续传重试
+      trainer.db
+        .prepare(
+          `UPDATE downloads
+           SET bytes_done = ?, error = ?
+           WHERE id = ?`,
+        )
+        .run(bytes, `attempt ${attempt} failed (${message}); retrying`, id)
+      await sleep(opts.retryDelayMs)
+    } finally {
+      trainer.controllers.delete(id)
+    }
+  }
+}
+
+async function attemptOnce(
+  trainer: Trainer,
+  id: string,
+  controller: AbortController,
+  partPath: string,
+  resume: boolean,
+  stallTimeoutMs: number,
+): Promise<void> {
   const row = rowOf(trainer.db, id)
   if (!row) return
-  const target = resolveInRoot(trainer.roots, row.root, row.path.split('/'))
-  const partPath = `${target}${PART_SUFFIX}`
-  const dir = join(target, '..')
-  await mkdir(dir, { recursive: true })
+  const target = partPath.slice(0, -PART_SUFFIX.length)
+  await mkdir(join(partPath, '..'), { recursive: true })
 
   let offset = 0
   let done = 0
@@ -275,8 +370,6 @@ async function run(
   }
   done = offset
 
-  const controller = new AbortController()
-  trainer.controllers.set(id, controller)
   trainer.db
     .prepare(
       `UPDATE downloads
@@ -291,7 +384,15 @@ async function run(
       id,
     )
 
+  // 停滞计时器：无数据超过 stallTimeoutMs 就 abort 本次尝试
+  let stallTimer: ReturnType<typeof setTimeout> | undefined
+  const touch = (): void => {
+    clearTimeout(stallTimer)
+    stallTimer = setTimeout(() => controller.abort(STALL_REASON), stallTimeoutMs)
+  }
+
   try {
+    touch()
     const headers: Record<string, string> = {}
     if (offset > 0) headers.Range = `bytes=${offset}-`
     const response = await fetch(row.url, {
@@ -329,6 +430,7 @@ async function run(
       ),
       async function* (source: AsyncIterable<Uint8Array>) {
         for await (const chunk of source) {
+          touch()
           done += chunk.length
           const now = Date.now()
           if (now - lastFlush > PROGRESS_FLUSH_MS) {
@@ -344,6 +446,7 @@ async function run(
       },
       createWriteStream(partPath, { flags: append ? 'a' : 'w' }),
     )
+    clearTimeout(stallTimer)
 
     if (total !== null && done !== total) {
       throw new Error(`size mismatch: got ${done}, expected ${total}`)
@@ -358,30 +461,13 @@ async function run(
          WHERE id = ?`,
       )
       .run(done, total, sha256, trainer.now().toISOString(), id)
-  } catch (err) {
-    const cancelled = controller.signal.aborted
-    const message = cancelled
-      ? 'cancelled by request'
-      : err instanceof Error
-        ? err.message
-        : String(err)
-    const bytes = statSyncSafe(partPath) ?? done
-    trainer.db
-      .prepare(
-        `UPDATE downloads
-         SET status = ?, bytes_done = ?, error = ?, completed_at = ?
-         WHERE id = ?`,
-      )
-      .run(
-        cancelled ? 'cancelled' : 'failed',
-        bytes,
-        message,
-        trainer.now().toISOString(),
-        id,
-      )
   } finally {
-    trainer.controllers.delete(id)
+    clearTimeout(stallTimer)
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((ok) => setTimeout(ok, ms))
 }
 
 function statSyncSafe(path: string): number | null {

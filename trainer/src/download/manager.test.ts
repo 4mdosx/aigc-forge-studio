@@ -37,6 +37,8 @@ beforeEach(() => {
     controllers: new Map(),
     runs: new Map(),
     now: () => new Date(),
+    // 测试档重试参数：快速失败/快速重试，避免套件拖时间
+    retry: { stallTimeoutMs: 500, maxAttempts: 2, retryDelayMs: 50 },
   }
 })
 
@@ -67,6 +69,24 @@ function rowOf(id: string): DownloadRow {
   return trainer.db
     .prepare('SELECT * FROM downloads WHERE id = ?')
     .get(id) as unknown as DownloadRow
+}
+
+// 等某次尝试失败并记下 retrying 备注后续传中
+async function waitUntilRetrying(
+  id: string,
+  timeoutMs = 10000,
+): Promise<void> {
+  const start = Date.now()
+  for (;;) {
+    const row = trainer.db
+      .prepare('SELECT error FROM downloads WHERE id = ?')
+      .get(id) as { error: string | null } | undefined
+    if (row?.error?.includes('retrying')) return
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`timeout waiting retry marker, got ${row?.error ?? 'gone'}`)
+    }
+    await new Promise((ok) => setTimeout(ok, 25))
+  }
 }
 
 test('download completes and records sha256', async () => {
@@ -194,6 +214,58 @@ test('failed download records error and retry resumes after server heals', async
     await trainer.runs.get(resumed.id)
     const final = rowOf(row.id)
     assert.equal(final.status, 'completed')
+    assert.equal(final.sha256, fixture.sha256)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('transient failure auto-retries to completion', async () => {
+  const fixture = await startFixture(4096, { fail: true })
+  try {
+    trainer.retry = { stallTimeoutMs: 500, maxAttempts: 5, retryDelayMs: 100 }
+    const { row } = createOrAttach(trainer, {
+      url: fixture.url,
+      root: 'models',
+      path: 'auto.bin',
+    })
+    // 第一次尝试失败后应自动续传而非落 failed
+    await waitUntilRetrying(row.id)
+    fixture.fail = false
+    await trainer.runs.get(row.id)
+    const final = rowOf(row.id)
+    assert.equal(final.status, 'completed')
+    assert.equal(final.sha256, fixture.sha256)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('stalled connection aborts attempt and auto-resumes from .part', async () => {
+  const fixture = await startFixture(1024 * 1024, {
+    dripMs: 20,
+    chunkSize: 16 * 1024,
+  })
+  try {
+    trainer.retry = { stallTimeoutMs: 400, maxAttempts: 3, retryDelayMs: 50 }
+    const { row } = createOrAttach(trainer, {
+      url: fixture.url,
+      root: 'models',
+      path: 'stall.bin',
+    })
+    await waitUntil(row.id, 'running')
+    await new Promise((ok) => setTimeout(ok, 150))
+    // 服务端挂住不发数据 → 客户端停滞超时 → 该次尝试 abort
+    fixture.paused = true
+    await waitUntilRetrying(row.id)
+    const partPath = join(tmp, 'models', 'stall.bin.part')
+    const partSize = statSync(partPath).size
+    assert.ok(partSize > 0, 'partial data should survive the stall')
+    fixture.paused = false
+    await trainer.runs.get(row.id)
+    const final = rowOf(row.id)
+    assert.equal(final.status, 'completed')
+    assert.equal(final.resumed_from, partSize)
     assert.equal(final.sha256, fixture.sha256)
   } finally {
     await fixture.close()
