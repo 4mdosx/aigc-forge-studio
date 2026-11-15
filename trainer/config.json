@@ -1,0 +1,13 @@
+{
+  "trainer": {
+    "host": "127.0.0.1",
+    "//host": "部署到训练机后改成 0.0.0.0",
+    "port": 8788,
+    "db": "data/trainer.sqlite",
+    "roots": {
+      "models": "C:\\ComfyUI\\models",
+      "training": "D:\\trainer-data\\training",
+      "//roots": "根目录在这里写死；API 只传 root 名字 + 相对路径，见 GET /roots"
+    }
+  }
+}

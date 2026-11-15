@@ -1,0 +1,22 @@
+import { Hono } from 'hono'
+
+import type { Trainer } from '../download/manager.ts'
+import { TrainerError } from '../errors.ts'
+import { mountDownloads } from './downloads.ts'
+import { mountRoots } from './roots.ts'
+import { mountUpload } from './upload.ts'
+
+export function createApp(trainer: Trainer): Hono {
+  const app = new Hono()
+  app.onError((err, c) => {
+    const status = err instanceof TrainerError ? err.status : 500
+    const message = err instanceof Error ? err.message : String(err)
+    return c.json({ error: message }, status as 400)
+  })
+  app.notFound((c) => c.json({ error: 'not found' }, 404))
+  app.get('/health', (c) => c.json({ ok: true }))
+  mountRoots(app, trainer)
+  mountUpload(app, trainer)
+  mountDownloads(app, trainer)
+  return app
+}
