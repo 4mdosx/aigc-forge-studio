@@ -157,7 +157,7 @@ export function mountPoses(app: Hono, runner: Runner): void {
     writeFileSync(join(dir, 'meta.json'), JSON.stringify(meta, null, 2))
 
     // 5. dual 测试任务（异步，不阻塞条目落盘）
-    await client.uploadBytes(flat, 'depth.png', srcSub)
+    await client.uploadBytes(depth, 'depth.png', srcSub)
     await client.uploadBytes(skeleton, 'skeleton.png', srcSub)
     const dualTask = createTask(
       runner.db,
