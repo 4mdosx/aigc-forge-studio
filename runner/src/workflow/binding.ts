@@ -12,6 +12,14 @@ export interface Binding {
 export interface AdapterMap {
   inputs: Record<string, Binding>
   outputs: Record<string, Binding>
+  // prompt 组装层（2026-11-15 三段模型）：compose 时素材段(rawPositive/rawNegative)
+  // + 目的段(本块 anchors/negativeExtra) + 方言段(checkpoint promptProfile) 在
+  // createTask 内组装。inputs/outputs 不受影响，缺省行为与旧版完全一致。
+  prompt?: {
+    compose?: boolean
+    anchors?: string[]
+    negativeExtra?: string[]
+  }
 }
 
 export function parseAdapter(raw: unknown): AdapterMap {
@@ -22,7 +30,33 @@ export function parseAdapter(raw: unknown): AdapterMap {
   return {
     inputs: bindings(record.inputs, true),
     outputs: bindings(record.outputs, false),
+    ...(record.prompt !== undefined ? { prompt: parsePromptIntent(record.prompt) } : {}),
   }
+}
+
+function parsePromptIntent(raw: unknown): AdapterMap['prompt'] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new RunnerError('adapter prompt must be an object')
+  }
+  const record = raw as Record<string, unknown>
+  const intent: NonNullable<AdapterMap['prompt']> = {}
+  if (record.compose !== undefined) {
+    if (typeof record.compose !== 'boolean') {
+      throw new RunnerError('adapter prompt.compose must be a boolean')
+    }
+    intent.compose = record.compose
+  }
+  intent.anchors = stringArrayOf(record.anchors, 'prompt.anchors')
+  intent.negativeExtra = stringArrayOf(record.negativeExtra, 'prompt.negativeExtra')
+  return intent
+}
+
+function stringArrayOf(raw: unknown, label: string): string[] | undefined {
+  if (raw === undefined) return undefined
+  if (!Array.isArray(raw) || raw.some((x) => typeof x !== 'string')) {
+    throw new RunnerError(`adapter ${label} must be a string array`)
+  }
+  return raw as string[]
 }
 
 export function suggestAdapter(prompt: Prompt): AdapterMap | null {

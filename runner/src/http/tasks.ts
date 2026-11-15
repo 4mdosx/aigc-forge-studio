@@ -11,6 +11,7 @@ import {
   stringField,
   taskJson,
 } from './request.ts'
+import { storedPaths } from '../task/records.ts'
 
 export function mountTasks(app: Hono, runner: Runner): void {
   app.get('/tasks', (c) => {
@@ -45,8 +46,36 @@ export function mountTasks(app: Hono, runner: Runner): void {
       },
       runner.now(),
       runner.randomSeed,
+      runner.dataDir,
     )
     return c.json(taskJson(runner.db, task), 201)
+  })
+
+  // 素材段溯源（2026-11-15 三段模型）：output 路径反查产图任务，
+  // 带出当时的最终 payload（positive/negative 等）作为 repaint 素材段。
+  app.get('/trace', (c) => {
+    const path = c.req.query('path')
+    if (!path) throw new RunnerError('path query is required')
+    const rows = runner.db
+      .prepare(`SELECT * FROM tasks WHERE output_path IS NOT NULL ORDER BY created_at DESC, rowid DESC`)
+      .all() as unknown as TaskRow[]
+    for (const row of rows) {
+      const outputs = storedPaths(row).filter((p) => p.startsWith('output/'))
+      if (!outputs.includes(path)) continue
+      const workName =
+        (runner.db
+          .prepare(`SELECT name FROM works WHERE id = ?`)
+          .get(row.work_id) as { name: string } | undefined)?.name ?? null
+      return c.json({
+        taskId: row.id,
+        task: row.task,
+        workName,
+        workflowName: row.workflow_name,
+        createdAt: row.created_at,
+        payload: JSON.parse(row.input_json ?? '{}') as unknown,
+      })
+    }
+    throw new RunnerError(`no task produced output ${path}`, 404)
   })
 
   app.get('/tasks/:id', (c) =>

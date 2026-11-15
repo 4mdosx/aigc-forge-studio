@@ -18,6 +18,7 @@ import { RunnerError } from '../errors.ts'
 import { comfyFilePath, viewTarget } from '../path.ts'
 import { applyAdapter, matchNode, parseAdapter } from '../workflow/binding.ts'
 import type { Prompt } from '../workflow/graph.ts'
+import { applyCompose } from '../work/promptCompose.ts'
 import {
   linkOf,
   readAdapterMap,
@@ -39,6 +40,7 @@ export function createTask(
   input: TaskInput,
   now: Date,
   randomSeed: () => number,
+  dataDir?: string,
 ): TaskRow {
   const task = required(input.task, 'task')
   if (input.parentTaskId) taskById(db, input.parentTaskId)
@@ -65,7 +67,16 @@ export function createTask(
     throw new RunnerError('workflow version has no adapter')
   const adapter = resolved.adapter
   const api = JSON.parse(revision.api_json) as Prompt
-  const applied = applyAdapter(api, adapter, input.payload ?? {}, randomSeed)
+  const payload = { ...(input.payload ?? {}) }
+  if (dataDir) {
+    applyCompose(api, adapter, payload, dataDir)
+  } else if (
+    (payload.rawPositive !== undefined || payload.rawNegative !== undefined) &&
+    adapter.prompt?.compose
+  ) {
+    throw new RunnerError('prompt.compose requires runner dataDir')
+  }
+  const applied = applyAdapter(api, adapter, payload, randomSeed)
   const id = randomUUID()
   db.prepare(
     `INSERT INTO tasks
