@@ -7,7 +7,6 @@ import type { Runner } from '../task/queue.ts'
 
 interface ManifestEntry {
   id: string
-  nsfw?: boolean
   enabled?: boolean
   canvas?: string
   canvases?: string[]
@@ -54,7 +53,6 @@ export function mountData(app: Hono, runner: Runner): void {
     const filtered = poses.filter(
       (p) =>
         flagMatches(p.enabled, c.req.query('enabled')) &&
-        flagMatches(p.nsfw, c.req.query('nsfw')) &&
         (!canvas || (p.canvases ?? []).includes(canvas)),
     )
     return c.json({ total: filtered.length, poses: filtered })
@@ -68,7 +66,6 @@ export function mountData(app: Hono, runner: Runner): void {
     const filtered = compositions.filter(
       (p) =>
         flagMatches(p.enabled, c.req.query('enabled')) &&
-        flagMatches(p.nsfw, c.req.query('nsfw')) &&
         (!canvas || p.canvas === canvas) &&
         (!pose || poseMatches(p, pose)),
     )
