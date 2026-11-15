@@ -59,6 +59,7 @@ Desktop.ini
 # ========================================
 /runner/node_modules/
 /web/node_modules/
+/trainer/node_modules/
 /web/.next/
 /web/tsconfig.tsbuildinfo
 /runner/runner.sqlite
