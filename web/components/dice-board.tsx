@@ -27,7 +27,8 @@ const TIER_LABEL: Record<Tier, string> = {
 
 interface TierConfig {
   values: string
-  count: number
+  min: number
+  max: number
 }
 
 interface DiceField {
@@ -83,10 +84,13 @@ function wordsOf(values: string): string[] {
   return [...new Set(values.split(/[,;\n]/).map((w) => w.trim()).filter((w) => w !== ''))]
 }
 
-function pickWords(values: string, count: number): string[] {
+// 区间内随机取 n，再部分洗牌取前 n 个
+function pickWords(values: string, min: number, max: number): string[] {
   const words = wordsOf(values)
-  const n = Math.max(0, Math.min(count, words.length))
-  // 部分洗牌取前 n 个
+  const lo = Math.min(min, max)
+  const hi = Math.max(min, max)
+  const span = hi - lo + 1
+  const n = Math.max(0, Math.min(lo + Math.floor(Math.random() * span), words.length))
   for (let i = 0; i < n; i += 1) {
     const j = i + Math.floor(Math.random() * (words.length - i))
     ;[words[i], words[j]] = [words[j], words[i]]
@@ -95,8 +99,9 @@ function pickWords(values: string, count: number): string[] {
 }
 
 const tierOf = (field: LoadedField, tier: Tier): TierConfig =>
-  field.tiers[tier] ?? { values: '', count: 1 }
+  field.tiers[tier] ?? { values: '', min: 1, max: 1 }
 
+// 旧版单值 count → min=max=count；区间不合法时收拢
 function normalizeTiers(raw: unknown): Partial<Record<Tier, TierConfig>> {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
   const out: Partial<Record<Tier, TierConfig>> = {}
@@ -104,10 +109,15 @@ function normalizeTiers(raw: unknown): Partial<Record<Tier, TierConfig>> {
     if (!TIERS.includes(tier as Tier)) continue
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue
     const t = value as Record<string, unknown>
-    const count = Number(t.count)
+    const clamp = (n: number) =>
+      Number.isInteger(n) && n >= 0 ? Math.min(n, 99) : 1
+    let min = clamp(Number(t.min ?? t.count ?? 1))
+    let max = clamp(Number(t.max ?? t.count ?? 1))
+    if (max < min) max = min
     out[tier as Tier] = {
       values: typeof t.values === 'string' ? t.values : '',
-      count: Number.isInteger(count) && count >= 0 ? Math.min(count, 99) : 1,
+      min,
+      max,
     }
   }
   return out
@@ -291,7 +301,7 @@ export function DiceBoard() {
           for (const tier of TIERS) {
             if (!enabled[tier]) continue
             const cfg = tierOf(f, tier)
-            const words = pickWords(cfg.values, cfg.count)
+            const words = pickWords(cfg.values, cfg.min, cfg.max)
             if (words.length > 0) picked[tier] = words
           }
           return { ...f, picked }
@@ -309,7 +319,7 @@ export function DiceBoard() {
         for (const tier of TIERS) {
           if (!enabled[tier]) continue
           const cfg = tierOf(f, tier)
-          const words = pickWords(cfg.values, cfg.count)
+          const words = pickWords(cfg.values, cfg.min, cfg.max)
           if (words.length > 0) picked[tier] = words
         }
         return { ...f, picked }
@@ -415,7 +425,8 @@ export function DiceBoard() {
               const existing = field.tiers[bucket as Tier]
               field.tiers[bucket as Tier] = {
                 values: words.join(', '),
-                count: existing?.count ?? 1,
+                min: existing?.min ?? 1,
+                max: existing?.max ?? 1,
               }
               touched += 1
             }
@@ -433,13 +444,14 @@ export function DiceBoard() {
             (body.fields as Array<Record<string, unknown>>).map((f) => {
               // 旧版单层配置（values/count）→ common 层
               if (typeof f.values === 'string' || f.count !== undefined) {
-                const count = Number(f.count)
+                const count = Number(f.count ?? f.max ?? 1)
                 return {
                   name: String(f.name ?? ''),
                   tiers: {
                     common: {
                       values: typeof f.values === 'string' ? f.values : '',
-                      count: Number.isInteger(count) && count >= 0 ? count : 1,
+                      min: Number.isInteger(count) && count >= 0 ? count : 1,
+                      max: Number.isInteger(count) && count >= 0 ? count : 1,
                     },
                   },
                 }
@@ -590,7 +602,7 @@ export function DiceBoard() {
                 0,
               )
               const takeTotal = TIERS.filter((t) => enabled[t]).reduce(
-                (sum, t) => sum + (wordsOf(tierOf(field, t).values).length > 0 ? tierOf(field, t).count : 0),
+                (sum, t) => sum + (wordsOf(tierOf(field, t).values).length > 0 ? tierOf(field, t).max : 0),
                 0,
               )
               return (
@@ -628,13 +640,31 @@ export function DiceBoard() {
                               <input
                                 type="number"
                                 min={0}
-                                max={99}
-                                value={cfg.count}
-                                onChange={(e) =>
+                                max={cfg.max}
+                                value={cfg.min}
+                                onChange={(e) => {
+                                  // min 最多到 max；max 跟着抬起，保持区间合法
+                                  const min = Math.min(99, Math.max(0, Number(e.target.value) || 0))
                                   updateTier(index, tier, {
-                                    count: Math.max(0, Number(e.target.value) || 0),
+                                    min,
+                                    max: Math.max(min, cfg.max),
                                   })
-                                }
+                                }}
+                              />
+                              –
+                              <input
+                                type="number"
+                                min={cfg.min}
+                                max={99}
+                                value={cfg.max}
+                                onChange={(e) => {
+                                  // max 至少为 min；min 跟着压下
+                                  const max = Math.min(99, Math.max(0, Number(e.target.value) || 0))
+                                  updateTier(index, tier, {
+                                    max,
+                                    min: Math.min(max, cfg.min),
+                                  })
+                                }}
                               />
                               个
                             </label>

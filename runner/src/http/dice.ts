@@ -20,9 +20,11 @@ export const TIER_KEYS = [
 
 interface TierInput {
   values: string
-  count: number
+  min: number
+  max: number
 }
 
+// 每层取值数量是区间 [min, max]，掷骰时在区间内随机；旧版单值 count → min=max=count
 function parseTiers(raw: unknown, fieldName: string): Record<string, TierInput> {
   if (raw === null || raw === undefined) return {}
   if (typeof raw !== 'object' || Array.isArray(raw)) {
@@ -38,11 +40,18 @@ function parseTiers(raw: unknown, fieldName: string): Record<string, TierInput> 
     }
     const t = value as Record<string, unknown>
     const values = typeof t.values === 'string' ? t.values : ''
-    const count = Number(t.count)
-    if (!Number.isInteger(count) || count < 0 || count > 99) {
-      throw new RunnerError(`field ${fieldName}: tier ${tier} count must be an integer 0..99`)
+    const min = Number(t.min ?? t.count ?? 1)
+    const max = Number(t.max ?? t.count ?? 1)
+    if (!Number.isInteger(min) || min < 0 || min > 99) {
+      throw new RunnerError(`field ${fieldName}: tier ${tier} min must be an integer 0..99`)
     }
-    out[tier] = { values, count }
+    if (!Number.isInteger(max) || max < 0 || max > 99) {
+      throw new RunnerError(`field ${fieldName}: tier ${tier} max must be an integer 0..99`)
+    }
+    if (max < min) {
+      throw new RunnerError(`field ${fieldName}: tier ${tier} max must be >= min`)
+    }
+    out[tier] = { values, min, max }
   }
   return out
 }
