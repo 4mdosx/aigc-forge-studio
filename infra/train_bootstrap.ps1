@@ -111,8 +111,13 @@ if (Invoke-Probe $VenvPython @("-c", "import torch; exit(0 if torch.__version__.
 }
 
 # --- 4. requirements（幂等；已装包 pip 直接秒过） ---
+# pip 解析 requirements 里的相对路径（-e .）是相对当前工作目录，不是相对
+# requirements 文件位置——必须把 cwd 切到 sd-scripts 根（实测坑）。
 Write-Host "Syncing requirements.txt..."
-Invoke-Checked $VenvPython @("-m", "pip", "install", "--upgrade", "-r", (Join-Path $SdScripts "requirements.txt"))
+Push-Location $SdScripts
+try {
+    Invoke-Checked $VenvPython @("-m", "pip", "install", "--upgrade", "-r", (Join-Path $SdScripts "requirements.txt"))
+} finally { Pop-Location }
 
 # --- 5. 冒烟：CUDA 可用 + 关键依赖可导入 ---
 Write-Host "Smoke test..."
