@@ -85,6 +85,23 @@ export function normalizeCaptureUrl(input: string): {
   return { kind: pinimg ? 'image' : 'page', url: parsed.toString() }
 }
 
+// 已解析图片直链的校验（Chrome 插件等调用方直传 mediaUrl 时用）
+export function normalizeMediaUrl(input: string): string {
+  const trimmed = input.trim()
+  if (trimmed === '') throw new RunnerError('mediaUrl is empty')
+  let parsed: URL
+  try {
+    parsed = new URL(trimmed)
+  } catch {
+    throw new RunnerError('invalid mediaUrl')
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new RunnerError('mediaUrl must be http(s)')
+  }
+  parsed.hash = ''
+  return parsed.toString()
+}
+
 // og:image 提取（property 前置/后置两种排版都试）
 export function ogImageOf(html: string): string | null {
   const patterns = [
@@ -124,6 +141,32 @@ export function captureId(now: Date): string {
   return `${stamp}-${rand}`
 }
 
+// oEmbed 响应解析：活 pin 给 thumbnail_url（236x 小图，由 originals 提升链接力）
+export function oembedThumbnailOf(text: string): string | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const thumb = (parsed as Record<string, unknown>).thumbnail_url
+  return typeof thumb === 'string' && thumb !== '' ? thumb : null
+}
+
+// oEmbed 明确报错（如 "Url was not found"）时提取错误文本，区分死 pin 与其他故障
+export function oembedErrorOf(text: string): string | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const error = (parsed as Record<string, unknown>).error
+  return typeof error === 'string' && error !== '' ? error : null
+}
+
 // ---- 下载（curl 直连 → 代理回退） ----
 
 function curlMessage(err: unknown): string {
@@ -131,16 +174,23 @@ function curlMessage(err: unknown): string {
 }
 
 async function curlRun(args: string[], timeoutMs: number): Promise<string> {
-  const { stdout } = await execFile('curl', args, {
-    timeout: timeoutMs,
-    maxBuffer: 32 * 1024 * 1024,
-  })
-  return stdout
+  try {
+    const { stdout } = await execFile('curl', args, {
+      timeout: timeoutMs,
+      maxBuffer: 32 * 1024 * 1024,
+    })
+    return stdout
+  } catch (err) {
+    // --fail-with-body 下 HTTP 错误的响应体在 stdout，不能扔
+    const stdout = (err as { stdout?: unknown }).stdout
+    if (typeof stdout === 'string' && stdout !== '') return stdout
+    throw err
+  }
 }
 
-// 抓文本（pin 页 HTML，解析 og:image 用）
+// 抓文本（pin 页 HTML / oEmbed JSON）。--fail-with-body 保留 4xx/5xx 响应体，错误可读
 async function fetchPage(url: string): Promise<string> {
-  const base = ['-sS', '-L', '--fail', '--compressed', '--max-filesize', '16777216', '-A', UA]
+  const base = ['-sS', '-L', '--fail-with-body', '--compressed', '--max-filesize', '16777216', '-A', UA]
   const seconds = CURL_SECONDS
   const timeoutMs = (seconds + 10) * 1000
   let first = ''
@@ -247,19 +297,44 @@ function writeMeta(
   writeFileSync(metaPathOf(dir, id), JSON.stringify(meta, null, 2))
 }
 
-// 页面/短链 → 图片 URL（og:image）
+// 页面/短链 → 图片 URL。og:image 优先，oEmbed 兜底（死 pin 会明确报 not found）
 async function resolveMediaUrl(input: string): Promise<string> {
   const { kind, url } = normalizeCaptureUrl(input)
   if (kind === 'image') return url
-  const html = await fetchPage(url)
-  const og = ogImageOf(html)
-  if (!og) {
-    throw new RunnerError(
-      '页面里没有 og:image（链接可能已失效，或需要登录才能看到内容）',
-      422,
-    )
+
+  const problems: string[] = []
+  try {
+    const html = await fetchPage(url)
+    const og = ogImageOf(html)
+    if (og) return og
+    problems.push('页面无 og:image')
+  } catch (err) {
+    problems.push(`页面抓取失败：${curlMessage(err)}`)
   }
-  return og
+
+  try {
+    const text = await fetchPage(
+      `https://www.pinterest.com/oembed.json?url=${encodeURIComponent(url)}`,
+    )
+    const oembedError = oembedErrorOf(text)
+    if (oembedError && /not found/i.test(oembedError)) {
+      throw new RunnerError(
+        'pin 已被删除、设为私密，或对当前网络不可见（Pinterest 返回 Url was not found）',
+        422,
+      )
+    }
+    const thumbnail = oembedThumbnailOf(text)
+    if (thumbnail) return thumbnail
+    problems.push(oembedError ? `oEmbed：${oembedError}` : 'oEmbed 无 thumbnail_url')
+  } catch (err) {
+    if (err instanceof RunnerError) throw err
+    problems.push(`oEmbed 失败：${curlMessage(err)}`)
+  }
+
+  throw new RunnerError(
+    `无法解析出图片（${problems.join('；')}）。链接可能已失效或需要登录`,
+    422,
+  )
 }
 
 // 读尺寸；读不出来当超限处理（宁可重采样也不冒放大险）
@@ -284,6 +359,8 @@ async function processEntry(
   const key = `${folder}/${id}`
   inflight.add(key)
   try {
+    // folder 在预处理期间被删/改名：老路径不存在就放弃，避免 mkdirSync 造出幽灵目录
+    if (!existsSync(paths.dir)) return
     const meta = readMeta(paths.dir, id) ?? { id, folder, status: 'processing' }
     let record = /\/originals\//i.test(mediaUrl) ? 'originals' : 'og'
     const upgrade = originalsOf(mediaUrl)
@@ -418,7 +495,10 @@ export function mountCapture(app: Hono, runner: Runner): void {
     const dir = assertFolderDir(runner.dataDir, folder)
     ensureEntryDirs(dir)
 
-    const mediaUrl = await resolveMediaUrl(url)
+    const mediaUrl =
+      typeof body.mediaUrl === 'string' && body.mediaUrl !== ''
+        ? normalizeMediaUrl(body.mediaUrl)
+        : await resolveMediaUrl(url)
     const id = captureId(runner.now())
     const rawAbs = join(dir, 'raw', `${id}${extOf(mediaUrl)}`)
     await downloadTo(mediaUrl, rawAbs, 'https://www.pinterest.com/')

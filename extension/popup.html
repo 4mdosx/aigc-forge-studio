@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      :root {
+        color: #241f1a;
+        background: #efe7da;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        line-height: 1.45;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 0.75rem; width: 300px; }
+      h1 {
+        font-size: 0.95rem;
+        margin: 0 0 0.6rem;
+        font-weight: 600;
+      }
+      select, button {
+        font: inherit;
+        width: 100%;
+        border-radius: 8px;
+        padding: 0.45rem 0.6rem;
+        border: 1px solid #c9beae;
+        background: #f7f3ea;
+        color: #241f1a;
+      }
+      button {
+        border: 0;
+        background: #0c5c49;
+        color: #f7f3ea;
+        cursor: pointer;
+        margin-top: 0.5rem;
+      }
+      button:disabled { opacity: 0.55; cursor: default; }
+      button.quiet {
+        background: transparent;
+        color: #5c564e;
+        border: 1px solid #c9beae;
+        margin-top: 0;
+        padding: 0.3rem 0.6rem;
+        width: auto;
+      }
+      #status {
+        margin-top: 0.55rem;
+        font-size: 0.75rem;
+        color: #746c63;
+        overflow-wrap: anywhere;
+      }
+      #status.error { color: #a04030; }
+      #status.ok { color: #0c5c49; }
+    </style>
+  </head>
+  <body>
+    <h1>采集此页 → capture</h1>
+    <select id="folder"></select>
+    <button id="grab">采集</button>
+    <button id="refresh" class="quiet">刷新文件夹</button>
+    <p id="status">就绪</p>
+    <script src="popup.js"></script>
+  </body>
+</html>

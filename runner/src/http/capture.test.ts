@@ -6,7 +6,10 @@ import {
   extOf,
   isFolderName,
   normalizeCaptureUrl,
+  normalizeMediaUrl,
   ogImageOf,
+  oembedErrorOf,
+  oembedThumbnailOf,
   originalsOf,
 } from './capture.ts'
 
@@ -77,6 +80,38 @@ test('captureId is sortable and filesystem-safe', () => {
   const id = captureId(new Date(2026, 10, 16, 18, 51, 2))
   assert.match(id, /^20261116-185102-[0-9a-z]{4}$/)
   assert.match(captureId(new Date()), /^\d{8}-\d{6}-[0-9a-z]{4}$/)
+})
+
+test('oembed response parsing separates thumbnail from error', () => {
+  const good = JSON.stringify({
+    version: '1.0',
+    title: 'pin',
+    thumbnail_url: 'https://i.pinimg.com/236x/ab/cd/1234.jpg',
+  })
+  assert.equal(oembedThumbnailOf(good), 'https://i.pinimg.com/236x/ab/cd/1234.jpg')
+  assert.equal(oembedErrorOf(good), null)
+
+  const dead = JSON.stringify({ error: 'Url was not found: https://...' })
+  assert.equal(oembedThumbnailOf(dead), null)
+  assert.equal(oembedErrorOf(dead), 'Url was not found: https://...')
+
+  assert.equal(oembedThumbnailOf('<html>not json</html>'), null)
+  assert.equal(oembedErrorOf('<html>not json</html>'), null)
+  assert.equal(oembedThumbnailOf(''), null)
+})
+
+test('normalizeMediaUrl validates and strips hash', () => {
+  assert.equal(
+    normalizeMediaUrl('https://i.pinimg.com/originals/a/b/c.png#top'),
+    'https://i.pinimg.com/originals/a/b/c.png',
+  )
+  assert.equal(
+    normalizeMediaUrl(' http://example.com/img.jpg '),
+    'http://example.com/img.jpg',
+  )
+  assert.throws(() => normalizeMediaUrl(''), /mediaUrl is empty/)
+  assert.throws(() => normalizeMediaUrl('not a url'), /invalid mediaUrl/)
+  assert.throws(() => normalizeMediaUrl('ftp://x/y.jpg'), /http\(s\)/)
 })
 
 test('folder names stay lowercase slugs', () => {
