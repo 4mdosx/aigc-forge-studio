@@ -88,6 +88,55 @@ test('GET /files streams stored bytes back', async () => {
   assert.ok(bytes.equals(payload))
 })
 
+test('DELETE /files: single file, glob cleanup, refuses bare directory', async () => {
+  // 造两个 npz + 一个 txt + 一个子目录里的 npz（不应被波及）
+  for (const p of ['ds/a.npz', 'ds/b.npz', 'ds/keep.txt', 'ds/sub/c.npz']) {
+    await app.request(`http://x/upload?root=training&path=${encodeURIComponent(p)}`, {
+      method: 'POST',
+      body: new Uint8Array([1]),
+    })
+  }
+
+  // 目录 + glob：只删平层匹配文件
+  const res = await app.request(
+    'http://x/files?root=training&path=ds&glob=*.npz',
+    { method: 'DELETE' },
+  )
+  assert.equal(res.status, 200)
+  const json = (await res.json()) as { deleted: string[]; count: number }
+  assert.equal(json.count, 2)
+  assert.deepEqual(json.deleted.sort(), ['training/ds/a.npz', 'training/ds/b.npz'])
+  // keep.txt 与子目录 npz 幸存
+  assert.equal(
+    (await app.request('http://x/files?root=training&path=ds/keep.txt')).status,
+    200,
+  )
+  assert.equal(
+    (await app.request('http://x/files?root=training&path=ds/sub/c.npz')).status,
+    200,
+  )
+
+  // 目录不带 glob → 拒绝
+  const bare = await app.request('http://x/files?root=training&path=ds', { method: 'DELETE' })
+  assert.equal(bare.status, 400)
+
+  // 单文件删除
+  const one = await app.request('http://x/files?root=training&path=ds/keep.txt', {
+    method: 'DELETE',
+  })
+  assert.equal(one.status, 200)
+  assert.equal(
+    (await app.request('http://x/files?root=training&path=ds/keep.txt')).status,
+    404,
+  )
+
+  // 路径穿越拒绝
+  const evil = await app.request('http://x/files?root=training&path=../x.txt', {
+    method: 'DELETE',
+  })
+  assert.equal(evil.status, 400)
+})
+
 test('GET /health and unknown routes', async () => {
   assert.equal((await app.request('http://x/health')).status, 200)
   assert.equal((await app.request('http://x/zzz')).status, 404)
