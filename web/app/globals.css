@@ -1280,6 +1280,17 @@ button.task-pick.current {
   overflow-wrap: anywhere;
 }
 
+/* 单图打标按钮：卡片结构为 div > a(图+说明) + button */
+.capture-card > a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.capture-card > button {
+  align-self: flex-start;
+  font-size: 0.72rem;
+}
+
 /* 打标台源图拖拽区 */
 .dropzone-wrap {
   display: flex;

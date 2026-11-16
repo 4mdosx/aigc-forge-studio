@@ -48,6 +48,8 @@ export function CaptureBoard() {
   const [renameValue, setRenameValue] = useState<string | null>(null)
   // 打标任务（打标台 WD14）
   const [tagJob, setTagJob] = useState<TagJob | null>(null)
+  // 单图打标进行中的条目 id
+  const [taggingId, setTaggingId] = useState<string | null>(null)
 
   const loadFolders = useCallback(async () => {
     try {
@@ -152,6 +154,23 @@ export function CaptureBoard() {
     }, 2000)
     return () => clearInterval(timer)
   }, [tagJob, tagRunning, folder, loadItems])
+
+  async function tagOne(item: CaptureItem) {
+    if (!folder || taggingId !== null) return
+    setTaggingId(item.id)
+    try {
+      const body = await api<{ tags: string[] }>('tag/item', {
+        method: 'POST',
+        body: JSON.stringify({ folder, id: item.id }),
+      })
+      notify(`已打标 ${body.tags.length} 个标签`)
+      await loadItems(folder)
+    } catch (err) {
+      fail(messageOf(err))
+    } finally {
+      setTaggingId(null)
+    }
+  }
 
   async function submitPin(event: FormEvent) {
     event.preventDefault()
@@ -337,7 +356,12 @@ export function CaptureBoard() {
         ) : (
           <div className="capture-grid">
             {items.map((item) => (
-              <CaptureCard key={item.id} item={item} />
+              <CaptureCard
+                key={item.id}
+                item={item}
+                tagging={taggingId === item.id}
+                onTag={(target) => void tagOne(target)}
+              />
             ))}
           </div>
         )}
@@ -346,7 +370,15 @@ export function CaptureBoard() {
   )
 }
 
-function CaptureCard({ item }: { item: CaptureItem }) {
+function CaptureCard({
+  item,
+  tagging,
+  onTag,
+}: {
+  item: CaptureItem
+  tagging: boolean
+  onTag: (item: CaptureItem) => void
+}) {
   const href = item.imageUrl ?? item.rawUrl
   const meta = [
     item.width && item.height ? `${item.width}×${item.height}` : null,
@@ -358,24 +390,38 @@ function CaptureCard({ item }: { item: CaptureItem }) {
     .join(' · ')
 
   return (
-    <a className="capture-card" href={href ? fileHref(href) : undefined} target="_blank" rel="noreferrer">
-      {href ? (
-        <img src={fileHref(href)} alt={item.id} loading="lazy" />
-      ) : (
-        <span className="capture-missing">{item.status === 'processing' ? '处理中…' : '无图'}</span>
-      )}
-      <span className="capture-cap">
-        <span className={`capture-badge ${item.status}`}>
-          {item.status === 'processing'
-            ? '处理中'
-            : item.status === 'failed'
-              ? '失败'
-              : '完成'}
+    <div className="capture-card">
+      <a href={href ? fileHref(href) : undefined} target="_blank" rel="noreferrer">
+        {href ? (
+          <img src={fileHref(href)} alt={item.id} loading="lazy" />
+        ) : (
+          <span className="capture-missing">
+            {item.status === 'processing' ? '处理中…' : '无图'}
+          </span>
+        )}
+        <span className="capture-cap">
+          <span className={`capture-badge ${item.status}`}>
+            {item.status === 'processing'
+              ? '处理中'
+              : item.status === 'failed'
+                ? '失败'
+                : '完成'}
+          </span>
+          {meta ? ` ${meta}` : ''}
         </span>
-        {meta ? ` ${meta}` : ''}
-      </span>
-      {item.error ? <span className="capture-error">{item.error}</span> : null}
-      {item.tagError ? <span className="capture-error">{item.tagError}</span> : null}
-    </a>
+        {item.error ? <span className="capture-error">{item.error}</span> : null}
+        {item.tagError ? <span className="capture-error">{item.tagError}</span> : null}
+      </a>
+      {item.imageUrl ? (
+        <button
+          type="button"
+          className="quiet"
+          disabled={tagging}
+          onClick={() => onTag(item)}
+        >
+          {tagging ? '打标中…' : '打标'}
+        </button>
+      ) : null}
+    </div>
   )
 }
