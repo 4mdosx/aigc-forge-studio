@@ -131,7 +131,7 @@ test('buildTrainToml emits flat keys matching train_network.py args', () => {
   assert.match(text, /optimizer_type = 'AdamW8bit'/)
   assert.match(text, /clip_skip = 2/)
   // bf16：SDXL fp16 溢出 → loss NaN（实测坑），必须不是 fp16
-  assert.match(text, /mixed_precision = bf16/)
+  assert.match(text, /mixed_precision = 'bf16'/)
   // unetOnly 默认：只训 UNet，不吐 text_encoder_lr
   assert.match(text, /network_train_unet_only = true/)
   assert.ok(!text.includes('text_encoder_lr'), 'unetOnly must omit text_encoder_lr')
@@ -148,7 +148,7 @@ test('buildTrainToml emits flat keys matching train_network.py args', () => {
 test('buildTrainToml trains both unet and TE when unetOnly false', () => {
   const both = resolveParams({ ...base, unetOnly: false })
   const text = buildTrainToml(both, paths)
-  assert.match(text, /text_encoder_lr = 5e-05/)
+  assert.match(text, /text_encoder_lr = 0\.00005/)
   assert.match(text, /network_train_unet_only = false/)
 })
 
