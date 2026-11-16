@@ -256,7 +256,7 @@ export function mountTag(app: Hono, runner: Runner): void {
     return c.json({ folder, id, tags: result.tags, rating: result.rating })
   })
 
-  // 读取单图标签（image/<id>.txt 为真相源；无 txt 时 404）
+  // 读取单图标签（image/<id>.txt 为真相源；没打过标返回空数组，便于直接手动编辑）
   app.get('/tag/item', (c) => {
     const folder = c.req.query('folder') ?? ''
     const id = c.req.query('id') ?? ''
@@ -264,12 +264,12 @@ export function mountTag(app: Hono, runner: Runner): void {
     if (!isItemId(id)) throw new RunnerError('invalid id')
     const dir = join(runner.dataDir, 'capture', folder)
     const txtFile = join(dir, 'image', `${id}.txt`)
-    if (!existsSync(txtFile)) throw new RunnerError(`tags not found: ${folder}/${id}`, 404)
     const meta = readMeta(dir, id)
+    const tags = existsSync(txtFile) ? parseTagText(readFileSync(txtFile, 'utf8')) : []
     return c.json({
       folder,
       id,
-      tags: parseTagText(readFileSync(txtFile, 'utf8')),
+      tags,
       rating: typeof meta?.tagRating === 'string' ? meta.tagRating : null,
       tagger: typeof meta?.tagger === 'string' ? meta.tagger : null,
       edited: meta?.tagSource === 'manual',
