@@ -40,6 +40,7 @@ test('resolveParams applies style-LoRA defaults', () => {
   assert.equal(params.clipSkip, 2)
   assert.equal(params.minSnrGamma, 5)
   assert.equal(params.sdpa, true)
+  assert.equal(params.unetOnly, true)
   assert.equal(params.shuffleCaption, true)
   assert.equal(params.maxTrainEpochs, 10)
   assert.equal(params.samplePrompts, null)
@@ -116,7 +117,6 @@ test('buildTrainToml emits flat keys matching train_network.py args', () => {
     'network_alpha',
     'optimizer_type',
     'unet_lr',
-    'text_encoder_lr',
     'lr_scheduler',
     'max_train_epochs',
     'gradient_checkpointing',
@@ -130,6 +130,11 @@ test('buildTrainToml emits flat keys matching train_network.py args', () => {
   assert.match(text, /network_module = 'networks\.lora'/)
   assert.match(text, /optimizer_type = 'AdamW8bit'/)
   assert.match(text, /clip_skip = 2/)
+  // bf16：SDXL fp16 溢出 → loss NaN（实测坑），必须不是 fp16
+  assert.match(text, /mixed_precision = bf16/)
+  // unetOnly 默认：只训 UNet，不吐 text_encoder_lr
+  assert.match(text, /network_train_unet_only = true/)
+  assert.ok(!text.includes('text_encoder_lr'), 'unetOnly must omit text_encoder_lr')
   // sdxl 不是 train_network.py 的合法参数（SDXL 走独立脚本），进 TOML 必炸
   assert.ok(!text.includes('sdxl'), 'sdxl must not appear in toml')
   // constant 调度器不认 warmup
@@ -138,6 +143,13 @@ test('buildTrainToml emits flat keys matching train_network.py args', () => {
     'constant scheduler must not emit lr_warmup_steps',
   )
   assert.ok(!text.includes('sample_prompts'), 'no sampling by default')
+})
+
+test('buildTrainToml trains both unet and TE when unetOnly false', () => {
+  const both = resolveParams({ ...base, unetOnly: false })
+  const text = buildTrainToml(both, paths)
+  assert.match(text, /text_encoder_lr = 5e-05/)
+  assert.match(text, /network_train_unet_only = false/)
 })
 
 test('buildTrainToml adds sampling block when samplePrompts given', () => {

@@ -165,7 +165,7 @@ export function buildSpawnPlan(
       '-m', 'accelerate.commands.launch',
       '--num_processes', '1',
       '--num_machines', '1',
-      '--mixed_precision', 'fp16',
+      '--mixed_precision', 'bf16',
       '--dynamo_backend', 'no',
       '--num_cpu_threads_per_process', String(config.numCpuThreads ?? 8),
       script,

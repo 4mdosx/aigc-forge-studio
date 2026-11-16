@@ -32,6 +32,8 @@ export interface TrainParamsInput {
   clipSkip?: number
   minSnrGamma?: number
   sdpa?: boolean
+  /** 只训 UNet（SDXL 官方推荐：双 TE 训练结果不可预期且爆显存；SD1.5 可关） */
+  unetOnly?: boolean
   /** SDXL 家族训练开关；sd-scripts 不给 --sdxl 会走 SD1.x 加载路径读 SDXL 底模必炸（实测坑） */
   sdxl?: boolean
   shuffleCaption?: boolean
@@ -118,6 +120,7 @@ export function resolveParams(
     clipSkip: num(fields, 'clipSkip', 2, { positive: false }),
     minSnrGamma: num(fields, 'minSnrGamma', 5, { positive: false }),
     sdpa: bool(fields, 'sdpa', true),
+    unetOnly: bool(fields, 'unetOnly', true),
     sdxl: bool(fields, 'sdxl', true),
     shuffleCaption: bool(fields, 'shuffleCaption', true),
     keepTokens: num(fields, 'keepTokens', 0, { positive: false }),
@@ -179,13 +182,16 @@ export function buildTrainToml(params: ResolvedParams, paths: JobPaths): string 
     save_precision: 'fp16',
     save_model_as: 'safetensors',
     save_every_n_epochs: params.saveEveryNEpochs,
-    mixed_precision: 'fp16',
+    // bf16 而非 fp16：SDXL 在 fp16 下梯度/VAE 溢出 → loss 从第 1 步起 NaN（实测坑 +
+    // kohya issue #820 同结论）。3080 Ampere 支持 bf16，数值域与 fp32 同宽。
+    mixed_precision: 'bf16',
     network_module: 'networks.lora',
     network_dim: params.networkDim,
     network_alpha: params.networkAlpha,
     optimizer_type: 'AdamW8bit',
     unet_lr: params.unetLr,
-    text_encoder_lr: params.textEncoderLr,
+    // unet_only 时不给 text_encoder_lr（TE 冻结，给了也没用）
+    ...(params.unetOnly ? {} : { text_encoder_lr: params.textEncoderLr }),
     lr_scheduler: params.scheduler,
     // constant 调度器没有 warmup 概念，塞 lr_warmup_steps 会被 optimizer.py 拒（实测坑）
     ...(params.scheduler === 'constant'
@@ -193,6 +199,9 @@ export function buildTrainToml(params: ResolvedParams, paths: JobPaths): string 
       : { lr_warmup_steps: params.lrWarmupSteps }),
     max_train_epochs: params.maxTrainEpochs,
     gradient_checkpointing: true,
+    // SDXL LoRA 只训 UNet：双 TE 训练显存爆炸（10GB 卡溢出共享内存 → 19s/it）且
+    // 官方文档明言 SDXL 双 TE 训练结果不可预期
+    network_train_unet_only: params.unetOnly,
     cache_latents_to_disk: true,
     clip_skip: params.clipSkip,
     min_snr_gamma: params.minSnrGamma,
