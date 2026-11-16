@@ -9,6 +9,7 @@ import type { Hono } from 'hono'
 import { taskById, type TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import { relativePath, viewTarget } from '../path.ts'
+import { parseCanvasKey, resolveNearestBucket } from '../workflow/buckets.ts'
 import { createTask, storedPaths } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
 import { bytesOf, jsonObject, stringField } from './request.ts'
@@ -25,8 +26,41 @@ const POSE_ACTIONS: Record<string, string[]> = {
   suspended: ['suspended'],
 }
 
-const OUT_WIDTH = 832
-const OUT_HEIGHT = 1216
+// pose 画布三比例（2026-11-16 token 定）：pose 库统一 512 系存储，
+// 接口只收这三个比例；底图尺寸由消费端按谱系 bucket 最近邻解析。
+const POSE_RATIOS: Record<string, { width: number; height: number }> = {
+  '2:3': { width: 512, height: 768 },
+  '3:2': { width: 768, height: 512 },
+  '1:1': { width: 512, height: 512 },
+}
+
+const canvasKey = ({ width, height }: { width: number; height: number }): string =>
+  `${width}${height}`
+
+// PNG IHDR 读取（宽高在固定偏移，big-endian uint32）。
+function pngSize(bytes: Uint8Array): { width: number; height: number } {
+  const sig = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  for (let i = 0; i < 8; i++) {
+    if (bytes[i] !== sig[i]) throw new RunnerError('source image is not a PNG', 400)
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset)
+  return { width: view.getUint32(16), height: view.getUint32(20) }
+}
+
+// 未显式给 ratio 时，按源图比例取三比例中最近邻（对数距离）。
+function nearestRatio(width: number, height: number): string {
+  const aspect = Math.log(width / height)
+  let best = '2:3'
+  let bestDist = Infinity
+  for (const [key, { width: w, height: h }] of Object.entries(POSE_RATIOS)) {
+    const dist = Math.abs(Math.log(w / h) - aspect)
+    if (dist < bestDist) {
+      best = key
+      bestDist = dist
+    }
+  }
+  return best
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -86,6 +120,21 @@ export function mountPoses(app: Hono, runner: Runner): void {
       throw new RunnerError(`source image not found in data/: ${imageRel}`, 404)
     }
 
+    // 比例：入参限定三比例；缺省按源图比例最近邻自动归入
+    let ratioKey = body.ratio as string | undefined
+    if (ratioKey !== undefined) {
+      if (!POSE_RATIOS[ratioKey]) {
+        throw new RunnerError(
+          `ratio must be one of ${Object.keys(POSE_RATIOS).join(' / ')}`,
+          400,
+        )
+      }
+    } else {
+      const size = pngSize(srcBytes)
+      ratioKey = nearestRatio(size.width, size.height)
+    }
+    const canvas = POSE_RATIOS[ratioKey]
+
     const poseId = String(runner.now().getTime())
     const client = runner.clients[0]
     if (!client) throw new RunnerError('no ComfyUI instance')
@@ -101,7 +150,15 @@ export function mountPoses(app: Hono, runner: Runner): void {
         task: `pose-${poseId}`,
         workName: 'img2pose',
         workflowName: 'img2pose_v1',
-        payload: { source_image: `${srcSub}/source_orig.png` },
+        payload: {
+          source_image: `${srcSub}/source_orig.png`,
+          width: canvas.width,
+          height: canvas.height,
+          canvas_width: canvas.width,
+          canvas_height: canvas.height,
+          render_width: canvas.width,
+          render_height: canvas.height,
+        },
       },
       runner.now(),
       runner.randomSeed,
@@ -142,7 +199,8 @@ export function mountPoses(app: Hono, runner: Runner): void {
       description: (body.description as string | undefined) ?? '',
       enabled: false,
       source: 'img2pose',
-      canvases: [`${OUT_WIDTH}${OUT_HEIGHT}`],
+      canvases: [canvasKey(canvas)],
+      ratio: ratioKey,
       defects: [] as string[],
       tags,
       guide: (body.guide as unknown | undefined) ?? {
@@ -157,6 +215,8 @@ export function mountPoses(app: Hono, runner: Runner): void {
     writeFileSync(join(dir, 'meta.json'), JSON.stringify(meta, null, 2))
 
     // 5. dual 测试任务（异步，不阻塞条目落盘）
+    //    底图尺寸不焊死：按 pose 画布在 sdxl 谱系 bucket 里取最近邻。
+    const bucket = resolveNearestBucket('sdxl', canvas.width, canvas.height)
     await client.uploadBytes(depth, 'depth.png', srcSub)
     await client.uploadBytes(skeleton, 'skeleton.png', srcSub)
     const dualTask = createTask(
@@ -170,8 +230,8 @@ export function mountPoses(app: Hono, runner: Runner): void {
           negative: dualNegative(runner, character),
           pose_image: `${srcSub}/skeleton.png`,
           depth_image: `${srcSub}/depth.png`,
-          width: OUT_WIDTH,
-          height: OUT_HEIGHT,
+          width: bucket.width,
+          height: bucket.height,
           batch: 1,
         },
       },
@@ -184,6 +244,8 @@ export function mountPoses(app: Hono, runner: Runner): void {
       {
         poseId,
         poseName,
+        ratio: ratioKey,
+        bucket,
         paths: {
           source: `pose_pending/${poseName}/${poseId}/source.png`,
           sourceOrig: `pose_pending/${poseName}/${poseId}/source_orig.png`,
