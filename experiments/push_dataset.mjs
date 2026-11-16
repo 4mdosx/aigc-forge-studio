@@ -4,16 +4,18 @@
 //   TRAINER_URL=http://192.168.8.136:8788 可覆盖；CONCURRENCY 默认 4。
 //
 // 数据源约定（runner capture 链）：data/capture/<folder>/image/<id>.jpg + <id>.txt（WD14 打标产物）。
+// 或 tools/assemble_dataset.py 的组装产物：--src <dir> 直接指定（含 <id>.jpg + <id>.txt）。
 // 只推有 .txt caption 的图——sd-scripts 对没 caption 的 DreamBooth 子集直接报错。
 // 落点：C:\AIGC\training\<dataset>\img\<id>.<ext>（trainer 建 job 时 image_dir 指这里）。
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 
 const { values } = parseArgs({
   options: {
     folder: { type: 'string', default: 'common' },
+    src: { type: 'string' },
     dataset: { type: 'string', default: 'style-v1' },
     trainer: { type: 'string', default: process.env.TRAINER_URL ?? 'http://192.168.8.136:8788' },
     concurrency: { type: 'string', default: '4' },
@@ -22,7 +24,10 @@ const { values } = parseArgs({
 })
 
 const runnerRoot = new URL('..', import.meta.url).pathname.replace(/\/$/, '')
-const imageDir = join(runnerRoot, 'data', 'capture', values.folder, 'image')
+// --src 优先（assemble_dataset.py 组装产物）；否则走 capture 采集池
+const imageDir = values.src
+  ? resolve(values.src)
+  : join(runnerRoot, 'data', 'capture', values.folder, 'image')
 const target = `training/${values.dataset}/img`
 
 try {
