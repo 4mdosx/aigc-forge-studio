@@ -158,12 +158,12 @@ export function CaptureBoard() {
     if (!folder || url.trim() === '') return
     setSubmitting(true)
     try {
-      await api('capture/pins', {
+      const body = await api<{ duplicate?: boolean }>('capture/pins', {
         method: 'POST',
         body: JSON.stringify({ url: url.trim(), folder }),
       })
-      notify('已下载原图，预处理进行中')
-      setUrl('')
+      notify(body.duplicate ? '重复图片，已跳过' : '已下载原图，预处理进行中')
+      if (!body.duplicate) setUrl('')
       await loadItems(folder)
     } catch (err) {
       fail(messageOf(err))

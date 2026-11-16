@@ -61,7 +61,11 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || res.statusText)
-    notify('已采集到 ' + folder, `${data.id}（预处理进行中）`)
+    if (data.duplicate) {
+      notify('重复图片，已跳过', `folder ${folder} 里已有这张图`)
+    } else {
+      notify('已采集到 ' + folder, `${data.id}（预处理进行中）`)
+    }
   } catch (err) {
     notify('采集失败', String(err.message || err))
   }

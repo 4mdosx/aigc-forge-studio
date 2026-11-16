@@ -12,6 +12,7 @@ import {
   oembedThumbnailOf,
   originalsOf,
   sizeSegmentOf,
+  imageSignatureOf,
   withSizeSegment,
 } from './capture.ts'
 
@@ -127,6 +128,19 @@ test('size segment read and replace support the upgrade ladder', () => {
   )
   assert.equal(withSizeSegment('https://i.pinimg.com/1200x/ab/cd/1234.jpg', '1200x'), null)
   assert.equal(withSizeSegment('https://example.com/a.jpg', '1200x'), null)
+})
+
+test('imageSignatureOf extracts pinimg tail hash shared by size variants', () => {
+  const a = imageSignatureOf('https://i.pinimg.com/236x/c4/02/68/c402682918f746e90a97e88e24c08c9d.jpg')
+  const b = imageSignatureOf('https://i.pinimg.com/originals/c4/02/68/c402682918f746e90a97e88e24c08c9d.jpg')
+  assert.equal(a, 'c4/02/68/c402682918f746e90a97e88e24c08c9d.jpg')
+  assert.equal(a, b)
+  assert.equal(
+    imageSignatureOf('https://i.pinimg.com/736x/3e/71/1b/3e711b280907dbc46ecb959a3b75eef0.jpg'),
+    '3e/71/1b/3e711b280907dbc46ecb959a3b75eef0.jpg',
+  )
+  assert.equal(imageSignatureOf('https://example.com/a/b/deadbeefdeadbeef.jpg'), null)
+  assert.equal(imageSignatureOf('https://i.pinimg.com/736x/no-hash.jpg'), null)
 })
 
 test('folder names stay lowercase slugs', () => {

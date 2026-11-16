@@ -127,7 +127,10 @@ grab.addEventListener('click', async () => {
     })
     const body = await res.json()
     if (!res.ok) throw new Error(body.error || res.statusText)
-    setStatus(`已采集 ${body.id}，预处理进行中（去 web /capture 看）`, 'ok')
+    setStatus(
+      body.duplicate ? '重复图片，已跳过' : `已采集 ${body.id}，预处理进行中（去 web /capture 看）`,
+      body.duplicate ? '' : 'ok',
+    )
   } catch (err) {
     setStatus(`失败：${err.message}`, 'error')
   } finally {

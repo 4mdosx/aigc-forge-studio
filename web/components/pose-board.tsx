@@ -64,7 +64,7 @@ const POSE_NAMES = [
 ]
 
 const RATIOS = [
-  ['auto', '自动（按源图比例）'],
+  ['', '自动（按源图比例）'],
   ['2:3', '2:3（512×768 竖）'],
   ['3:2', '3:2（768×512 横）'],
   ['1:1', '1:1（512×512 方）'],
@@ -80,6 +80,8 @@ export function PoseBoard() {
   const [draft, setDraft] = useState<DraftForm | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [describing, setDescribing] = useState(false)
+  const [dragging, setDragging] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const editsRef = useRef<Map<string, MetaEdit>>(new Map())
 
   const load = useCallback(async () => {
@@ -108,6 +110,19 @@ export function PoseBoard() {
     const timer = setInterval(() => void load(), 15_000)
     return () => clearInterval(timer)
   }, [entries, load])
+
+  // 拖拽选图：同步隐藏 input 的 files，保证表单提交带 file 字段
+  function acceptFile(files: FileList | null) {
+    const picked = files?.[0] ?? null
+    if (!picked) return
+    if (!/\.png$/i.test(picked.name) && picked.type !== 'image/png') {
+      fail('只收 PNG 源图')
+      return
+    }
+    if (fileInputRef.current) fileInputRef.current.files = files
+    setFile(picked)
+    setDraft(null)
+  }
 
   // LLM 读图 → meta 草稿回填（用户可继续编辑）
   async function describe() {
@@ -240,20 +255,50 @@ export function PoseBoard() {
         </p>
         <form onSubmit={(event) => void submit(event)}>
           <div className="grid">
-            <label>
-              源图（PNG）
+            <div className="dropzone-wrap">
+              <div
+                className={dragging ? 'dropzone dragging' : 'dropzone'}
+                role="button"
+                tabIndex={0}
+                onClick={() => fileInputRef.current?.click()}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') fileInputRef.current?.click()
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault()
+                  setDragging(true)
+                }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  setDragging(false)
+                  acceptFile(event.dataTransfer.files)
+                }}
+              >
+                {file ? (
+                  <>
+                    <strong>{file.name}</strong>
+                    <span className="file-name">
+                      {(file.size / 1024 / 1024).toFixed(2)} MB · 点击可重选
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <strong>拖拽 PNG 源图到这里</strong>
+                    <span>或点击选择文件 · 纯色背景、贴身服装最佳</span>
+                  </>
+                )}
+              </div>
               <input
+                ref={fileInputRef}
                 name="file"
                 type="file"
                 accept=".png,image/png"
                 required
-                onChange={(event) => {
-                  const picked = event.target.files?.[0] ?? null
-                  setFile(picked)
-                  setDraft(null)
-                }}
+                className="visually-hidden"
+                onChange={(event) => acceptFile(event.target.files)}
               />
-            </label>
+            </div>
             <label>
               动作类目
               <select name="poseName" required defaultValue="sitting">

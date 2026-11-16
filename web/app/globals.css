@@ -1279,3 +1279,61 @@ button.task-pick.current {
   color: #a04030;
   overflow-wrap: anywhere;
 }
+
+/* 打标台源图拖拽区 */
+.dropzone-wrap {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 150px;
+  padding: 20px;
+  border: 2px dashed #b9a98f;
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: center;
+  color: #6f6353;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+
+.dropzone:hover {
+  border-color: #8a7a60;
+}
+
+.dropzone.dragging {
+  border-color: #2f6db4;
+  background: rgba(47, 109, 180, 0.08);
+  color: #2f6db4;
+}
+
+.dropzone strong {
+  color: #241f1a;
+  font-size: 0.95rem;
+}
+
+.dropzone .file-name {
+  font-size: 0.8rem;
+  color: #241f1a;
+  word-break: break-all;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

@@ -102,6 +102,13 @@ export function normalizeMediaUrl(input: string): string {
   return parsed.toString()
 }
 
+// pinimg 图片签名：尺寸段之后的完整尾段（c4/02/68/<hash32>.jpg），同一张图所有尺寸变体共享；
+// 非 pinimg 返回 null
+export function imageSignatureOf(url: string): string | null {
+  const hit = /^https:\/\/i\.pinimg\.com\/[a-z0-9_]+\/([0-9a-f/]+\.[a-z0-9]+)$/i.exec(url)
+  return hit ? (hit[1] ?? null) : null
+}
+
 // og:image 提取（property 前置/后置两种排版都试）
 export function ogImageOf(html: string): string | null {
   const patterns = [
@@ -523,6 +530,29 @@ export function mountCapture(app: Hono, runner: Runner): void {
       typeof body.mediaUrl === 'string' && body.mediaUrl !== ''
         ? normalizeMediaUrl(body.mediaUrl)
         : await resolveMediaUrl(url)
+
+    // 查重：pinimg 图按 signature（尺寸变体共享尾段 hash），其他图按完整 URL。
+    // 重复直接跳过，不下载不入库
+    const signature = imageSignatureOf(mediaUrl)
+    const imageDir = join(dir, 'image')
+    if (existsSync(imageDir)) {
+      for (const file of readdirSync(imageDir)) {
+        if (!file.endsWith('.json')) continue
+        const meta = readMeta(dir, file.slice(0, -5))
+        const existing = typeof meta?.mediaUrl === 'string' ? meta.mediaUrl : null
+        if (!existing) continue
+        const same = signature
+          ? imageSignatureOf(existing) === signature
+          : existing === mediaUrl
+        if (same) {
+          return c.json(
+            { duplicate: true, id: meta?.id ?? file.slice(0, -5), folder, status: 'duplicate' },
+            200,
+          )
+        }
+      }
+    }
+
     const id = captureId(runner.now())
     const rawAbs = join(dir, 'raw', `${id}${extOf(mediaUrl)}`)
     await downloadTo(mediaUrl, rawAbs, 'https://www.pinterest.com/')
