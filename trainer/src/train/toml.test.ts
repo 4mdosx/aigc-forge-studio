@@ -41,6 +41,7 @@ test('resolveParams applies style-LoRA defaults', () => {
   assert.equal(params.minSnrGamma, 5)
   assert.equal(params.sdpa, true)
   assert.equal(params.unetOnly, true)
+  assert.equal(params.cacheTextEncoderOutputs, false)
   assert.equal(params.shuffleCaption, true)
   assert.equal(params.maxTrainEpochs, 10)
   assert.equal(params.samplePrompts, null)
@@ -143,6 +144,34 @@ test('buildTrainToml emits flat keys matching train_network.py args', () => {
     'constant scheduler must not emit lr_warmup_steps',
   )
   assert.ok(!text.includes('sample_prompts'), 'no sampling by default')
+})
+
+test('resolveParams rejects TE cache + caption shuffle combo', () => {
+  assert.throws(
+    () => resolveParams({ ...base, cacheTextEncoderOutputs: true }),
+    /mutually exclusive/,
+  )
+  assert.throws(
+    () =>
+      resolveParams({
+        ...base,
+        cacheTextEncoderOutputs: true,
+        shuffleCaption: true,
+      }),
+    /mutually exclusive/,
+  )
+})
+
+test('buildTrainToml caches TE outputs when requested', () => {
+  const cached = resolveParams({
+    ...base,
+    cacheTextEncoderOutputs: true,
+    shuffleCaption: false,
+  })
+  const text = buildTrainToml(cached, paths)
+  assert.match(text, /cache_text_encoder_outputs = true/)
+  const dataset = buildDatasetToml(cached, paths)
+  assert.match(dataset, /shuffle_caption = false/)
 })
 
 test('buildTrainToml trains both unet and TE when unetOnly false', () => {

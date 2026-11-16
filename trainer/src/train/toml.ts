@@ -34,6 +34,9 @@ export interface TrainParamsInput {
   sdpa?: boolean
   /** 只训 UNet（SDXL 官方推荐：双 TE 训练结果不可预期且爆显存；SD1.5 可关） */
   unetOnly?: boolean
+  /** 缓存文本编码器输出：每步不再跑 TE 前向，TE 也不驻留显存。
+   *  与 shuffleCaption 互斥（kohya 限制：缓存后 caption 不再重编）；风档实验用 */
+  cacheTextEncoderOutputs?: boolean
   /** SDXL 家族训练开关；sd-scripts 不给 --sdxl 会走 SD1.x 加载路径读 SDXL 底模必炸（实测坑） */
   sdxl?: boolean
   shuffleCaption?: boolean
@@ -101,6 +104,14 @@ export function resolveParams(
   }
 
   const fields = input as unknown as Record<string, unknown>
+  const cacheTextEncoderOutputs = bool(fields, 'cacheTextEncoderOutputs', false)
+  const shuffleCaption = bool(fields, 'shuffleCaption', true)
+  if (cacheTextEncoderOutputs && shuffleCaption) {
+    throw new TrainerError(
+      'cacheTextEncoderOutputs is mutually exclusive with shuffleCaption (kohya re-encodes captions per step when shuffled)',
+    )
+  }
+
   return {
     name: input.name,
     datasetRoot: input.datasetRoot,
@@ -122,7 +133,8 @@ export function resolveParams(
     sdpa: bool(fields, 'sdpa', true),
     unetOnly: bool(fields, 'unetOnly', true),
     sdxl: bool(fields, 'sdxl', true),
-    shuffleCaption: bool(fields, 'shuffleCaption', true),
+    cacheTextEncoderOutputs,
+    shuffleCaption,
     keepTokens: num(fields, 'keepTokens', 0, { positive: false }),
     samplePrompts: input.samplePrompts?.trim() ? input.samplePrompts : null,
     sampleEveryNEpochs: num(fields, 'sampleEveryNEpochs', 1, { positive: false }),
@@ -203,6 +215,11 @@ export function buildTrainToml(params: ResolvedParams, paths: JobPaths): string 
     // 官方文档明言 SDXL 双 TE 训练结果不可预期
     network_train_unet_only: params.unetOnly,
     cache_latents_to_disk: true,
+    // TE 输出缓存：开后每步零 TE 前向、TE 不驻留显存；shuffleCaption 必须为 false
+    //（resolveParams 已拦互斥组合）
+    ...(params.cacheTextEncoderOutputs
+      ? { cache_text_encoder_outputs: true }
+      : {}),
     clip_skip: params.clipSkip,
     min_snr_gamma: params.minSnrGamma,
     sdpa: params.sdpa,
