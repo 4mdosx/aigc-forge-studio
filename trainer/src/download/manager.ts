@@ -64,6 +64,10 @@ export interface Trainer {
   now: () => Date
   /** 重试参数覆盖（测试用；缺省用内置常量） */
   retry?: RetryOptions
+  /** 训练栈配置；缺省时 /train 端点报「未配置」 */
+  train?: import('../train/manager.ts').TrainConfig
+  /** 运行中的训练 job：id → 子进程 + run promise（train manager 惰性初始化） */
+  trainRuns?: Map<string, import('../train/manager.ts').TrainRun>
 }
 
 export interface DownloadJson {

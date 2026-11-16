@@ -11,6 +11,7 @@ import { recover } from './download/manager.ts'
 import { TrainerError } from './errors.ts'
 import { createApp } from './http/app.ts'
 import { buildRoots } from './roots.ts'
+import { recoverTrainJobs } from './train/manager.ts'
 
 interface Config {
   trainer: {
@@ -18,6 +19,11 @@ interface Config {
     port: number
     db: string
     roots?: Record<string, string>
+    train?: {
+      sdScriptsRoot: string
+      numCpuThreads?: number
+      logsDir?: string
+    }
   }
 }
 
@@ -40,14 +46,28 @@ async function main(): Promise<void> {
   // config.json 与 data/ 都锚在 trainer 包根（import.meta.dirname 是 src/）
   const root = join(import.meta.dirname, '..')
   const config = loadConfig(resolve(root, 'config.json'))
+  // 训练日志目录：config 不给就落 trainer 包根 data/train
+  const trainConfig = config.trainer.train
+    ? {
+        ...config.trainer.train,
+        logsDir: resolve(
+          root,
+          config.trainer.train.logsDir ?? join('data', 'train'),
+        ),
+      }
+    : undefined
+  if (trainConfig) mkdirSync(trainConfig.logsDir, { recursive: true })
   const trainer: Trainer = {
     db: openDatabase(resolve(root, config.trainer.db)),
     roots: buildRoots(config.trainer.roots),
     controllers: new Map(),
     runs: new Map(),
+    trainRuns: new Map(),
+    train: trainConfig,
     now: () => new Date(),
   }
   recover(trainer)
+  recoverTrainJobs(trainer)
   const app = createApp(trainer)
   const host = values.host ?? config.trainer.host
   const port = portOf(values.port ?? String(config.trainer.port))

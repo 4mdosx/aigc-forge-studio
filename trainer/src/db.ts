@@ -18,6 +18,21 @@ CREATE TABLE IF NOT EXISTS downloads (
   completed_at TEXT,
   UNIQUE (url, root, path)
 );
+
+CREATE TABLE IF NOT EXISTS train_jobs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','running','completed','failed','cancelled')),
+  params TEXT NOT NULL,
+  dataset_toml TEXT,
+  train_toml TEXT,
+  output_dir TEXT,
+  exit_code INTEGER,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT
+);
 `
 
 export function openDatabase(path: string): DatabaseSync {

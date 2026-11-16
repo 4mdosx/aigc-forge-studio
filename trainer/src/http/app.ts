@@ -4,6 +4,7 @@ import type { Trainer } from '../download/manager.ts'
 import { TrainerError } from '../errors.ts'
 import { mountDownloads } from './downloads.ts'
 import { mountRoots } from './roots.ts'
+import { mountTrain } from './train.ts'
 import { mountUpload } from './upload.ts'
 
 export function createApp(trainer: Trainer): Hono {
@@ -18,5 +19,6 @@ export function createApp(trainer: Trainer): Hono {
   mountRoots(app, trainer)
   mountUpload(app, trainer)
   mountDownloads(app, trainer)
+  mountTrain(app, trainer)
   return app
 }
