@@ -118,6 +118,14 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 
 CREATE INDEX IF NOT EXISTS chat_messages_by_chat ON chat_messages (chat_id, created_at);
+
+CREATE TABLE IF NOT EXISTS dice_fields (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  candidates TEXT NOT NULL DEFAULT '',
+  count INTEGER NOT NULL DEFAULT 1,
+  position INTEGER NOT NULL DEFAULT 0
+);
 `
 
 export interface WorkRow {
@@ -199,7 +207,112 @@ function migrate(db: DatabaseSync): void {
   dropLlmTasks(db)
   addColumn(db, 'chats', 'chat_type', 'TEXT')
   addColumn(db, 'chats', 'system_text', 'TEXT')
+  rebuildDiceFields(db)
+  seedDiceFields(db)
 }
+
+// dice_fields 曾用保留字 values 作列名（会建表失败或残留旧表），统一重建为 candidates
+function rebuildDiceFields(db: DatabaseSync): void {
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dice_fields'")
+    .all()
+  if (tables.length === 0) return
+  const columns = (
+    db.prepare('PRAGMA table_info(dice_fields)').all() as Array<{ name: string }>
+  ).map((c) => c.name)
+  if (columns.includes('candidates')) return
+  db.exec('DROP TABLE dice_fields')
+}
+
+// dice 掷骰工作台：空表时填入 creative-intent patch 字段默认集（与 web 侧骨架一致）
+function seedDiceFields(db: DatabaseSync): void {
+  const row = db
+    .prepare('SELECT COUNT(*) AS n FROM dice_fields')
+    .get() as { n: number }
+  if (row.n > 0) return
+  const insert = db.prepare(
+    'INSERT INTO dice_fields (name, candidates, count, position) VALUES (?, ?, ?, ?)',
+  )
+  for (const [index, field] of DEFAULT_DICE_FIELDS.entries()) {
+    insert.run(field.name, field.values, field.count, index)
+  }
+}
+
+export const DEFAULT_DICE_FIELDS: Array<{
+  name: string
+  values: string
+  count: number
+}> = [
+  { name: 'subject.type', values: '1girl, solo, 1boy, 2girls, janedoe', count: 1 },
+  {
+    name: 'subject.description',
+    values:
+      'silver hair, long hair, twintails, blue eyes, red eyes, blonde hair, black hair, green eyes, ponytail, short hair, purple eyes, hair ornament, tall female, petite',
+    count: 3,
+  },
+  {
+    name: 'outfit.clothing',
+    values:
+      'black gothic dress, white dress, kimono, school uniform, sailor uniform, jacket, hoodie, qipao, maid dress, combat suit, sweater, bikini armor, lab coat, cape',
+    count: 2,
+  },
+  {
+    name: 'outfit.accessories',
+    values:
+      'earrings, necklace, hair ribbon, choker, glasses, bracelet, thigh strap, gloves, hat, beret, headphones, cyberpunk visor',
+    count: 2,
+  },
+  {
+    name: 'pose.action',
+    values:
+      'standing, arms behind back, hands in pockets, sitting, crossed legs, leaning forward, looking back, walking, running, crouching, arms crossed, holding weapon',
+    count: 2,
+  },
+  {
+    name: 'pose.expression',
+    values:
+      'smile, closed mouth, melancholy, smirk, serious, blush, open mouth, expressionless, angry, surprised, gentle smile, grin',
+    count: 1,
+  },
+  {
+    name: 'composition.shot',
+    values: 'full body, upper body, cowboy shot, portrait, bust, wide shot, close-up',
+    count: 1,
+  },
+  {
+    name: 'composition.view',
+    values: 'from side, from above, from below, from behind, dynamic angle, dutch angle, front view',
+    count: 1,
+  },
+  {
+    name: 'composition.framing',
+    values: 'cowboy shot, portrait, centered framing, rule of thirds, symmetric framing',
+    count: 1,
+  },
+  {
+    name: 'environment.background',
+    values:
+      'simple background, white background, cityscape, night city, classroom, forest, beach, ruined city, laboratory, neon lights, underwater, cyberspace, gray background',
+    count: 1,
+  },
+  {
+    name: 'lighting.type',
+    values:
+      'soft lighting, backlighting, moonlight, rim lighting, dramatic shadow, sunset glow, neon lighting, dim light, spotlight, dappled sunlight',
+    count: 1,
+  },
+  {
+    name: 'style.rendering',
+    values: 'masterpiece, best quality, very aesthetic, absurdres, highres, detailed background',
+    count: 3,
+  },
+  {
+    name: 'constraints.exclude',
+    values:
+      'bad hands, extra fingers, watermark, signature, worst quality, low quality, jpeg artifacts, blurry, extra limbs, bad anatomy, text, logo',
+    count: 6,
+  },
+]
 
 function rewriteVersions(db: DatabaseSync): void {
   const rows = db
