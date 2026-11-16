@@ -187,7 +187,10 @@ export function buildTrainToml(params: ResolvedParams, paths: JobPaths): string 
     unet_lr: params.unetLr,
     text_encoder_lr: params.textEncoderLr,
     lr_scheduler: params.scheduler,
-    lr_warmup_steps: params.lrWarmupSteps,
+    // constant 调度器没有 warmup 概念，塞 lr_warmup_steps 会被 optimizer.py 拒（实测坑）
+    ...(params.scheduler === 'constant'
+      ? {}
+      : { lr_warmup_steps: params.lrWarmupSteps }),
     max_train_epochs: params.maxTrainEpochs,
     gradient_checkpointing: true,
     cache_latents_to_disk: true,

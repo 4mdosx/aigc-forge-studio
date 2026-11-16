@@ -132,6 +132,11 @@ test('buildTrainToml emits flat keys matching train_network.py args', () => {
   assert.match(text, /clip_skip = 2/)
   // sdxl 不是 train_network.py 的合法参数（SDXL 走独立脚本），进 TOML 必炸
   assert.ok(!text.includes('sdxl'), 'sdxl must not appear in toml')
+  // constant 调度器不认 warmup
+  assert.ok(
+    !text.includes('lr_warmup_steps'),
+    'constant scheduler must not emit lr_warmup_steps',
+  )
   assert.ok(!text.includes('sample_prompts'), 'no sampling by default')
 })
 
