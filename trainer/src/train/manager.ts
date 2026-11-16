@@ -162,7 +162,7 @@ export function buildSpawnPlan(
       '--num_processes', '1',
       '--num_machines', '1',
       '--mixed_precision', 'fp16',
-      '--dynamo_backend', 'NO',
+      '--dynamo_backend', 'no',
       '--num_cpu_threads_per_process', String(config.numCpuThreads ?? 8),
       'train_network.py',
       '--config_file', join(paths.configDir, 'train.toml'),
