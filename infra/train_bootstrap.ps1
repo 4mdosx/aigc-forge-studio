@@ -7,7 +7,7 @@
 #   ...\sd-scripts\venv             独立 venv（不复用 ComfyUI 的 3.12 venv，torch 版本各自为政）
 #   torch 2.6.0 + cu124             sd-scripts v0.12 官方档位（CI 测 2.6/2.8）；3080 sm_86 支持
 #
-# 与 trainer 的接口约定（trainer/config.json → trainer.train.sdScriptsRoot）：
+# 与 trainer 的接口约定（仓库根 config.json → trainer.train.sdScriptsRoot）：
 #   <root>\runtime\sd-scripts\venv\Scripts\python.exe -m accelerate.commands.launch ... train_network.py
 # mixed_precision 等 accelerate 参数由 trainer spawn 时显式给足，本机无需 accelerate config。
 

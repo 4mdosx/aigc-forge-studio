@@ -21,7 +21,7 @@ POST /upload (数据集+caption)                  │ spawn venv python -m accel
 
 ## 部署步骤（Windows 机 PowerShell）
 
-1. 同步仓库代码到 C:\AIGC（含 `infra/train_bootstrap.ps1`、trainer 新代码、`trainer/config.json`）。
+1. 同步仓库代码到 C:\AIGC（含 `infra/train_bootstrap.ps1`、trainer 新代码；trainer 配置在仓库根 `config.json` 的 `trainer` 段，随仓库一起过来）。
 2. `powershell -File infra\train_bootstrap.ps1`——装 sd-scripts v0.12.3 + 独立 venv + torch cu124（首次 ~2.5GB 下载），幂等可重跑。
 3. 重启 trainer 服务（host 已改 0.0.0.0，:8788）。
 4. 验证：`curl http://127.0.0.1:8788/health` 与 `curl http://127.0.0.1:8788/roots`。

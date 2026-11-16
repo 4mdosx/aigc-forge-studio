@@ -43,22 +43,23 @@ async function main(): Promise<void> {
       port: { type: 'string' },
     },
   })
-  // config.json 与 data/ 都锚在 trainer 包根（import.meta.dirname 是 src/）
+  // trainer 包根（import.meta.dirname 是 src/）；config 与 db 相对路径都锚仓库根
   const root = join(import.meta.dirname, '..')
-  const config = loadConfig(resolve(root, 'config.json'))
+  const repoRoot = join(root, '..')
+  const config = loadConfig(resolve(repoRoot, 'config.json'))
   // 训练日志目录：config 不给就落 trainer 包根 data/train
   const trainConfig = config.trainer.train
     ? {
         ...config.trainer.train,
         logsDir: resolve(
-          root,
-          config.trainer.train.logsDir ?? join('data', 'train'),
+          repoRoot,
+          config.trainer.train.logsDir ?? join('trainer', 'data', 'train'),
         ),
       }
     : undefined
   if (trainConfig) mkdirSync(trainConfig.logsDir, { recursive: true })
   const trainer: Trainer = {
-    db: openDatabase(resolve(root, config.trainer.db)),
+    db: openDatabase(resolve(repoRoot, config.trainer.db)),
     roots: buildRoots(config.trainer.roots),
     controllers: new Map(),
     runs: new Map(),

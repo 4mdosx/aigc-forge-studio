@@ -60,7 +60,6 @@ Desktop.ini
 /runner/node_modules/
 /web/node_modules/
 /trainer/node_modules/
-/trainer/config.json
 /trainer/data/
 /web/.next/
 /web/tsconfig.tsbuildinfo

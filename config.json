@@ -12,5 +12,21 @@
     "timeout": 600,
     "out": "outputs/runner",
     "db": "data/runner.sqlite"
+  },
+  "trainer": {
+    "host": "0.0.0.0",
+    "//host": "训练机部署：0.0.0.0 供 Mac 侧 runner/脚本调用",
+    "port": 8788,
+    "db": "trainer/data/trainer.sqlite",
+    "roots": {
+      "models": "C:\\AIGC\\models",
+      "training": "C:\\AIGC\\training",
+      "//roots": "根目录在这里写死；API 只传 root 名字 + 相对路径，见 GET /roots"
+    },
+    "train": {
+      "sdScriptsRoot": "C:\\AIGC\\runtime\\sd-scripts",
+      "numCpuThreads": 8,
+      "//train": "sd-scripts 由 infra/train_bootstrap.ps1 部署；日志落 trainer 包根 data/train/<jobId>.log"
+    }
   }
 }
