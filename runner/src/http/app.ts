@@ -6,6 +6,7 @@ import { mountChats } from './chats.ts'
 import { mountData } from './data.ts'
 import { mountFiles } from './files.ts'
 import { mountPoses } from './poses.ts'
+import { mountPosePending } from './pose-pending.ts'
 import { mountTasks } from './tasks.ts'
 import { mountWorkflows } from './workflows.ts'
 import { mountWorks } from './works.ts'
@@ -25,5 +26,6 @@ export function createApp(runner: Runner): Hono {
   mountFiles(app, runner)
   mountData(app, runner)
   mountPoses(app, runner)
+  mountPosePending(app, runner)
   return app
 }
