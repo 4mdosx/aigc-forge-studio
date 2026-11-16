@@ -6,6 +6,7 @@ const asBuffer = (bytes: Uint8Array | ArrayBuffer): Buffer =>
 
 import type { Hono } from 'hono'
 
+import { gatewayHint } from '../chat/client.ts'
 import { taskById, type TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import { relativePath, viewTarget } from '../path.ts'
@@ -99,6 +100,12 @@ function joinTags(...groups: Array<string[] | undefined>): string[] {
   return out
 }
 
+export interface PoseGuide {
+  view?: string[]
+  shot?: string[]
+  framing?: string[]
+}
+
 export interface Img2PoseParams {
   poseName: string
   // data/ 相对路径（upload 端点先把文件落到 data/uploads/pose_src/ 再传入）
@@ -107,6 +114,7 @@ export interface Img2PoseParams {
   name?: string
   description?: string
   tags?: string[]
+  guide?: PoseGuide
   note?: string
   ratio?: string
 }
@@ -251,7 +259,7 @@ export async function runImg2Pose(runner: Runner, params: Img2PoseParams): Promi
     ratio: ratioKey,
     defects: [] as string[],
     tags,
-    guide: {
+    guide: params.guide ?? {
       view: ['three-quarter'],
       shot: ['full body'],
       framing: ['centered'],
@@ -283,6 +291,30 @@ export async function runImg2Pose(runner: Runner, params: Img2PoseParams): Promi
 }
 
 export function mountPoses(app: Hono, runner: Runner): void {
+  // LLM 读图生成 meta 草稿（web 上传页「识别 meta」按钮用）。
+  // 入口：multipart {file} 或 JSON {image: data/ 相对路径}；走 gateway vision 模型。
+  app.post('/poses/describe', async (c) => {
+    const contentType = c.req.header('content-type') ?? ''
+    let bytes: Uint8Array
+    if (contentType.includes('application/json')) {
+      const body = await jsonObject(c.req)
+      const imageRel = relativePath(stringField(body, 'image'))
+      try {
+        bytes = new Uint8Array(readFileSync(join(runner.dataDir, imageRel)))
+      } catch {
+        throw new RunnerError(`image not found in data/: ${imageRel}`, 404)
+      }
+    } else {
+      const body = await c.req.parseBody()
+      const file = body.file
+      if (!(file instanceof File)) throw new RunnerError('file is required')
+      bytes = new Uint8Array(await file.arrayBuffer())
+    }
+    if (bytes.byteLength === 0) throw new RunnerError('image is empty', 400)
+    if (bytes.byteLength > 10_000_000) throw new RunnerError('image too large (>10MB)', 400)
+    return c.json(await describePoseMeta(runner, bytes))
+  })
+
   // JSON 入口：源图必须已在 data/ 内（脚本/自动化调用）
   app.post('/poses/from-image', async (c) => {
     const body = await jsonObject(c.req)
@@ -331,6 +363,16 @@ export function mountPoses(app: Hono, runner: Runner): void {
         ? body.tags.split(',').map((t) => t.trim()).filter(Boolean)
         : undefined
 
+    // LLM 草稿的 guide 随表单隐藏域一起提交（JSON 字符串）
+    let guide: PoseGuide | undefined
+    if (typeof body.guide === 'string' && body.guide.trim() !== '') {
+      try {
+        guide = sanitizeGuide(JSON.parse(body.guide))
+      } catch {
+        throw new RunnerError('guide must be valid JSON', 400)
+      }
+    }
+
     const result = await runImg2Pose(runner, {
       poseName,
       imageRel,
@@ -338,6 +380,7 @@ export function mountPoses(app: Hono, runner: Runner): void {
       name: typeof body.name === 'string' && body.name !== '' ? body.name : undefined,
       description: typeof body.description === 'string' ? body.description : undefined,
       tags,
+      guide,
       note: typeof body.note === 'string' ? body.note : '',
       ratio,
     })
@@ -345,8 +388,91 @@ export function mountPoses(app: Hono, runner: Runner): void {
   })
 }
 
-// recipe prompt 组装（与 experiments/run_stk_dual.mjs 同规则）
-function recipeOf(runner: Runner, character: string): Record<string, any> {
+// ---- LLM meta 草稿 ----
+
+const DESCRIBE_SYSTEM = `You label reference photos for a drawing-reference pose library (anime/illustration style).
+Look at the person's pose ONLY: body orientation, limbs, hands, head direction, camera angle.
+Ignore identity, clothing brand details and background; clothing only matters if it changes the pose silhouette.
+Return STRICT JSON only — no markdown fence, no commentary — with exactly this shape:
+{
+  "name": "short English name, 2-6 words, describing the pose",
+  "description": "one or two English sentences describing the pose precisely: torso orientation, each arm and hand, each leg, head direction",
+  "tags": ["3-8 lowercase danbooru-style action tags, e.g. sitting, one knee up, arm behind head"],
+  "guide": {"view": [], "shot": [], "framing": []}
+}
+guide arrays contain lowercase phrases chosen from:
+  view: front / three-quarter / side / back / from above / from below
+  shot: full body / upper body / lower body
+  framing: centered / off-center / close-up
+Use [] for anything uncertain.`
+
+interface MetaDraft {
+  name: string
+  description: string
+  tags: string[]
+  guide: PoseGuide
+}
+
+async function describePoseMeta(runner: Runner, bytes: Uint8Array): Promise<MetaDraft> {
+  if (!runner.chat) throw new RunnerError(gatewayHint, 503)
+  const client = runner.chat
+  const dataUrl = `data:image/png;base64,${Buffer.from(bytes).toString('base64')}`
+  const reply = await client.complete(
+    client.visionModel,
+    [
+      {
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: dataUrl } },
+          { type: 'text', text: 'Label this pose reference photo.' },
+        ],
+      },
+    ],
+    DESCRIBE_SYSTEM,
+  )
+  return parseMetaDraft(reply)
+}
+
+function parseMetaDraft(reply: string): MetaDraft {
+  const text = reply.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    throw new RunnerError(`LLM returned invalid JSON: ${text.slice(0, 200)}`, 502)
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new RunnerError('LLM draft must be a JSON object', 502)
+  }
+  const obj = raw as Record<string, unknown>
+  const name = typeof obj.name === 'string' ? obj.name.trim() : ''
+  const description = typeof obj.description === 'string' ? obj.description.trim() : ''
+  const tags = sanitizeStringList(obj.tags)
+  if (name === '' || tags.length === 0) {
+    throw new RunnerError('LLM draft missing name or tags', 502)
+  }
+  const guide = sanitizeGuide(obj.guide)
+  return { name, description, tags, guide }
+}
+
+function sanitizeStringList(value: unknown, max = 12): string[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, max)
+}
+
+function sanitizeGuide(value: unknown): PoseGuide {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const obj = value as Record<string, unknown>
+  return {
+    view: sanitizeStringList(obj.view, 4),
+    shot: sanitizeStringList(obj.shot, 4),
+    framing: sanitizeStringList(obj.framing, 4),
+  }
+}function recipeOf(runner: Runner, character: string): Record<string, any> {
   const raw = readFileSync(
     join(runner.dataDir, 'character', character, 'recipe.json'),
     'utf8',

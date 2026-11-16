@@ -166,6 +166,25 @@ export function mountPosePending(app: Hono, runner: Runner): void {
     })
   })
 
+  // 审核就地编辑 meta.json（name/description/tags），approve 前保存用
+  app.post('/poses/pending/edit', async (c) => {
+    const body = await jsonObject(c.req)
+    const poseName = String(body.poseName ?? '')
+    const id = String(body.id ?? '')
+    const { dir, meta } = assertEntry(runner, poseName, id)
+    const next: Record<string, unknown> = { ...meta }
+    if (typeof body.name === 'string' && body.name.trim() !== '') next.name = body.name.trim()
+    if (typeof body.description === 'string') next.description = body.description.trim()
+    if (Array.isArray(body.tags)) {
+      const tags = (body.tags as unknown[])
+        .map((t) => String(t).trim())
+        .filter(Boolean)
+      if (tags.length > 0) next.tags = tags
+    }
+    writeFileSync(join(dir, 'meta.json'), JSON.stringify(next, null, 2))
+    return c.json({ updated: `${poseName}/${id}`, meta: next })
+  })
+
   app.post('/poses/pending/approve', async (c) => {
     const body = await jsonObject(c.req)
     const poseName = String(body.poseName ?? '')
@@ -218,6 +237,10 @@ export function mountPosePending(app: Hono, runner: Runner): void {
       poseName,
       enabled: true,
       name: typeof body.name === 'string' && body.name.trim() !== '' ? body.name.trim() : meta.name,
+      description:
+        typeof body.description === 'string' && body.description.trim() !== ''
+          ? body.description.trim()
+          : meta.description,
       tags: Array.isArray(body.tags)
         ? (body.tags as string[]).map((t) => String(t).trim()).filter(Boolean)
         : meta.tags,

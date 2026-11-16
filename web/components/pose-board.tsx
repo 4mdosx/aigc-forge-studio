@@ -6,6 +6,27 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { api } from '@/lib/api'
 import { fail, messageOf, notify } from '@/lib/notify'
 
+interface PoseGuide {
+  view?: string[]
+  shot?: string[]
+  framing?: string[]
+}
+
+interface MetaDraft {
+  name: string
+  description: string
+  tags: string[]
+  guide: PoseGuide
+}
+
+// 表单里的草稿：tags 用逗号字符串，guide 从 LLM 草稿透传
+interface DraftForm {
+  name: string
+  description: string
+  tags: string
+  guide: PoseGuide | null
+}
+
 interface PendingEntry {
   poseName: string
   id: string
@@ -22,6 +43,12 @@ interface PendingEntry {
   files: string[]
   dual: { taskId: string; status: string; image: string | null } | null
   fileUrls: Record<string, string>
+}
+
+interface MetaEdit {
+  name: string
+  description: string
+  tags: string
 }
 
 // 与 runner POSE_ACTIONS 对齐的动作类目
@@ -49,7 +76,11 @@ export function PoseBoard() {
   const [busy, setBusy] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const [loaded, setLoaded] = useState(false)
-  const editsRef = useRef<Map<string, { name: string; tags: string }>>(new Map())
+  // LLM 识别出的 meta 草稿（可编辑），提交时随表单一起走
+  const [draft, setDraft] = useState<DraftForm | null>(null)
+  const [file, setFile] = useState<File | null>(null)
+  const [describing, setDescribing] = useState(false)
+  const editsRef = useRef<Map<string, MetaEdit>>(new Map())
 
   const load = useCallback(async () => {
     try {
@@ -78,10 +109,33 @@ export function PoseBoard() {
     return () => clearInterval(timer)
   }, [entries, load])
 
+  // LLM 读图 → meta 草稿回填（用户可继续编辑）
+  async function describe() {
+    if (!file) return
+    setDescribing(true)
+    try {
+      const data = new FormData()
+      data.set('file', file)
+      const result = await api<MetaDraft>('poses/describe', { method: 'POST', body: data })
+      setDraft({
+        name: result.name,
+        description: result.description ?? '',
+        tags: (result.tags ?? []).join(', '),
+        guide: result.guide ?? null,
+      })
+      notify('meta 草稿已生成，确认或修改后提交')
+    } catch (err) {
+      fail(messageOf(err))
+    } finally {
+      setDescribing(false)
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = event.currentTarget
     const data = new FormData(form)
+    if (draft?.guide) data.set('guide', JSON.stringify(draft.guide))
     setBusy(true)
     setElapsed(0)
     const timer = setInterval(() => setElapsed((s) => s + 1), 1000)
@@ -92,6 +146,8 @@ export function PoseBoard() {
       )
       notify(`pose ${result.poseId} 已入 pending（${result.ratio}），dual 测试任务已提交`)
       form.reset()
+      setFile(null)
+      setDraft(null)
       await load()
     } catch (err) {
       fail(messageOf(err))
@@ -101,12 +157,30 @@ export function PoseBoard() {
     }
   }
 
-  async function approve(entry: PendingEntry) {
-    const edit = editsRef.current.get(entry.id)
-    const tags = edit?.tags
-      .split(',')
-      .map((t) => t.trim())
-      .filter(Boolean)
+  // 审核就地编辑：先保存进 meta.json（不通过也能留档）
+  async function saveMeta(entry: PendingEntry, edit: MetaEdit) {
+    setBusy(true)
+    try {
+      await api('poses/pending/edit', {
+        method: 'POST',
+        body: JSON.stringify({
+          poseName: entry.poseName,
+          id: entry.id,
+          name: edit.name,
+          description: edit.description,
+          tags: splitTags(edit.tags),
+        }),
+      })
+      notify(`meta 已保存：${entry.poseName}/${entry.id}`)
+      await load()
+    } catch (err) {
+      fail(messageOf(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function approve(entry: PendingEntry, edit: MetaEdit) {
     setBusy(true)
     try {
       const result = await api<{ target: string; manifestError: string | null }>(
@@ -116,8 +190,9 @@ export function PoseBoard() {
           body: JSON.stringify({
             poseName: entry.poseName,
             id: entry.id,
-            name: edit?.name,
-            tags,
+            name: edit.name,
+            description: edit.description,
+            tags: splitTags(edit.tags),
           }),
         },
       )
@@ -126,7 +201,7 @@ export function PoseBoard() {
       } else {
         notify(`已通过，迁入 ${result.target}，manifest 已重建`)
       }
-      editsRef.current.delete(entry.id)
+      editsRef.current.delete(`${entry.poseName}/${entry.id}`)
       await load()
     } catch (err) {
       fail(messageOf(err))
@@ -146,7 +221,7 @@ export function PoseBoard() {
         body: JSON.stringify({ poseName: entry.poseName, id: entry.id }),
       })
       notify(`已驳回 ${entry.poseName}/${entry.id}`)
-      editsRef.current.delete(entry.id)
+      editsRef.current.delete(`${entry.poseName}/${entry.id}`)
       await load()
     } catch (err) {
       fail(messageOf(err))
@@ -167,7 +242,17 @@ export function PoseBoard() {
           <div className="grid">
             <label>
               源图（PNG）
-              <input name="file" type="file" accept=".png,image/png" required />
+              <input
+                name="file"
+                type="file"
+                accept=".png,image/png"
+                required
+                onChange={(event) => {
+                  const picked = event.target.files?.[0] ?? null
+                  setFile(picked)
+                  setDraft(null)
+                }}
+              />
             </label>
             <label>
               动作类目
@@ -201,18 +286,61 @@ export function PoseBoard() {
             </label>
             <label>
               名称
-              <input name="name" placeholder="留空自动命名" />
+              <input
+                name="name"
+                value={draft?.name ?? ''}
+                placeholder="留空自动命名；可用「识别 meta」生成"
+                onChange={(event) =>
+                  setDraft((cur) => ({
+                    name: event.target.value,
+                    description: cur?.description ?? '',
+                    tags: cur?.tags ?? '',
+                    guide: cur?.guide ?? null,
+                  }))
+                }
+              />
             </label>
             <label>
               标签（逗号分隔，附加在动作词之后）
-              <input name="tags" placeholder="one knee up, ok gesture" />
+              <input
+                name="tags"
+                value={draft?.tags ?? ''}
+                placeholder="one knee up, ok gesture"
+                onChange={(event) =>
+                  setDraft((cur) => ({
+                    name: cur?.name ?? '',
+                    description: cur?.description ?? '',
+                    tags: event.target.value,
+                    guide: cur?.guide ?? null,
+                  }))
+                }
+              />
             </label>
           </div>
           <label className="label-line">
             描述
-            <input name="description" placeholder="姿势描述，会写进 meta" />
+            <input
+              name="description"
+              value={draft?.description ?? ''}
+              placeholder="姿势描述，会写进 meta；可用「识别 meta」生成"
+              onChange={(event) =>
+                setDraft((cur) => ({
+                  name: cur?.name ?? '',
+                  description: event.target.value,
+                  tags: cur?.tags ?? '',
+                  guide: cur?.guide ?? null,
+                }))
+              }
+            />
           </label>
           <div className="row">
+            <button
+              type="button"
+              disabled={describing || busy || file === null}
+              onClick={() => void describe()}
+            >
+              {describing ? '识别中…' : '识别 meta（LLM 读图）'}
+            </button>
             <button disabled={busy}>
               {busy ? `处理中… ${elapsed}s` : '提交处理'}
             </button>
@@ -242,7 +370,8 @@ export function PoseBoard() {
                 entry={entry}
                 busy={busy}
                 edits={editsRef.current}
-                onApprove={() => void approve(entry)}
+                onSave={(edit) => void saveMeta(entry, edit)}
+                onApprove={(edit) => void approve(entry, edit)}
                 onReject={() => void reject(entry)}
               />
             ))}
@@ -257,21 +386,24 @@ function PendingCard({
   entry,
   busy,
   edits,
+  onSave,
   onApprove,
   onReject,
 }: {
   entry: PendingEntry
   busy: boolean
-  edits: Map<string, { name: string; tags: string }>
-  onApprove: () => void
+  edits: Map<string, MetaEdit>
+  onSave: (edit: MetaEdit) => void
+  onApprove: (edit: MetaEdit) => void
   onReject: () => void
 }) {
   const key = `${entry.poseName}/${entry.id}`
   const edit = edits.get(key) ?? {
     name: entry.meta.name ?? '',
+    description: entry.meta.description ?? '',
     tags: (entry.meta.tags ?? []).join(', '),
   }
-  const setEdit = (patch: Partial<typeof edit>) => edits.set(key, { ...edit, ...patch })
+  const setEdit = (patch: Partial<MetaEdit>) => edits.set(key, { ...edit, ...patch })
 
   const dual = entry.dual
   const dualDone = dual !== null && ['completed', 'failed', 'cancelled', 'timeout'].includes(dual.status)
@@ -321,20 +453,30 @@ function PendingCard({
           />
         </label>
         <label>
-          标签（通过时生效）
+          标签
           <input
             defaultValue={edit.tags}
             onChange={(event) => setEdit({ tags: event.target.value })}
           />
         </label>
       </div>
+      <label className="label-line">
+        描述
+        <input
+          defaultValue={edit.description}
+          onChange={(event) => setEdit({ description: event.target.value })}
+        />
+      </label>
       <p className="muted">
-        {entry.meta.description || '（无描述）'} · ratio {entry.meta.ratio ?? '—'} · canvas{' '}
+        ratio {entry.meta.ratio ?? '—'} · canvas{' '}
         {(entry.meta.canvases ?? []).join(' / ') || '—'} · {entry.meta.source ?? 'img2pose'}
       </p>
       <div className="row">
-        <button disabled={busy} onClick={onApprove}>
+        <button disabled={busy} onClick={() => onApprove(edit)}>
           通过（迁入 pose 库）
+        </button>
+        <button type="button" className="quiet" disabled={busy} onClick={() => onSave(edit)}>
+          保存 meta
         </button>
         <button type="button" className="quiet" disabled={busy} onClick={onReject}>
           驳回
@@ -342,6 +484,13 @@ function PendingCard({
       </div>
     </li>
   )
+}
+
+function splitTags(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean)
 }
 
 // runner 相对路径（/poses/...）→ web 代理路径
