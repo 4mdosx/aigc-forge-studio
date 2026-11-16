@@ -1,5 +1,7 @@
 // MV3 background service worker：图片右键菜单采集。
-// SW 每次唤醒都会跑顶层代码——菜单在这里重建（removeAll 防重复），folder 列表取自 runner。
+// 菜单唯一入口 = rebuildMenus()（先 removeAll 再 create，杜绝 duplicate id）。
+// SW 唤醒即重建；popup 采集成功后发 refresh-menus 消息唤醒 SW 顺带刷新菜单。
+// folder 列表取自 runner；「采集到上次 folder」用 chrome.storage.local 记忆最近成功目标。
 // pixiv 页面：登录态下把点击的缩略图升级到 /img-original/ 原图 URL 再交给 runner。
 
 const RUNNER = 'http://127.0.0.1:8787'
@@ -19,14 +21,34 @@ async function loadFolders() {
   }
 }
 
-function rebuildMenus(folders) {
+async function lastFolderOf() {
+  try {
+    const stored = await chrome.storage.local.get('lastFolder')
+    const value = stored.lastFolder
+    return typeof value === 'string' && value !== '' ? value : null
+  } catch {
+    return null
+  }
+}
+
+async function rebuildMenus() {
+  const folders = await loadFolders()
   const list = folders.length > 0 ? folders : [FALLBACK_FOLDER]
+  const last = await lastFolderOf()
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: PARENT,
       title: 'AIGC 采集',
       contexts: ['image'],
     })
+    if (last) {
+      chrome.contextMenus.create({
+        id: 'capture:last',
+        parentId: PARENT,
+        title: `采集到上次 folder（${last}）`,
+        contexts: ['image'],
+      })
+    }
     for (const name of list) {
       chrome.contextMenus.create({
         id: `capture:${name}`,
@@ -36,6 +58,19 @@ function rebuildMenus(folders) {
       })
     }
   })
+}
+
+// popup 采集成功后唤醒 SW 并刷新菜单（新建的 folder 立即可见）
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === 'refresh-menus') void rebuildMenus()
+})
+
+async function markLastFolder(folder) {
+  try {
+    await chrome.storage.local.set({ lastFolder: folder })
+  } catch {
+    // 记忆失败不影响采集
+  }
 }
 
 // 注入 pixiv 页面跑：从点击的缩略图找同一张画的 img-original 原图 URL。
@@ -97,9 +132,13 @@ function isPixiv(url) {
 }
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  const id = String(info.menuItemId)
-  if (!id.startsWith('capture:')) return
-  const folder = id.slice('capture:'.length)
+  const raw = String(info.menuItemId)
+  if (!raw.startsWith('capture:')) return
+  const folder =
+    raw === 'capture:last'
+      ? await lastFolderOf()
+      : raw.slice('capture:'.length)
+  if (!folder) return notify('采集失败', '还没有「上次 folder」，先用具体 folder 采一张')
   const src = info.srcUrl
   if (!src) return notify('采集失败', '右键目标没有图片地址')
 
@@ -136,6 +175,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || res.statusText)
+    void markLastFolder(folder)
     if (data.duplicate) {
       notify('重复图片，已跳过', `folder ${folder} 里已有这张图`)
     } else {
@@ -155,9 +195,5 @@ function notify(title, message) {
   })
 }
 
-chrome.contextMenus.create({
-  id: PARENT,
-  title: 'AIGC 采集',
-  contexts: ['image'],
-})
-loadFolders().then(rebuildMenus)
+// SW 唤醒即重建菜单：先 fallback 秒出，runner 数据到了再刷一轮
+void rebuildMenus()

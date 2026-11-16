@@ -95,8 +95,16 @@ async function loadFolders() {
       option.textContent = `${folder.name}（${folder.done}）`
       select.appendChild(option)
     }
-    if (current && body.folders.some((f) => f.name === current)) {
-      select.value = current
+    let picked = null
+    try {
+      const stored = await chrome.storage.local.get('lastFolder')
+      if (typeof stored.lastFolder === 'string') picked = stored.lastFolder
+    } catch {
+      // storage 不可用就忽略记忆
+    }
+    const target = picked ?? current
+    if (target && body.folders.some((f) => f.name === target)) {
+      select.value = target
     }
     setStatus('就绪')
   } catch (err) {
@@ -127,6 +135,12 @@ grab.addEventListener('click', async () => {
     })
     const body = await res.json()
     if (!res.ok) throw new Error(body.error || res.statusText)
+    try {
+      await chrome.storage.local.set({ lastFolder: folder })
+      chrome.runtime.sendMessage({ type: 'refresh-menus' })
+    } catch {
+      // 记忆/菜单刷新失败不影响采集
+    }
     setStatus(
       body.duplicate ? '重复图片，已跳过' : `已采集 ${body.id}，预处理进行中（去 web /capture 看）`,
       body.duplicate ? '' : 'ok',
