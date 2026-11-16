@@ -122,8 +122,7 @@ CREATE INDEX IF NOT EXISTS chat_messages_by_chat ON chat_messages (chat_id, crea
 CREATE TABLE IF NOT EXISTS dice_fields (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
-  candidates TEXT NOT NULL DEFAULT '',
-  count INTEGER NOT NULL DEFAULT 1,
+  tiers TEXT NOT NULL DEFAULT '{}',
   position INTEGER NOT NULL DEFAULT 0
 );
 `
@@ -211,7 +210,8 @@ function migrate(db: DatabaseSync): void {
   seedDiceFields(db)
 }
 
-// dice_fields 曾用保留字 values 作列名（会建表失败或残留旧表），统一重建为 candidates
+// dice_fields 曾用保留字 values 作列名，后升 candidates；v3 = tiers JSON 列。
+// v2（candidates/count）→ v3：旧候选词整体转为 common 层，数据不丢。
 function rebuildDiceFields(db: DatabaseSync): void {
   const tables = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dice_fields'")
@@ -220,8 +220,27 @@ function rebuildDiceFields(db: DatabaseSync): void {
   const columns = (
     db.prepare('PRAGMA table_info(dice_fields)').all() as Array<{ name: string }>
   ).map((c) => c.name)
-  if (columns.includes('candidates')) return
+  if (columns.includes('tiers')) return
+  const rows = columns.includes('candidates')
+    ? (db
+        .prepare('SELECT name, candidates, count, position FROM dice_fields ORDER BY position, id')
+        .all() as Array<{ name: string; candidates: string; count: number; position: number }>)
+    : []
   db.exec('DROP TABLE dice_fields')
+  db.exec(`CREATE TABLE dice_fields (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    tiers TEXT NOT NULL DEFAULT '{}',
+    position INTEGER NOT NULL DEFAULT 0
+  )`)
+  const insert = db.prepare('INSERT INTO dice_fields (name, tiers, position) VALUES (?, ?, ?)')
+  for (const row of rows) {
+    insert.run(
+      row.name,
+      JSON.stringify({ common: { values: row.candidates, count: row.count } }),
+      row.position,
+    )
+  }
 }
 
 // dice 掷骰工作台：空表时填入 creative-intent patch 字段默认集（与 web 侧骨架一致）
@@ -230,11 +249,13 @@ function seedDiceFields(db: DatabaseSync): void {
     .prepare('SELECT COUNT(*) AS n FROM dice_fields')
     .get() as { n: number }
   if (row.n > 0) return
-  const insert = db.prepare(
-    'INSERT INTO dice_fields (name, candidates, count, position) VALUES (?, ?, ?, ?)',
-  )
+  const insert = db.prepare('INSERT INTO dice_fields (name, tiers, position) VALUES (?, ?, ?)')
   for (const [index, field] of DEFAULT_DICE_FIELDS.entries()) {
-    insert.run(field.name, field.values, field.count, index)
+    insert.run(
+      field.name,
+      JSON.stringify({ common: { values: field.values, count: field.count } }),
+      index,
+    )
   }
 }
 

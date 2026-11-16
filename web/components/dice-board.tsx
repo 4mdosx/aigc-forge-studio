@@ -5,22 +5,54 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import { fail, messageOf } from '@/lib/notify'
 
-// 🎲 掷骰工作台：字段池存 runner SQLite（dice_fields 表，建表时种子默认集）。
-// 输入框逗号分隔候选词，数字 = 取几个；🎲 抽词后组成 JSON 展示。
+// 🎲 掷骰工作台：字段池存 runner SQLite（dice_fields.tiers JSON）。
+// 每字段分层：common（手动公共池）+ general/sensitive/questionable/explicit（tag 分类导入）；
+// 顶部勾选参与掷骰的层级；每层独立「摇几个」，行内显示该层池子总数。
+// 导出 = 配置 JSON 下载；导入 = 配置回填 或 tag_classify 输出（buckets → 层）。
 // 配置改动静默防抖 PUT 全量保存；「重置为默认」走 POST /dice/reset。
 
-interface DiceField {
-  name: string
+type Tier = 'common' | 'general' | 'sensitive' | 'questionable' | 'explicit'
+
+const TIERS: Tier[] = ['common', 'general', 'sensitive', 'questionable', 'explicit']
+
+const TIER_LABEL: Record<Tier, string> = {
+  common: 'common',
+  general: 'general',
+  sensitive: 'sensitive',
+  questionable: 'questionable',
+  explicit: 'explicit',
+}
+
+interface TierConfig {
   values: string
   count: number
 }
 
+interface DiceField {
+  name: string
+  tiers: Partial<Record<Tier, TierConfig>>
+}
+
 interface LoadedField extends DiceField {
-  picked: string[]
+  picked: Partial<Record<Tier, string[]>>
+}
+
+const DEFAULT_RATINGS: Record<Tier, boolean> = {
+  common: true,
+  general: true,
+  sensitive: false,
+  questionable: false,
+  explicit: false,
+}
+
+const RATINGS_STORAGE_KEY = 'dice-ratings-v1'
+
+function wordsOf(values: string): string[] {
+  return [...new Set(values.split(/[,;\n]/).map((w) => w.trim()).filter((w) => w !== ''))]
 }
 
 function pickWords(values: string, count: number): string[] {
-  const words = [...new Set(values.split(/[,;\n]/).map((w) => w.trim()).filter((w) => w !== ''))]
+  const words = wordsOf(values)
   const n = Math.max(0, Math.min(count, words.length))
   // 部分洗牌取前 n 个
   for (let i = 0; i < n; i += 1) {
@@ -30,25 +62,47 @@ function pickWords(values: string, count: number): string[] {
   return words.slice(0, n)
 }
 
-const asLoaded = (rows: DiceField[]): LoadedField[] =>
-  rows.map((f) => ({ ...f, picked: [] }))
+const tierOf = (field: LoadedField, tier: Tier): TierConfig =>
+  field.tiers[tier] ?? { values: '', count: 1 }
+
+function normalizeTiers(raw: unknown): Partial<Record<Tier, TierConfig>> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const out: Partial<Record<Tier, TierConfig>> = {}
+  for (const [tier, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!TIERS.includes(tier as Tier)) continue
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const t = value as Record<string, unknown>
+    const count = Number(t.count)
+    out[tier as Tier] = {
+      values: typeof t.values === 'string' ? t.values : '',
+      count: Number.isInteger(count) && count >= 0 ? Math.min(count, 99) : 1,
+    }
+  }
+  return out
+}
+
+function asLoaded(rows: Array<{ name: string; tiers?: unknown }>): LoadedField[] {
+  return rows.map((row) => ({ name: row.name, tiers: normalizeTiers(row.tiers), picked: {} }))
+}
 
 export function DiceBoard() {
   const [fields, setFields] = useState<LoadedField[]>([])
   const [loaded, setLoaded] = useState(false)
   const [rolled, setRolled] = useState(false)
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [enabled, setEnabled] = useState<Record<Tier, boolean>>(DEFAULT_RATINGS)
+  const [importMsg, setImportMsg] = useState('')
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const configOf = (list: LoadedField[]): DiceField[] =>
-    list.map((f) => ({ name: f.name, values: f.values, count: f.count }))
+  const fileRef = useRef<HTMLInputElement>(null)
 
   const save = useCallback(async (list: LoadedField[]) => {
     setSaveState('saving')
     try {
       await api('dice/fields', {
         method: 'PUT',
-        body: JSON.stringify({ fields: configOf(list) }),
+        body: JSON.stringify({
+          fields: list.map((f) => ({ name: f.name, tiers: f.tiers })),
+        }),
       })
       setSaveState('saved')
     } catch (err) {
@@ -69,7 +123,7 @@ export function DiceBoard() {
     let cancelled = false
     void (async () => {
       try {
-        const body = await api<{ fields: DiceField[] }>('dice/fields')
+        const body = await api<{ fields: Array<{ name: string; tiers?: unknown }> }>('dice/fields')
         if (cancelled) return
         setFields(asLoaded(body.fields))
       } catch (err) {
@@ -80,6 +134,37 @@ export function DiceBoard() {
     return () => {
       cancelled = true
     }
+  }, [])
+
+  // rating 勾选是 UI 偏好，存浏览器本地（导出文件里也带一份）
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(RATINGS_STORAGE_KEY)
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>
+        setEnabled((cur) => {
+          const next = { ...cur }
+          for (const tier of TIERS) {
+            if (typeof parsed[tier] === 'boolean') next[tier] = parsed[tier] as boolean
+          }
+          return next
+        })
+      }
+    } catch {
+      // 无存档就用默认勾选
+    }
+  }, [])
+
+  const toggleRating = useCallback((tier: Tier) => {
+    setEnabled((cur) => {
+      const next = { ...cur, [tier]: !cur[tier] }
+      try {
+        localStorage.setItem(RATINGS_STORAGE_KEY, JSON.stringify(next))
+      } catch {
+        // 存不了就算了
+      }
+      return next
+    })
   }, [])
 
   // patch 带 picked = 掷骰结果，不触发保存；其他 = 配置变更，防抖落库
@@ -94,17 +179,58 @@ export function DiceBoard() {
     [scheduleSave],
   )
 
-  const rollField = useCallback((index: number) => {
-    setFields((cur) =>
-      cur.map((f, i) => (i === index ? { ...f, picked: pickWords(f.values, f.count) } : f)),
-    )
-    setRolled(true)
-  }, [])
+  const updateTier = useCallback(
+    (index: number, tier: Tier, patch: Partial<TierConfig>) => {
+      setFields((cur) => {
+        const next = cur.map((f, i) => {
+          if (i !== index) return f
+          return {
+            ...f,
+            tiers: { ...f.tiers, [tier]: { ...tierOf(f, tier), ...patch } },
+          }
+        })
+        scheduleSave(next)
+        return next
+      })
+    },
+    [scheduleSave],
+  )
+
+  const rollField = useCallback(
+    (index: number) => {
+      setFields((cur) =>
+        cur.map((f, i) => {
+          if (i !== index) return f
+          const picked: Partial<Record<Tier, string[]>> = {}
+          for (const tier of TIERS) {
+            if (!enabled[tier]) continue
+            const cfg = tierOf(f, tier)
+            const words = pickWords(cfg.values, cfg.count)
+            if (words.length > 0) picked[tier] = words
+          }
+          return { ...f, picked }
+        }),
+      )
+      setRolled(true)
+    },
+    [enabled],
+  )
 
   const rollAll = useCallback(() => {
-    setFields((cur) => cur.map((f) => ({ ...f, picked: pickWords(f.values, f.count) })))
+    setFields((cur) =>
+      cur.map((f) => {
+        const picked: Partial<Record<Tier, string[]>> = {}
+        for (const tier of TIERS) {
+          if (!enabled[tier]) continue
+          const cfg = tierOf(f, tier)
+          const words = pickWords(cfg.values, cfg.count)
+          if (words.length > 0) picked[tier] = words
+        }
+        return { ...f, picked }
+      }),
+    )
     setRolled(true)
-  }, [])
+  }, [enabled])
 
   const addField = useCallback(() => {
     setFields((cur) => {
@@ -112,7 +238,7 @@ export function DiceBoard() {
       for (let n = 2; cur.some((f) => f.name === name); n += 1) {
         name = `custom.field${n}`
       }
-      const next = [...cur, { name, values: '', count: 1, picked: [] }]
+      const next = [...cur, { name, tiers: {}, picked: {} }]
       scheduleSave(next)
       return next
     })
@@ -133,7 +259,7 @@ export function DiceBoard() {
     void (async () => {
       try {
         await api('dice/reset', { method: 'POST' })
-        const body = await api<{ fields: DiceField[] }>('dice/fields')
+        const body = await api<{ fields: Array<{ name: string; tiers?: unknown }> }>('dice/fields')
         setFields(asLoaded(body.fields))
         setRolled(false)
         setSaveState('saved')
@@ -143,14 +269,139 @@ export function DiceBoard() {
     })()
   }, [])
 
+  // ---- 导入导出 ----
+
+  const exportConfig = useCallback(() => {
+    const payload = {
+      version: 1,
+      kind: 'dice-config',
+      enabled,
+      fields: fields.map(({ name, tiers }) => ({ name, tiers })),
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'dice-config.json'
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [enabled, fields])
+
+  const importFile = useCallback(
+    (file: File) => {
+      void (async () => {
+        let obj: unknown
+        try {
+          obj = JSON.parse(await file.text())
+        } catch {
+          fail('导入失败：不是合法 JSON')
+          return
+        }
+        if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+          fail('导入失败：JSON 结构不对')
+          return
+        }
+        const body = obj as Record<string, unknown>
+
+        // tag_classify 输出：buckets.<rating>.<field> = tags[] → 灌进对应层级词池
+        if (body.buckets && typeof body.buckets === 'object' && !Array.isArray(body.buckets)) {
+          const next = fields.map((f) => ({ ...f, tiers: { ...f.tiers }, picked: {} }))
+          let touched = 0
+          for (const [bucket, fieldMap] of Object.entries(
+            body.buckets as Record<string, unknown>,
+          )) {
+            if (bucket === 'common' || bucket === 'unknown') continue
+            if (!TIERS.includes(bucket as Tier)) continue
+            if (!fieldMap || typeof fieldMap !== 'object' || Array.isArray(fieldMap)) continue
+            for (const [fieldName, tags] of Object.entries(
+              fieldMap as Record<string, unknown>,
+            )) {
+              if (!Array.isArray(tags)) continue
+              const words = tags.filter((t): t is string => typeof t === 'string')
+              if (words.length === 0) continue
+              let field = next.find((f) => f.name === fieldName)
+              if (!field) {
+                field = { name: fieldName, tiers: {}, picked: {} }
+                next.push(field)
+              }
+              const existing = field.tiers[bucket as Tier]
+              field.tiers[bucket as Tier] = {
+                values: words.join(', '),
+                count: existing?.count ?? 1,
+              }
+              touched += 1
+            }
+          }
+          setFields(next)
+          scheduleSave(next)
+          setImportMsg(`已导入 tag 分类：灌了 ${touched} 个字段层（数量保持原值，自行调整）`)
+          setRolled(false)
+          return
+        }
+
+        // 配置回填：fields + 可选 enabled
+        if (Array.isArray(body.fields)) {
+          const restored = asLoaded(
+            (body.fields as Array<Record<string, unknown>>).map((f) => {
+              // 旧版单层配置（values/count）→ common 层
+              if (typeof f.values === 'string' || f.count !== undefined) {
+                const count = Number(f.count)
+                return {
+                  name: String(f.name ?? ''),
+                  tiers: {
+                    common: {
+                      values: typeof f.values === 'string' ? f.values : '',
+                      count: Number.isInteger(count) && count >= 0 ? count : 1,
+                    },
+                  },
+                }
+              }
+              return { name: String(f.name ?? ''), tiers: f.tiers }
+            }),
+          )
+          if (body.enabled && typeof body.enabled === 'object' && !Array.isArray(body.enabled)) {
+            const incoming = body.enabled as Record<string, unknown>
+            setEnabled((cur) => {
+              const next = { ...cur }
+              for (const tier of TIERS) {
+                if (typeof incoming[tier] === 'boolean') next[tier] = incoming[tier] as boolean
+              }
+              try {
+                localStorage.setItem(RATINGS_STORAGE_KEY, JSON.stringify(next))
+              } catch {
+                // 忽略
+              }
+              return next
+            })
+          }
+          setFields(restored)
+          scheduleSave(restored)
+          setImportMsg(`已导入配置：${restored.length} 个字段`)
+          setRolled(false)
+          return
+        }
+
+        fail('导入失败：既不是 dice 配置也不是 tag 分类输出')
+      })()
+    },
+    [fields, scheduleSave],
+  )
+
+  // ---- 结果合成 ----
+
+  const composeOf = (field: LoadedField): string =>
+    TIERS.filter((tier) => enabled[tier])
+      .flatMap((tier) => field.picked[tier] ?? [])
+      .join(', ')
+
   const composed = Object.fromEntries(
-    fields.filter((f) => f.picked.length > 0).map((f) => [f.name, f.picked.join(', ')]),
+    fields.map((f) => [f.name, composeOf(f)]).filter(([, v]) => v !== ''),
   )
   const negative = composed['constraints.exclude'] ?? null
-  // 拼好的正向 prompt：除 constraints.exclude 外按字段顺序拼接
   const joinedPrompt = fields
-    .filter((f) => f.name !== 'constraints.exclude' && f.picked.length > 0)
-    .map((f) => f.picked.join(', '))
+    .filter((f) => f.name !== 'constraints.exclude')
+    .map((f) => composeOf(f))
+    .filter((v) => v !== '')
     .join(', ')
 
   function copyJson() {
@@ -163,7 +414,7 @@ export function DiceBoard() {
         <div className="column-head">
           <h2>🎲 掷骰工作台</h2>
           <span className="muted">
-            候选词逗号分隔 · 数字 = 取几个 · 模版存 runner 数据库
+            分层词池 · 每层独立数量 · 模版存 runner 数据库
             {saveState === 'saving'
               ? ' · 保存中…'
               : saveState === 'saved'
@@ -173,9 +424,39 @@ export function DiceBoard() {
                   : ''}
           </span>
         </div>
+        <div className="dice-ratings">
+          {TIERS.map((tier) => (
+            <label key={tier} className={`dice-rating ${enabled[tier] ? 'on' : ''}`}>
+              <input
+                type="checkbox"
+                checked={enabled[tier]}
+                onChange={() => toggleRating(tier)}
+              />
+              {TIER_LABEL[tier]}
+            </label>
+          ))}
+          <span className="muted dice-ratings-hint">勾选参与掷骰的层级</span>
+        </div>
         <div className="dice-hero">
           <button type="button" className="dice-hero-roll" onClick={rollAll}>
             🎲 一起生成
+          </button>
+          <label className="quiet dice-file">
+            导入
+            <input
+              ref={fileRef}
+              type="file"
+              accept="application/json,.json"
+              hidden
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                if (file) importFile(file)
+                e.target.value = ''
+              }}
+            />
+          </label>
+          <button type="button" className="quiet" onClick={exportConfig}>
+            导出
           </button>
           <button type="button" className="quiet" onClick={addField}>
             ＋ 加字段
@@ -184,6 +465,7 @@ export function DiceBoard() {
             重置为默认
           </button>
         </div>
+        {importMsg !== '' ? <p className="muted dice-import-msg">{importMsg}</p> : null}
       </section>
 
       <section className="panel">
@@ -191,51 +473,96 @@ export function DiceBoard() {
           <p className="muted">加载中…</p>
         ) : (
           <div className="dice-grid">
-            {fields.map((field, index) => (
-              <div key={field.name} className="dice-field">
-                <div className="dice-head">
-                  <input
-                    className="dice-name"
-                    value={field.name}
-                    onChange={(e) => updateField(index, { name: e.target.value })}
-                    aria-label="字段名"
-                  />
-                  <button
-                    type="button"
-                    className="quiet dice-remove"
-                    onClick={() => removeField(index)}
-                    title="删除字段"
-                  >
-                    ×
-                  </button>
-                </div>
-                <textarea
-                  rows={3}
-                  value={field.values}
-                  placeholder="候选词，逗号分隔"
-                  onChange={(e) => updateField(index, { values: e.target.value })}
-                />
-                <div className="dice-foot">
-                  <label className="dice-count">
-                    取
+            {fields.map((field, index) => {
+              const poolTotal = TIERS.filter((t) => enabled[t]).reduce(
+                (sum, t) => sum + wordsOf(tierOf(field, t).values).length,
+                0,
+              )
+              const takeTotal = TIERS.filter((t) => enabled[t]).reduce(
+                (sum, t) => sum + (wordsOf(tierOf(field, t).values).length > 0 ? tierOf(field, t).count : 0),
+                0,
+              )
+              return (
+                <div key={field.name} className="dice-field">
+                  <div className="dice-head">
                     <input
-                      type="number"
-                      min={0}
-                      max={99}
-                      value={field.count}
-                      onChange={(e) =>
-                        updateField(index, { count: Math.max(0, Number(e.target.value) || 0) })
-                      }
+                      className="dice-name"
+                      value={field.name}
+                      onChange={(e) => updateField(index, { name: e.target.value })}
+                      aria-label="字段名"
                     />
-                    个
-                  </label>
-                  <button type="button" className="dice-roll" onClick={() => rollField(index)}>
-                    🎲
-                  </button>
-                  <span className="dice-picked mono">{field.picked.join(', ') || '—'}</span>
+                    <button
+                      type="button"
+                      className="quiet dice-remove"
+                      onClick={() => removeField(index)}
+                      title="删除字段"
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div className="dice-tiers">
+                    {TIERS.map((tier) => {
+                      const cfg = tierOf(field, tier)
+                      const pool = wordsOf(cfg.values).length
+                      const picks = field.picked[tier] ?? []
+                      return (
+                        <div
+                          key={tier}
+                          className={`dice-tier ${enabled[tier] ? 'on' : 'off'}`}
+                        >
+                          <div className="dice-tier-row">
+                            <span className={`dice-tier-label tier-${tier}`}>{tier}</span>
+                            <label className="dice-count">
+                              取
+                              <input
+                                type="number"
+                                min={0}
+                                max={99}
+                                value={cfg.count}
+                                onChange={(e) =>
+                                  updateTier(index, tier, {
+                                    count: Math.max(0, Number(e.target.value) || 0),
+                                  })
+                                }
+                              />
+                              个
+                            </label>
+                            <span className="dice-pool">池 {pool}</span>
+                          </div>
+                          {picks.length > 0 ? (
+                            <span className="dice-picked mono">{picks.join(', ')}</span>
+                          ) : null}
+                          <details className="dice-tier-edit">
+                            <summary>词池</summary>
+                            <textarea
+                              rows={3}
+                              value={cfg.values}
+                              placeholder={`${tier} 层候选词，逗号分隔`}
+                              onChange={(e) =>
+                                updateTier(index, tier, { values: e.target.value })
+                              }
+                            />
+                          </details>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div className="dice-foot">
+                    <span className="muted">
+                      抽取 {takeTotal} / 池 {poolTotal}
+                    </span>
+                    <button
+                      type="button"
+                      className="dice-roll"
+                      onClick={() => rollField(index)}
+                      title="本字段掷骰"
+                    >
+                      🎲
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </section>

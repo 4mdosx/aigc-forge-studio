@@ -1547,3 +1547,138 @@ button.task-pick.current {
   font-size: 0.78rem;
   overflow-wrap: anywhere;
 }
+
+/* ---- dice v2：分层词池 / rating 勾选 / 导入导出 ---- */
+
+.dice-ratings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-bottom: 0.6rem;
+}
+
+.dice-rating {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid #c9beae;
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.85rem;
+  color: #746c63;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dice-rating.on {
+  background: #0c5c49;
+  border-color: #0c5c49;
+  color: #f7f3ea;
+}
+
+.dice-rating input {
+  accent-color: #0c5c49;
+}
+
+.dice-ratings-hint {
+  font-size: 0.75rem;
+}
+
+.dice-file {
+  border: 1px solid #c9beae;
+  border-radius: 6px;
+  padding: 0.35rem 0.8rem;
+  cursor: pointer;
+}
+
+.dice-import-msg {
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+}
+
+.dice-tiers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.dice-tier {
+  border: 1px solid #e4dacd;
+  border-radius: 6px;
+  padding: 0.3rem 0.4rem;
+  background: #f7f3ea;
+}
+
+.dice-tier.off {
+  opacity: 0.45;
+}
+
+.dice-tier-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.dice-tier-label {
+  font-family: var(--mono, monospace);
+  font-size: 0.72rem;
+  border-radius: 4px;
+  padding: 0.05rem 0.35rem;
+  background: #e4dacd;
+  color: #5c564e;
+  flex: none;
+}
+
+.dice-tier-label.tier-common {
+  background: #e7f0ec;
+  color: #0c5c49;
+}
+
+.dice-tier-label.tier-general {
+  background: #dcefe4;
+  color: #0a5138;
+}
+
+.dice-tier-label.tier-sensitive {
+  background: #f3ecdc;
+  color: #8a6d1f;
+}
+
+.dice-tier-label.tier-questionable {
+  background: #f6e7d4;
+  color: #9a5b1c;
+}
+
+.dice-tier-label.tier-explicit {
+  background: #f6e3df;
+  color: #a04030;
+}
+
+.dice-pool {
+  font-size: 0.72rem;
+  color: #746c63;
+  flex: none;
+}
+
+.dice-tier-edit {
+  margin-top: 0.25rem;
+}
+
+.dice-tier-edit summary {
+  font-size: 0.72rem;
+  color: #746c63;
+  cursor: pointer;
+  user-select: none;
+  width: fit-content;
+}
+
+.dice-tier-edit textarea {
+  margin-top: 0.3rem;
+}
+
+.dice-tier .dice-picked {
+  display: block;
+  margin-top: 0.15rem;
+}
