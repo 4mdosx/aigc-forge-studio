@@ -1142,3 +1142,140 @@ button.task-pick.current {
     border-bottom: 1px solid #e4dacd;
   }
 }
+
+/* ---- capture 采集页 ---- */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.chips button {
+  background: transparent;
+  color: #5c564e;
+  border: 1px solid #c9beae;
+  border-radius: 999px;
+  padding: 0.3rem 0.85rem;
+  font-size: 0.85rem;
+}
+
+.chips button.active {
+  background: #0c5c49;
+  border-color: #0c5c49;
+  color: #f7f3ea;
+}
+
+.chips button.quiet {
+  background: transparent;
+  color: #746c63;
+}
+
+.inline-editor {
+  margin: 0;
+  align-items: center;
+}
+
+.inline-editor input {
+  width: 15rem;
+  max-width: 60vw;
+}
+
+.capture-input {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.capture-input input {
+  flex: 1;
+  min-width: 0;
+  font-size: 1rem;
+  padding: 0.55rem 0.7rem;
+}
+
+.capture-input button {
+  flex: none;
+  padding: 0.55rem 1rem;
+}
+
+.capture-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.8rem;
+}
+
+@media (min-width: 760px) {
+  .capture-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+.capture-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.capture-card img,
+.capture-missing {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  background: #fffdf8;
+  border: 1px solid #e4dacd;
+  border-radius: 8px;
+}
+
+.capture-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #746c63;
+  font-size: 0.8rem;
+}
+
+.capture-card:hover img,
+.capture-card:hover .capture-missing {
+  border-color: #0c5c49;
+}
+
+.capture-cap {
+  font-size: 0.72rem;
+  color: #746c63;
+  overflow-wrap: anywhere;
+}
+
+.capture-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.05rem 0.45rem;
+  font-size: 0.68rem;
+  vertical-align: 1px;
+}
+
+.capture-badge.done {
+  background: #e7f0ec;
+  color: #0c5c49;
+}
+
+.capture-badge.processing {
+  background: #f3ecdc;
+  color: #8a6d1f;
+}
+
+.capture-badge.failed {
+  background: #f6e3df;
+  color: #a04030;
+}
+
+.capture-error {
+  font-size: 0.7rem;
+  color: #a04030;
+  overflow-wrap: anywhere;
+}
