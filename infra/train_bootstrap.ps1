@@ -48,6 +48,29 @@ function Write-Skip {
     Write-Host "Already installed, skipping: $Name" -ForegroundColor Green
 }
 
+# 探测类调用：只要 exit code，stderr 吞掉。
+# PS5.1 坑：EAP=Stop 时 stderr 重定向（2>&1/2>$null）会把 stderr 行变成
+# terminating error——「ModuleNotFoundError」的 traceback 就能炸停脚本。
+# 所以探测前必须临时放宽 EAP（实测坑，勿删）。
+function Invoke-Probe {
+    param([string]$Executable, [string[]]$Arguments)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        [void] (& $Executable @Arguments 2>&1)
+        return ($LASTEXITCODE -eq 0)
+    } finally { $ErrorActionPreference = $previous }
+}
+
+# 取输出类调用：返回合并后的 stdout+stderr（trim 过），忽略 exit code。
+function Get-NativeOutput {
+    param([string]$Executable, [string[]]$Arguments)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { return ((& $Executable @Arguments 2>&1 | Out-String).Trim()) }
+    finally { $ErrorActionPreference = $previous }
+}
+
 if (-not (Test-Path -LiteralPath $Python)) {
     throw "Python 3.12 not found at $Python (ComfyUI bootstrap installs it)"
 }
@@ -55,7 +78,7 @@ if (-not (Test-Path -LiteralPath $Python)) {
 # --- 1. sd-scripts 仓库（钉 tag） ---
 $TrainScript = Join-Path $SdScripts "train_network.py"
 if (Test-Path -LiteralPath $TrainScript) {
-    $head = & git -C $SdScripts describe --tags --exact-match HEAD 2>$null
+    $head = Get-NativeOutput "git" @("-C", $SdScripts, "describe", "--tags", "--exact-match", "HEAD")
     if ("$head" -eq $SdTag) {
         Write-Skip "sd-scripts $SdTag"
     } else {
@@ -79,8 +102,7 @@ if (Test-Path -LiteralPath $VenvPython) {
 }
 
 # --- 3. torch cu124（版本对上就跳过，~2.5GB 下载只在首次发生） ---
-$torchOk = & $VenvPython -c "import torch; exit(0 if torch.__version__.startswith('2.6.0') else 1)" 2>$null
-if ($LASTEXITCODE -eq 0) {
+if (Invoke-Probe $VenvPython @("-c", "import torch; exit(0 if torch.__version__.startswith('2.6.0') else 1)")) {
     Write-Skip "torch 2.6.0+$TorchIndex"
 } else {
     Write-Host "Installing torch 2.6.0 + torchvision (cu124)..."
