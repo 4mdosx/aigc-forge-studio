@@ -11,6 +11,8 @@ import {
   oembedErrorOf,
   oembedThumbnailOf,
   originalsOf,
+  sizeSegmentOf,
+  withSizeSegment,
 } from './capture.ts'
 
 test('normalizeCaptureUrl keeps pinimg as image and strips query/hash', () => {
@@ -112,6 +114,19 @@ test('normalizeMediaUrl validates and strips hash', () => {
   assert.throws(() => normalizeMediaUrl(''), /mediaUrl is empty/)
   assert.throws(() => normalizeMediaUrl('not a url'), /invalid mediaUrl/)
   assert.throws(() => normalizeMediaUrl('ftp://x/y.jpg'), /http\(s\)/)
+})
+
+test('size segment read and replace support the upgrade ladder', () => {
+  assert.equal(sizeSegmentOf('https://i.pinimg.com/736x/ab/cd/1234.jpg'), '736x')
+  assert.equal(sizeSegmentOf('https://i.pinimg.com/originals/ab/cd/1234.jpg'), 'originals')
+  assert.equal(sizeSegmentOf('https://example.com/a.jpg'), null)
+
+  assert.equal(
+    withSizeSegment('https://i.pinimg.com/736x/ab/cd/1234.jpg', '1200x'),
+    'https://i.pinimg.com/1200x/ab/cd/1234.jpg',
+  )
+  assert.equal(withSizeSegment('https://i.pinimg.com/1200x/ab/cd/1234.jpg', '1200x'), null)
+  assert.equal(withSizeSegment('https://example.com/a.jpg', '1200x'), null)
 })
 
 test('folder names stay lowercase slugs', () => {

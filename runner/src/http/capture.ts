@@ -123,6 +123,20 @@ export function originalsOf(url: string): string | null {
   return `${hit[1]}originals/${hit[3]}`
 }
 
+// 当前尺寸段（'736x' | '1200x' | 'originals' | null）
+export function sizeSegmentOf(url: string): string | null {
+  const hit = /^https:\/\/i\.pinimg\.com\/(\d+x\d*|originals)\//i.exec(url)
+  return hit ? (hit[1] ?? '').toLowerCase() : null
+}
+
+// 替换尺寸段；目标段与当前相同或非 pinimg 返回 null
+export function withSizeSegment(url: string, segment: string): string | null {
+  const hit = /^(https:\/\/i\.pinimg\.com\/)(\d+x\d*|originals)\/(.+)$/i.exec(url)
+  if (!hit) return null
+  if ((hit[2] ?? '').toLowerCase() === segment.toLowerCase()) return null
+  return `${hit[1]}${segment}/${hit[3]}`
+}
+
 export function extOf(url: string): string {
   const hit = /\.(jpe?g|png|gif|webp|bmp)(?:[?#].*)?$/i.exec(url)
   return hit ? `.${(hit[1] ?? 'jpg').toLowerCase()}` : '.jpg'
@@ -349,7 +363,7 @@ async function overMaxEdge(file: string): Promise<boolean> {
   }
 }
 
-// 异步预处理：originals 提升 → sips 转 jpeg（只缩不放，长边 ≤3072）→ 尺寸 → meta 收尾
+// 异步预处理：尺寸段阶梯提升（originals → 1200x）→ sips 转 jpeg（只缩不放）→ 尺寸 → meta 收尾
 async function processEntry(
   folder: string,
   id: string,
@@ -362,16 +376,25 @@ async function processEntry(
     // folder 在预处理期间被删/改名：老路径不存在就放弃，避免 mkdirSync 造出幽灵目录
     if (!existsSync(paths.dir)) return
     const meta = readMeta(paths.dir, id) ?? { id, folder, status: 'processing' }
-    let record = /\/originals\//i.test(mediaUrl) ? 'originals' : 'og'
-    const upgrade = originalsOf(mediaUrl)
-    if (upgrade) {
-      try {
-        await downloadTo(upgrade, paths.rawAbs, 'https://www.pinterest.com/')
-        record = 'originals'
-      } catch {
-        // originals 不存在（相当常见），保留保底版本继续
+    let record = sizeSegmentOf(mediaUrl) ?? 'og'
+
+    // 阶梯提升：originals 优先，失败退 1200x（og:image 常给 736x 甚至 236x）
+    const current = sizeSegmentOf(mediaUrl)
+    if (current !== 'originals') {
+      const candidates = [originalsOf(mediaUrl), withSizeSegment(mediaUrl, '1200x')]
+      for (const candidate of candidates) {
+        if (!candidate) continue
+        try {
+          await downloadTo(candidate, paths.rawAbs, 'https://www.pinterest.com/')
+          mediaUrl = candidate
+          record = sizeSegmentOf(candidate) ?? record
+          break
+        } catch {
+          // 该段不存在（403/404 常见），继续退下一档
+        }
       }
     }
+
     await execFile(
       'sips',
       [
