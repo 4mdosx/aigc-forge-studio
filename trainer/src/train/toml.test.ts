@@ -124,13 +124,14 @@ test('buildTrainToml emits flat keys matching train_network.py args', () => {
     'clip_skip',
     'min_snr_gamma',
     'sdpa',
-    'sdxl',
   ]) {
     assert.ok(text.includes(`${key} = `), `missing key: ${key}`)
   }
   assert.match(text, /network_module = 'networks\.lora'/)
   assert.match(text, /optimizer_type = 'AdamW8bit'/)
   assert.match(text, /clip_skip = 2/)
+  // sdxl 不是 train_network.py 的合法参数（SDXL 走独立脚本），进 TOML 必炸
+  assert.ok(!text.includes('sdxl'), 'sdxl must not appear in toml')
   assert.ok(!text.includes('sample_prompts'), 'no sampling by default')
 })
 

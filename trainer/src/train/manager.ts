@@ -152,9 +152,13 @@ export function listTrainJobs(db: DatabaseSync, status?: string): TrainJobRow[] 
 export function buildSpawnPlan(
   config: TrainConfig,
   paths: JobPaths,
+  sdxl = true,
 ): { executable: string; args: string[] } {
   if (config.spawnOverride) return config.spawnOverride
   const python = join(config.sdScriptsRoot, 'venv', 'Scripts', 'python.exe')
+  // sd-scripts v0.12 的 train_network.py 是 SD1/2 专用；SDXL 必须走
+  // sdxl_train_network.py（继承基类，is_sdxl=True）—— TOML 里没有 --sdxl 这种开关（实测坑）。
+  const script = sdxl ? 'sdxl_train_network.py' : 'train_network.py'
   return {
     executable: python,
     args: [
@@ -164,7 +168,7 @@ export function buildSpawnPlan(
       '--mixed_precision', 'fp16',
       '--dynamo_backend', 'no',
       '--num_cpu_threads_per_process', String(config.numCpuThreads ?? 8),
-      'train_network.py',
+      script,
       '--config_file', join(paths.configDir, 'train.toml'),
       '--dataset_config', join(paths.configDir, 'dataset.toml'),
     ],
@@ -237,7 +241,7 @@ export function createTrainJob(
       trainer.now().toISOString(),
     )
 
-  const run = start(trainer, id, config, paths)
+  const run = start(trainer, id, config, paths, params.sdxl)
   runsOf(trainer).set(id, run)
   const row = rowOf(trainer.db, id)
   if (!row) throw new TrainerError('train job vanished', 500)
@@ -250,8 +254,9 @@ function start(
   id: string,
   config: TrainConfig,
   paths: JobPaths,
+  sdxl = true,
 ): TrainRun {
-  const plan = buildSpawnPlan(config, paths)
+  const plan = buildSpawnPlan(config, paths, sdxl)
   trainer.db
     .prepare(
       `UPDATE train_jobs SET status = 'running', started_at = ?, error = NULL

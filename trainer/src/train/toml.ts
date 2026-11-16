@@ -194,7 +194,6 @@ export function buildTrainToml(params: ResolvedParams, paths: JobPaths): string 
     clip_skip: params.clipSkip,
     min_snr_gamma: params.minSnrGamma,
     sdpa: params.sdpa,
-    sdxl: params.sdxl,
   }
   if (params.samplePrompts) {
     entries.sample_prompts = joinPath(paths.configDir, 'prompts.txt')
