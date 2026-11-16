@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import type { Hono } from 'hono'
@@ -86,6 +86,24 @@ function optionsOf(body: Record<string, unknown>): TagOptions & { excludeTags: s
       .filter((tag) => tag !== '')
   }
   return { generalThreshold: threshold, characterThreshold, excludeTags }
+}
+
+// 标签输入 → 标签数组：接受整段文本或数组，逗号/换行/分号分隔，去空去重（保序）
+export function parseTagText(input: string | string[]): string[] {
+  const txt = Array.isArray(input) ? input.join(', ') : input
+  const seen = new Set<string>()
+  const tags: string[] = []
+  for (const raw of txt.split(/[,;\n]/)) {
+    const tag = raw.trim()
+    if (tag === '' || seen.has(tag)) continue
+    seen.add(tag)
+    tags.push(tag)
+  }
+  return tags
+}
+
+function isItemId(id: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id)
 }
 
 // 单图打标：推理 → 写 image/<id>.txt → 更新 sidecar meta
@@ -231,10 +249,56 @@ export function mountTag(app: Hono, runner: Runner): void {
     const folder = stringField(body, 'folder')
     const id = stringField(body, 'id')
     if (!isFolderName(folder)) throw new RunnerError('invalid folder name')
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id)) throw new RunnerError('invalid id')
+    if (!isItemId(id)) throw new RunnerError('invalid id')
     const modelId = modelIdOf(body)
     const options = optionsOf(body)
     const result = await tagOne(runner, folder, id, modelId, options)
     return c.json({ folder, id, tags: result.tags, rating: result.rating })
+  })
+
+  // 读取单图标签（image/<id>.txt 为真相源；无 txt 时 404）
+  app.get('/tag/item', (c) => {
+    const folder = c.req.query('folder') ?? ''
+    const id = c.req.query('id') ?? ''
+    if (!isFolderName(folder)) throw new RunnerError('invalid folder name')
+    if (!isItemId(id)) throw new RunnerError('invalid id')
+    const dir = join(runner.dataDir, 'capture', folder)
+    const txtFile = join(dir, 'image', `${id}.txt`)
+    if (!existsSync(txtFile)) throw new RunnerError(`tags not found: ${folder}/${id}`, 404)
+    const meta = readMeta(dir, id)
+    return c.json({
+      folder,
+      id,
+      tags: parseTagText(readFileSync(txtFile, 'utf8')),
+      rating: typeof meta?.tagRating === 'string' ? meta.tagRating : null,
+      tagger: typeof meta?.tagger === 'string' ? meta.tagger : null,
+      edited: meta?.tagSource === 'manual',
+    })
+  })
+
+  // 保存编辑后的标签：写 txt + meta（tagSource=manual，后续批量 force 才会被覆盖）
+  app.put('/tag/item', async (c) => {
+    const body = await jsonObject(c.req)
+    const folder = stringField(body, 'folder')
+    const id = stringField(body, 'id')
+    if (!isFolderName(folder)) throw new RunnerError('invalid folder name')
+    if (!isItemId(id)) throw new RunnerError('invalid id')
+    if (!Array.isArray(body.tags) || body.tags.some((tag) => typeof tag !== 'string')) {
+      throw new RunnerError('tags must be string[]')
+    }
+    const tags = parseTagText(body.tags as string[])
+    const dir = join(runner.dataDir, 'capture', folder)
+    if (!existsSync(join(dir, 'image', `${id}.jpg`))) {
+      throw new RunnerError(`image not found: ${folder}/${id}`, 404)
+    }
+    const meta = readMeta(dir, id) ?? { id, folder }
+    writeMeta(dir, id, {
+      ...meta,
+      tags,
+      tagSource: 'manual',
+      tagEditedAt: runner.now().toISOString(),
+    })
+    writeFileSync(join(dir, 'image', `${id}.txt`), tags.join(', '), 'utf8')
+    return c.json({ folder, id, tags: tags.length })
   })
 }

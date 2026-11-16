@@ -1291,6 +1291,57 @@ button.task-pick.current {
   font-size: 0.72rem;
 }
 
+/* 卡片操作行：打标 / 标签 两颗按钮 */
+.capture-actions {
+  gap: 8px;
+}
+.capture-actions button {
+  font-size: 0.72rem;
+}
+
+/* 标签查看/编辑弹层 */
+.tag-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(30, 24, 16, 0.45);
+}
+
+.tag-modal-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(640px, 100%);
+  padding: 14px;
+  background: #f7f1e6;
+  border: 1px solid #d8c9ad;
+  border-radius: 10px;
+}
+
+.tag-editor {
+  min-height: 180px;
+  padding: 8px;
+  border: 1px solid #d8c9ad;
+  border-radius: 6px;
+  font-family: var(--mono, monospace);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.tag-modal-actions {
+  align-items: center;
+  gap: 8px;
+}
+.tag-modal-actions .muted {
+  font-size: 0.7rem;
+  margin-left: auto;
+}
+
 /* 打标台源图拖拽区 */
 .dropzone-wrap {
   display: flex;

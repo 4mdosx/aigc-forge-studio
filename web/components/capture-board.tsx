@@ -50,6 +50,14 @@ export function CaptureBoard() {
   const [tagJob, setTagJob] = useState<TagJob | null>(null)
   // 单图打标进行中的条目 id
   const [taggingId, setTaggingId] = useState<string | null>(null)
+  // 标签查看/编辑弹层：null = 关闭
+  const [editing, setEditing] = useState<{
+    id: string
+    tags: string
+    tagger: string | null
+    edited: boolean
+  } | null>(null)
+  const [savingTags, setSavingTags] = useState(false)
 
   const loadFolders = useCallback(async () => {
     try {
@@ -169,6 +177,44 @@ export function CaptureBoard() {
       fail(messageOf(err))
     } finally {
       setTaggingId(null)
+    }
+  }
+
+  async function openTags(item: CaptureItem) {
+    if (!folder) return
+    try {
+      const body = await api<{
+        tags: string[]
+        tagger: string | null
+        edited: boolean
+      }>(`tag/item?folder=${encodeURIComponent(folder)}&id=${encodeURIComponent(item.id)}`)
+      setEditing({
+        id: item.id,
+        tags: body.tags.join(', '),
+        tagger: body.tagger,
+        edited: body.edited,
+      })
+    } catch (err) {
+      fail(messageOf(err))
+    }
+  }
+
+  async function saveTags() {
+    if (!folder || !editing || savingTags) return
+    setSavingTags(true)
+    try {
+      const tags = editing.tags.split(/[,;\n]/).map((t) => t.trim()).filter((t) => t !== '')
+      const body = await api<{ tags: number }>('tag/item', {
+        method: 'PUT',
+        body: JSON.stringify({ folder, id: editing.id, tags }),
+      })
+      notify(`已保存 ${body.tags} 个标签`)
+      setEditing(null)
+      await loadItems(folder)
+    } catch (err) {
+      fail(messageOf(err))
+    } finally {
+      setSavingTags(false)
     }
   }
 
@@ -361,11 +407,49 @@ export function CaptureBoard() {
                 item={item}
                 tagging={taggingId === item.id}
                 onTag={(target) => void tagOne(target)}
+                onOpenTags={(target) => void openTags(target)}
               />
             ))}
           </div>
         )}
       </section>
+
+      {editing ? (
+        <div className="tag-modal" role="dialog" aria-modal="true">
+          <div className="tag-modal-box">
+            <div className="column-head">
+              <h3 className="mono">{editing.id}</h3>
+              <span className="muted">
+                {editing.edited ? '手动编辑过' : (editing.tagger ?? '')}
+              </span>
+            </div>
+            <textarea
+              autoFocus
+              className="tag-editor"
+              value={editing.tags}
+              placeholder="booru tags，逗号或换行分隔"
+              onChange={(event) =>
+                setEditing((cur) => (cur ? { ...cur, tags: event.target.value } : cur))
+              }
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') setEditing(null)
+                if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                  void saveTags()
+                }
+              }}
+            />
+            <div className="row tag-modal-actions">
+              <button type="button" disabled={savingTags} onClick={() => void saveTags()}>
+                {savingTags ? '保存中…' : '保存'}
+              </button>
+              <button type="button" className="quiet" onClick={() => setEditing(null)}>
+                取消
+              </button>
+              <span className="muted">⌘/Ctrl+Enter 保存 · Esc 关闭</span>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   )
 }
@@ -374,10 +458,12 @@ function CaptureCard({
   item,
   tagging,
   onTag,
+  onOpenTags,
 }: {
   item: CaptureItem
   tagging: boolean
   onTag: (item: CaptureItem) => void
+  onOpenTags: (item: CaptureItem) => void
 }) {
   const href = item.imageUrl ?? item.rawUrl
   const meta = [
@@ -413,14 +499,19 @@ function CaptureCard({
         {item.tagError ? <span className="capture-error">{item.tagError}</span> : null}
       </a>
       {item.imageUrl ? (
-        <button
-          type="button"
-          className="quiet"
-          disabled={tagging}
-          onClick={() => onTag(item)}
-        >
-          {tagging ? '打标中…' : '打标'}
-        </button>
+        <div className="row capture-actions">
+          <button
+            type="button"
+            className="quiet"
+            disabled={tagging}
+            onClick={() => onTag(item)}
+          >
+            {tagging ? '打标中…' : '打标'}
+          </button>
+          <button type="button" className="quiet" onClick={() => onOpenTags(item)}>
+            标签{item.tagCount ? ` ${item.tagCount}` : ''}
+          </button>
+        </div>
       ) : null}
     </div>
   )
