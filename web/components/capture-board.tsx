@@ -22,6 +22,18 @@ interface CaptureItem {
   createdAt: string | null
   rawUrl: string | null
   imageUrl: string | null
+  tagCount: number | null
+  tagError: string | null
+}
+
+interface TagJob {
+  folder: string
+  modelId: string
+  total: number
+  done: number
+  failed: number
+  status: 'loading' | 'running' | 'done' | 'error'
+  error: string | null
 }
 
 export function CaptureBoard() {
@@ -34,6 +46,8 @@ export function CaptureBoard() {
   // 新增 / 改名的行内输入框：null = 关闭
   const [newName, setNewName] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState<string | null>(null)
+  // 打标任务（打标台 WD14）
+  const [tagJob, setTagJob] = useState<TagJob | null>(null)
 
   const loadFolders = useCallback(async () => {
     try {
@@ -81,6 +95,63 @@ export function CaptureBoard() {
     const timer = setInterval(() => void loadItems(folder), 2500)
     return () => clearInterval(timer)
   }, [items, folder, loadItems])
+
+  const tagRunning = tagJob !== null && (tagJob.status === 'loading' || tagJob.status === 'running')
+
+  async function tagFolder() {
+    if (!folder) return
+    try {
+      const body = await api<{ queued: number; model?: string }>('tag/folder', {
+        method: 'POST',
+        body: JSON.stringify({ folder }),
+      })
+      if (body.queued === 0) {
+        notify('没有需要打标的新图')
+        return
+      }
+      notify(`开始打标 ${body.queued} 张（${body.model ?? 'wd14'}）`)
+      setTagJob({
+        folder,
+        modelId: body.model ?? '',
+        total: body.queued,
+        done: 0,
+        failed: 0,
+        status: 'loading',
+        error: null,
+      })
+    } catch (err) {
+      fail(messageOf(err))
+    }
+  }
+
+  // 打标进行中每 2s 轮询任务进度；落定后刷新条目
+  useEffect(() => {
+    if (!tagJob || !tagRunning) return
+    const jobFolder = tagJob.folder
+    const timer = setInterval(async () => {
+      try {
+        const body = await api<{ job: TagJob | null }>(
+          `tag/job?folder=${encodeURIComponent(jobFolder)}`,
+        )
+        if (body.job) setTagJob(body.job)
+        const status = body.job?.status
+        if (status === 'done' || status === 'error') {
+          if (status === 'done') {
+            notify(
+              `打标完成 ${body.job?.done ?? 0}/${body.job?.total ?? 0}` +
+                (body.job?.failed ? ` · 失败 ${body.job.failed}` : ''),
+            )
+          } else {
+            fail(body.job?.error ?? '打标任务失败')
+          }
+          if (folder === jobFolder) await loadItems(folder)
+        }
+      } catch {
+        // 轮询失败不打断，下个周期再试
+      }
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [tagJob, tagRunning, folder, loadItems])
 
   async function submitPin(event: FormEvent) {
     event.preventDefault()
@@ -241,6 +312,17 @@ export function CaptureBoard() {
       <section className="panel">
         <div className="column-head">
           <h2 className="mono">{folder ?? '未选择 folder'}</h2>
+          {folder && tagJob && tagJob.folder === folder && tagRunning ? (
+            <span className="muted">
+              打标中 {tagJob.status === 'loading' ? '模型加载…' : `${tagJob.done}/${tagJob.total}`}
+              {tagJob.failed ? ` · 失败 ${tagJob.failed}` : ''}
+            </span>
+          ) : null}
+          {folder && !(tagJob && tagJob.folder === folder && tagRunning) ? (
+            <button type="button" className="quiet" onClick={() => void tagFolder()}>
+              打标
+            </button>
+          ) : null}
           {current ? (
             <span className="muted">
               完成 {current.done}
@@ -269,6 +351,7 @@ function CaptureCard({ item }: { item: CaptureItem }) {
   const meta = [
     item.width && item.height ? `${item.width}×${item.height}` : null,
     item.record === 'originals' ? '原图' : null,
+    item.tagCount ? `已标 ${item.tagCount}` : null,
     item.createdAt ? item.createdAt.slice(5, 16).replace('T', ' ') : null,
   ]
     .filter(Boolean)
@@ -292,6 +375,7 @@ function CaptureCard({ item }: { item: CaptureItem }) {
         {meta ? ` ${meta}` : ''}
       </span>
       {item.error ? <span className="capture-error">{item.error}</span> : null}
+      {item.tagError ? <span className="capture-error">{item.tagError}</span> : null}
     </a>
   )
 }

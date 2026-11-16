@@ -290,7 +290,8 @@ function metaPathOf(dir: string, id: string): string {
   return join(dir, 'image', `${id}.json`)
 }
 
-function readMeta(dir: string, id: string): Record<string, unknown> | null {
+// meta 读写导出给 tag.ts 复用（同一 sidecar 格式，一处真相）
+export function readMeta(dir: string, id: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(metaPathOf(dir, id), 'utf8'))
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -302,7 +303,7 @@ function readMeta(dir: string, id: string): Record<string, unknown> | null {
   }
 }
 
-function writeMeta(
+export function writeMeta(
   dir: string,
   id: string,
   meta: Record<string, unknown>,
@@ -590,6 +591,8 @@ export function mountCapture(app: Hono, runner: Runner): void {
         createdAt: meta.createdAt ?? null,
         rawUrl: rawFile ? `/capture/file/${folder}/raw/${rawFile}` : null,
         imageUrl: imageFile ? `/capture/file/${folder}/image/${imageFile}` : null,
+        tagCount: Array.isArray(meta.tags) ? meta.tags.length : null,
+        tagError: typeof meta.tagError === 'string' ? meta.tagError : null,
       })
     }
     items.sort((a, b) => String(b.id).localeCompare(String(a.id)))

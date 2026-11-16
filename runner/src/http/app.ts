@@ -8,6 +8,7 @@ import { mountData } from './data.ts'
 import { mountFiles } from './files.ts'
 import { mountPoses } from './poses.ts'
 import { mountPosePending } from './pose-pending.ts'
+import { mountTag } from './tag.ts'
 import { mountTasks } from './tasks.ts'
 import { mountWorkflows } from './workflows.ts'
 import { mountWorks } from './works.ts'
@@ -29,5 +30,6 @@ export function createApp(runner: Runner): Hono {
   mountPoses(app, runner)
   mountPosePending(app, runner)
   mountCapture(app, runner)
+  mountTag(app, runner)
   return app
 }
