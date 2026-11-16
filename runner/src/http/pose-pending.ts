@@ -123,9 +123,10 @@ function assertEntry(runner: Runner, poseName: string, id: string): {
   return { dir, meta }
 }
 
-// 审批通过：pose_pending/<poseName>/<id>/ → data/pose/<poseName>/<id>/<canvas>/
-//   depth.png → <canvas>/depth.png，skeleton.png → <canvas>/bone.png，
-//   pose.json（若有）→ <canvas>/pose.json；meta.json 就地 enabled:true。
+// 审批通过：pose_pending/<poseName>/<id>/ → data/pose/<poseName>/<id>/
+//   depth.png → depth.png，skeleton.png → bone.png，
+//   pose.json（若有）→ pose.json；meta.json 就地 enabled:true。
+// 画布分辨率记录在 meta.canvases，条目内不再建 <canvas> 子目录（2026-11-17）。
 // 溯源件（source/source_orig/depth_preview）留在条目根，不进 manifest。
 // 迁移后重跑 tools/build-pose-manifest.mjs 重建 data/pose/manifest.json。
 export function mountPosePending(app: Hono, runner: Runner): void {
@@ -192,8 +193,7 @@ export function mountPosePending(app: Hono, runner: Runner): void {
     const { dir, meta } = assertEntry(runner, poseName, id)
 
     const canvases = (meta.canvases as string[] | undefined) ?? []
-    const canvas = canvases[0]
-    if (!canvas || !/^\d{6}$/.test(canvas)) {
+    if (!(canvases[0] && /^\d{6}$/.test(canvases[0]))) {
       throw new RunnerError(`entry ${poseName}/${id} has no valid canvas`, 400)
     }
 
@@ -202,10 +202,9 @@ export function mountPosePending(app: Hono, runner: Runner): void {
       throw new RunnerError(`formal entry already exists: pose/${poseName}/${id}`, 409)
     }
 
-    const canvasDir = join(target, canvas)
-    mkdirSync(canvasDir, { recursive: true })
+    mkdirSync(target, { recursive: true })
 
-    // 产物迁入正式 schema；缺件直接报错（半成品不该过审）
+    // 产物迁入正式 schema（文件直接落在条目根）；缺件直接报错（半成品不该过审）
     for (const [src, dst] of [
       ['depth.png', 'depth.png'],
       ['skeleton.png', 'bone.png'],
@@ -216,7 +215,7 @@ export function mountPosePending(app: Hono, runner: Runner): void {
         if (src === 'pose.json') continue // img2pose 链路无 keypoints json，manifest 允许 null
         throw new RunnerError(`entry missing product: ${src}`, 400)
       }
-      renameSync(from, join(canvasDir, dst))
+      renameSync(from, join(target, dst))
     }
     for (const keep of ['source.png', 'source_orig.png', 'depth_preview.png']) {
       const from = join(dir, keep)
