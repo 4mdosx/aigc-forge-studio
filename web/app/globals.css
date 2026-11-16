@@ -1682,3 +1682,151 @@ button.task-pick.current {
   display: block;
   margin-top: 0.15rem;
 }
+
+/* ---- dice pose 池 ---- */
+
+.dice-pose-tools {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+
+.dice-pose-hint {
+  font-size: 0.8rem;
+}
+
+.dice-pose-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.dice-pose-group {
+  border: 1px solid #e4dacd;
+  border-radius: 8px;
+  background: #fffdf8;
+  overflow: hidden;
+}
+
+.dice-pose-group summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+.dice-pose-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.dice-pose-group summary::before {
+  content: '▸';
+  color: #5c564e;
+  font-size: 0.8rem;
+  transition: transform 0.15s ease;
+}
+
+.dice-pose-group[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.dice-pose-group-name {
+  flex: 1;
+  font-weight: 600;
+}
+
+.dice-pose-group-count {
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.dice-pose-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 0.45rem;
+  padding: 0.45rem 0.7rem 0.7rem;
+}
+
+@media (min-width: 760px) {
+  .dice-pose-grid {
+    grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  }
+}
+
+.dice-pose-item {
+  position: relative;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  padding: 0;
+  background: #f7f3ea;
+  cursor: pointer;
+  aspect-ratio: 1;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dice-pose-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.dice-pose-item.on {
+  border-color: #0c5c49;
+  background: #e6f0ea;
+}
+
+.dice-pose-item:focus-visible {
+  outline: 2px solid #0c5c49;
+  outline-offset: 1px;
+}
+
+.dice-pose-check {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 50%;
+  background: #0c5c49;
+  color: #f7f3ea;
+  font-size: 0.7rem;
+  line-height: 1.15rem;
+  text-align: center;
+}
+
+.dice-pose-item:not(.on) .dice-pose-check {
+  background: transparent;
+}
+
+.dice-pose-result {
+  display: flex;
+  gap: 0.7rem;
+  align-items: center;
+  margin-bottom: 0.6rem;
+}
+
+.dice-pose-result-img {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  border: 1px solid #e4dacd;
+  border-radius: 8px;
+  background: #f7f3ea;
+  flex: none;
+}
+
+.dice-pose-result-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}

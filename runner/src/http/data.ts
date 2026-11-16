@@ -3,6 +3,7 @@ import type { Hono } from 'hono'
 import { join } from 'node:path'
 
 import { RunnerError } from '../errors.ts'
+import { relativePath } from '../path.ts'
 import type { Runner } from '../task/queue.ts'
 
 interface ManifestEntry {
@@ -109,6 +110,31 @@ export function mountData(app: Hono, runner: Runner): void {
       refs: safeList(join(base, 'ref')),
       files: safeList(base),
     })
+  })
+
+  // 只读服务 data/pose 下的资产图（depth/bone 等），路径相对 data 根、必须以 pose/ 开头
+  app.get('/data/pose-file/*', (c) => {
+    const rel = relativePath(c.req.path.slice('/data/pose-file/'.length))
+    if (!rel.startsWith('pose/')) {
+      throw new RunnerError('path must be under pose/', 400)
+    }
+    const file = join(root, rel)
+    if (!existsSync(file) || !statSync(file).isFile()) {
+      throw new RunnerError(`pose file not found: ${rel}`, 404)
+    }
+    const ext = (rel.slice(rel.lastIndexOf('.')) || '').toLowerCase()
+    const type =
+      ext === '.png'
+        ? 'image/png'
+        : ext === '.jpg' || ext === '.jpeg'
+          ? 'image/jpeg'
+          : ext === '.webp'
+            ? 'image/webp'
+            : null
+    if (!type) {
+      throw new RunnerError(`unsupported file type: ${ext}`, 400)
+    }
+    return c.body(readFileSync(file), 200, { 'content-type': type })
   })
 }
 

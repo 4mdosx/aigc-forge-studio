@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { api } from '@/lib/api'
 import { fail, messageOf } from '@/lib/notify'
@@ -10,6 +10,8 @@ import { fail, messageOf } from '@/lib/notify'
 // 顶部勾选参与掷骰的层级；每层独立「摇几个」，行内显示该层池子总数。
 // 导出 = 配置 JSON 下载；导入 = 配置回填 或 tag_classify 输出（buckets → 层）。
 // 配置改动静默防抖 PUT 全量保存；「重置为默认」走 POST /dice/reset。
+// pose 池：data/pose/<动作>/<id>/depth.png 经 manifest 列出，按动作分组勾选；
+// 「一起生成」从勾选池随机挑一张，动作 tag 注入拼合 prompt。选择存 localStorage。
 
 type Tier = 'common' | 'general' | 'sensitive' | 'questionable' | 'explicit'
 
@@ -46,6 +48,36 @@ const DEFAULT_RATINGS: Record<Tier, boolean> = {
 }
 
 const RATINGS_STORAGE_KEY = 'dice-ratings-v1'
+const POSES_STORAGE_KEY = 'dice-poses-v1'
+
+interface PoseEntry {
+  id: string
+  poseName: string
+  name?: string
+  tags?: string[]
+  guide?: { view?: string[]; shot?: string[]; framing?: string[] }
+  variants?: Record<string, { depth?: string }>
+}
+
+// manifest depth 路径形如 pose/<动作>/<id>/depth.png（相对 data 根），转 pose-file URL
+function depthUrl(entry: PoseEntry): string | null {
+  for (const variant of Object.values(entry.variants ?? {})) {
+    const depth = variant?.depth
+    if (depth) {
+      const rel = depth.startsWith('pose/') ? depth.slice('pose/'.length) : depth
+      return `/api/runner/data/pose-file/${rel
+        .split('/')
+        .map(encodeURIComponent)
+        .join('/')}`
+    }
+  }
+  return null
+}
+
+// pose 注入 prompt 的词：meta tags + guide.shot（如 kneeling + full body）
+function poseTagsOf(entry: PoseEntry): string[] {
+  return [...new Set([...(entry.tags ?? []), ...(entry.guide?.shot ?? [])])]
+}
 
 function wordsOf(values: string): string[] {
   return [...new Set(values.split(/[,;\n]/).map((w) => w.trim()).filter((w) => w !== ''))]
@@ -92,8 +124,37 @@ export function DiceBoard() {
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [enabled, setEnabled] = useState<Record<Tier, boolean>>(DEFAULT_RATINGS)
   const [importMsg, setImportMsg] = useState('')
+  const [poses, setPoses] = useState<PoseEntry[]>([])
+  const [poseSel, setPoseSel] = useState<Set<string>>(new Set())
+  const [posePick, setPosePick] = useState<PoseEntry | null>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  const togglePose = useCallback((id: string) => {
+    setPoseSel((cur) => {
+      const next = new Set(cur)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      try {
+        localStorage.setItem(POSES_STORAGE_KEY, JSON.stringify([...next]))
+      } catch {
+        // 存不了就算了
+      }
+      return next
+    })
+  }, [])
+
+  const setAllPoses = useCallback((entries: PoseEntry[], on: boolean) => {
+    setPoseSel(() => {
+      const next = new Set(on ? entries.map((p) => p.id) : [])
+      try {
+        localStorage.setItem(POSES_STORAGE_KEY, JSON.stringify([...next]))
+      } catch {
+        // 忽略
+      }
+      return next
+    })
+  }, [])
 
   const save = useCallback(async (list: LoadedField[]) => {
     setSaveState('saving')
@@ -130,6 +191,31 @@ export function DiceBoard() {
         fail(messageOf(err))
       }
       if (!cancelled) setLoaded(true)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // pose 池：manifest 只读列出；首次进入默认全选，之后以 localStorage 存档为准
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const body = await api<{ poses: PoseEntry[] }>('data/poses?enabled=true')
+        if (cancelled) return
+        setPoses(body.poses)
+        let saved: string[] | null = null
+        try {
+          const raw = localStorage.getItem(POSES_STORAGE_KEY)
+          if (raw) saved = JSON.parse(raw) as string[]
+        } catch {
+          // 无存档
+        }
+        setPoseSel(new Set(saved ?? body.poses.map((p) => p.id)))
+      } catch (err) {
+        fail(messageOf(err))
+      }
     })()
     return () => {
       cancelled = true
@@ -229,8 +315,10 @@ export function DiceBoard() {
         return { ...f, picked }
       }),
     )
+    const pool = poses.filter((p) => poseSel.has(p.id))
+    setPosePick(pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : null)
     setRolled(true)
-  }, [enabled])
+  }, [enabled, poses, poseSel])
 
   const addField = useCallback(() => {
     setFields((cur) => {
@@ -394,18 +482,41 @@ export function DiceBoard() {
       .flatMap((tier) => field.picked[tier] ?? [])
       .join(', ')
 
+  const poseTags = posePick ? poseTagsOf(posePick) : []
   const composed = Object.fromEntries(
     fields.map((f) => [f.name, composeOf(f)]).filter(([, v]) => v !== ''),
   )
   const negative = composed['constraints.exclude'] ?? null
-  const joinedPrompt = fields
-    .filter((f) => f.name !== 'constraints.exclude')
-    .map((f) => composeOf(f))
+  const poseResult = posePick
+    ? { id: posePick.id, name: posePick.poseName, tags: poseTags }
+    : null
+  const joinedPrompt = [
+    ...fields
+      .filter((f) => f.name !== 'constraints.exclude')
+      .map((f) => composeOf(f))
+      .filter((v) => v !== ''),
+    poseTags.join(', '),
+  ]
     .filter((v) => v !== '')
     .join(', ')
 
+  // pose 分组（动作名 → 条目），组内按 id 稳定排序
+  const poseGroups = useMemo(() => {
+    const map = new Map<string, PoseEntry[]>()
+    for (const p of poses) {
+      const list = map.get(p.poseName) ?? []
+      list.push(p)
+      map.set(p.poseName, list)
+    }
+    return [...map.entries()]
+  }, [poses])
+  const poseTotal = poses.length
+  const poseSelCount = poses.reduce((n, p) => (poseSel.has(p.id) ? n + 1 : n), 0)
+
   function copyJson() {
-    void navigator.clipboard.writeText(JSON.stringify(composed, null, 2))
+    void navigator.clipboard.writeText(
+      JSON.stringify({ ...composed, ...(poseResult ? { pose: poseResult } : {}) }, null, 2),
+    )
   }
 
   return (
@@ -569,13 +680,61 @@ export function DiceBoard() {
 
       <section className="panel">
         <div className="column-head">
+          <h2>🧍 pose 池</h2>
+          <span className="muted">
+            按动作分组 · 点缩略图勾选 · 已选 {poseSelCount}/{poseTotal}
+          </span>
+        </div>
+        <div className="dice-pose-tools">
+          <button type="button" className="quiet" onClick={() => setAllPoses(poses, true)}>
+            全选
+          </button>
+          <button type="button" className="quiet" onClick={() => setAllPoses(poses, false)}>
+            清空
+          </button>
+          <span className="muted dice-pose-hint">「一起生成」时从勾选池随机挑一张</span>
+        </div>
+        <div className="dice-pose-groups">
+          {poseGroups.map(([poseName, entries]) => (
+            <PoseGroup
+              key={poseName}
+              poseName={poseName}
+              entries={entries}
+              poseSel={poseSel}
+              onToggle={togglePose}
+              onSetAll={(on) => setAllPoses(entries, on)}
+            />
+          ))}
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="column-head">
           <h2>结果</h2>
           <button type="button" className="quiet" onClick={copyJson} disabled={!rolled}>
             复制 JSON
           </button>
         </div>
+        {posePick ? (
+          <div className="dice-pose-result">
+            {depthUrl(posePick) ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                className="dice-pose-result-img"
+                src={depthUrl(posePick) as string}
+                alt={`pose ${posePick.poseName} ${posePick.id}`}
+              />
+            ) : null}
+            <div className="dice-pose-result-meta">
+              <strong>
+                {posePick.poseName} · {posePick.id}
+              </strong>
+              {poseTags.length > 0 ? <span className="dice-picked mono">{poseTags.join(', ')}</span> : null}
+            </div>
+          </div>
+        ) : null}
         <pre className="dice-json mono">
-          {rolled ? JSON.stringify(composed, null, 2) : '按 🎲 一起生成'}
+          {rolled ? JSON.stringify({ ...composed, ...(poseResult ? { pose: poseResult } : {}) }, null, 2) : '按 🎲 一起生成'}
         </pre>
         {joinedPrompt !== '' ? (
           <p className="dice-prompt mono">
@@ -592,5 +751,77 @@ export function DiceBoard() {
         ) : null}
       </section>
     </>
+  )
+}
+
+// 动作分组：折叠面板 + 组级三态勾选。缩略图网格只在展开时渲染（469 张不能全挂）。
+function PoseGroup({
+  poseName,
+  entries,
+  poseSel,
+  onToggle,
+  onSetAll,
+}: {
+  poseName: string
+  entries: PoseEntry[]
+  poseSel: Set<string>
+  onToggle: (id: string) => void
+  onSetAll: (on: boolean) => void
+}) {
+  const total = entries.length
+  const sel = entries.reduce((n, p) => (poseSel.has(p.id) ? n + 1 : n), 0)
+  const allOn = sel === total
+  const checkRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (checkRef.current) checkRef.current.indeterminate = sel > 0 && sel < total
+  }, [sel, total])
+  return (
+    <details className="dice-pose-group">
+      <summary>
+        <input
+          ref={checkRef}
+          type="checkbox"
+          checked={allOn}
+          onChange={() => onSetAll(!allOn)}
+          onClick={(e) => {
+            // 点组勾选不展开/收起面板
+            e.preventDefault()
+            e.stopPropagation()
+            onSetAll(!allOn)
+          }}
+          aria-label={`全选 ${poseName}`}
+        />
+        <span className="dice-pose-group-name">{poseName}</span>
+        <span className="muted dice-pose-group-count">
+          {sel}/{total}
+        </span>
+      </summary>
+      <div className="dice-pose-grid">
+        {entries.map((p) => {
+          const on = poseSel.has(p.id)
+          const url = depthUrl(p)
+          return (
+            <button
+              key={p.id}
+              type="button"
+              className={`dice-pose-item ${on ? 'on' : ''}`}
+              onClick={() => onToggle(p.id)}
+              title={`${p.poseName} · ${p.id}`}
+              aria-pressed={on}
+            >
+              {url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={url} alt={`${p.poseName} ${p.id}`} loading="lazy" />
+              ) : (
+                <span className="muted">无图</span>
+              )}
+              <span className="dice-pose-check" aria-hidden={true}>
+                {on ? '✓' : ''}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </details>
   )
 }
