@@ -211,6 +211,11 @@ export function DiceBoard() {
     fields.filter((f) => f.picked.length > 0).map((f) => [f.name, f.picked.join(', ')]),
   )
   const negative = composed['constraints.exclude'] ?? null
+  // 拼好的正向 prompt：除 constraints.exclude 外按字段顺序拼接
+  const joinedPrompt = fields
+    .filter((f) => f.name !== 'constraints.exclude' && f.picked.length > 0)
+    .map((f) => f.picked.join(', '))
+    .join(', ')
 
   function copyJson() {
     void navigator.clipboard.writeText(JSON.stringify(composed, null, 2))
@@ -223,9 +228,9 @@ export function DiceBoard() {
           <h2>🎲 掷骰工作台</h2>
           <span className="muted">候选词逗号分隔 · 数字 = 取几个 · 存浏览器本地</span>
         </div>
-        <div className="row">
-          <button type="button" onClick={rollAll}>
-            🎲 全部掷骰
+        <div className="dice-hero">
+          <button type="button" className="dice-hero-roll" onClick={rollAll}>
+            🎲 一起生成
           </button>
           <button type="button" className="quiet" onClick={addField}>
             ＋ 加字段
@@ -294,11 +299,18 @@ export function DiceBoard() {
           </button>
         </div>
         <pre className="dice-json mono">
-          {rolled ? JSON.stringify(composed, null, 2) : '按 🎲 生成 JSON'}
+          {rolled ? JSON.stringify(composed, null, 2) : '按 🎲 一起生成'}
         </pre>
-        {negative ? (
-          <p className="muted">
-            负面词（constraints.exclude）： <span className="mono">{negative}</span>
+        {joinedPrompt !== '' ? (
+          <p className="dice-prompt mono">
+            <span className="muted">拼合 prompt：</span>
+            {joinedPrompt}
+            {negative ? (
+              <>
+                {' '}<span className="muted">｜负面：</span>
+                {negative}
+              </>
+            ) : null}
           </p>
         ) : null}
       </section>

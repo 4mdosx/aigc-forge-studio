@@ -1514,3 +1514,36 @@ button.task-pick.current {
   overflow-wrap: anywhere;
   margin: 0;
 }
+
+.dice-hero {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.dice-hero-roll {
+  border: 0;
+  background: #0c5c49;
+  color: #f7f3ea;
+  border-radius: 999px;
+  padding: 0.6rem 1.4rem;
+  font: inherit;
+  font-size: 1.05rem;
+  cursor: pointer;
+}
+
+.dice-hero-roll:hover {
+  background: #0e6d55;
+}
+
+.dice-prompt {
+  margin: 0.6rem 0 0;
+  background: #e7f0ec;
+  border: 1px solid #cfe0d8;
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
