@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "AIGC Capture",
-  "version": "1.1.0",
-  "description": "把 Pinterest 图片直传 aigc-forge capture 工作台（popup 整页采集 + 图片右键采集，runner 不碰反爬）",
+  "version": "1.2.0",
+  "description": "把 Pinterest / pixiv 图片直传 aigc-forge capture 工作台（popup 整页采集 + 图片右键采集，runner 不碰反爬）",
   "permissions": ["activeTab", "scripting", "contextMenus", "notifications"],
   "host_permissions": ["http://127.0.0.1:8787/*"],
   "background": {

@@ -13,6 +13,7 @@ import {
   originalsOf,
   sizeSegmentOf,
   imageSignatureOf,
+  refererFor,
   withSizeSegment,
 } from './capture.ts'
 
@@ -141,6 +142,25 @@ test('imageSignatureOf extracts pinimg tail hash shared by size variants', () =>
   )
   assert.equal(imageSignatureOf('https://example.com/a/b/deadbeefdeadbeef.jpg'), null)
   assert.equal(imageSignatureOf('https://i.pinimg.com/736x/no-hash.jpg'), null)
+})
+
+test('imageSignatureOf maps pximg variants to artwork id + page index', () => {
+  const master =
+    imageSignatureOf('https://i.pximg.net/c/250x250_80_a2/img-master/img/2026/01/02/03/04/05/12345_p0_master1200.jpg')
+  assert.equal(master, '12345_p0')
+  const square = imageSignatureOf('https://i.pximg.net/img/12345_p0_square1200.jpg')
+  assert.equal(square, '12345_p0')
+  const original =
+    imageSignatureOf('https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p0.png')
+  assert.equal(original, '12345_p0')
+  assert.equal(master, square)
+  assert.equal(master, original)
+})
+
+test('refererFor picks pixiv referer for pximg hosts', () => {
+  assert.equal(refererFor('https://i.pximg.net/img-original/img/2026/01/01/x/12345_p0.jpg'), 'https://www.pixiv.net/')
+  assert.equal(refererFor('https://i.pinimg.com/736x/3e/71/1b/3e711b280907dbc46ecb959a3b75eef0.jpg'), 'https://www.pinterest.com/')
+  assert.equal(refererFor('not a url'), 'https://www.pinterest.com/')
 })
 
 test('folder names stay lowercase slugs', () => {

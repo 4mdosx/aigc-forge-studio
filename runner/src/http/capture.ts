@@ -103,10 +103,22 @@ export function normalizeMediaUrl(input: string): string {
 }
 
 // pinimg 图片签名：尺寸段之后的完整尾段（c4/02/68/<hash32>.jpg），同一张图所有尺寸变体共享；
-// 非 pinimg 返回 null
+// pximg（pixiv）签名 = 作品号+页号（12345_p0），原图/master/square 变体共享；其他返回 null
 export function imageSignatureOf(url: string): string | null {
   const hit = /^https:\/\/i\.pinimg\.com\/[a-z0-9_]+\/([0-9a-f/]+\.[a-z0-9]+)$/i.exec(url)
-  return hit ? (hit[1] ?? null) : null
+  if (hit) return hit[1] ?? null
+  const px = /i\.pximg\.net\/.+\/(\d+_p\d+)(?:_master1200|_square1200)?\.[a-z0-9]+$/i.exec(url)
+  return px ? (px[1] ?? null) : null
+}
+
+// 下载 referer：pximg 防盗链要求 pixiv 页面来源，其余默认 pinterest
+export function refererFor(url: string): string {
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    return /(^|\.)pximg\.net$/.test(host) ? 'https://www.pixiv.net/' : 'https://www.pinterest.com/'
+  } catch {
+    return 'https://www.pinterest.com/'
+  }
 }
 
 // og:image 提取（property 前置/后置两种排版都试）
@@ -555,7 +567,7 @@ export function mountCapture(app: Hono, runner: Runner): void {
 
     const id = captureId(runner.now())
     const rawAbs = join(dir, 'raw', `${id}${extOf(mediaUrl)}`)
-    await downloadTo(mediaUrl, rawAbs, 'https://www.pinterest.com/')
+    await downloadTo(mediaUrl, rawAbs, refererFor(mediaUrl))
     if (statSync(rawAbs).size < MIN_IMAGE_BYTES) {
       rmSync(rawAbs, { force: true })
       throw new RunnerError('下载的内容不是有效图片', 502)
