@@ -124,6 +124,7 @@ test('buildTrainToml emits flat keys matching train_network.py args', () => {
     'clip_skip',
     'min_snr_gamma',
     'sdpa',
+    'sdxl',
   ]) {
     assert.ok(text.includes(`${key} = `), `missing key: ${key}`)
   }

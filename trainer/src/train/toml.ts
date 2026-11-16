@@ -32,6 +32,8 @@ export interface TrainParamsInput {
   clipSkip?: number
   minSnrGamma?: number
   sdpa?: boolean
+  /** SDXL 家族训练开关；sd-scripts 不给 --sdxl 会走 SD1.x 加载路径读 SDXL 底模必炸（实测坑） */
+  sdxl?: boolean
   shuffleCaption?: boolean
   keepTokens?: number
   /** 采样提示词全文；提供时写入 prompts 文件并按 sampleEveryNEpochs 出图 */
@@ -116,6 +118,7 @@ export function resolveParams(
     clipSkip: num(fields, 'clipSkip', 2, { positive: false }),
     minSnrGamma: num(fields, 'minSnrGamma', 5, { positive: false }),
     sdpa: bool(fields, 'sdpa', true),
+    sdxl: bool(fields, 'sdxl', true),
     shuffleCaption: bool(fields, 'shuffleCaption', true),
     keepTokens: num(fields, 'keepTokens', 0, { positive: false }),
     samplePrompts: input.samplePrompts?.trim() ? input.samplePrompts : null,
@@ -191,6 +194,7 @@ export function buildTrainToml(params: ResolvedParams, paths: JobPaths): string 
     clip_skip: params.clipSkip,
     min_snr_gamma: params.minSnrGamma,
     sdpa: params.sdpa,
+    sdxl: params.sdxl,
   }
   if (params.samplePrompts) {
     entries.sample_prompts = joinPath(paths.configDir, 'prompts.txt')
