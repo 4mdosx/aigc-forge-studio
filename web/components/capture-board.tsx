@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 
-import { api } from '@/lib/api'
+import { api, fileHref } from '@/lib/api'
 import { fail, messageOf, notify } from '@/lib/notify'
 
 interface FolderInfo {
@@ -358,9 +358,9 @@ function CaptureCard({ item }: { item: CaptureItem }) {
     .join(' · ')
 
   return (
-    <a className="capture-card" href={href ?? undefined} target="_blank" rel="noreferrer">
+    <a className="capture-card" href={href ? fileHref(href) : undefined} target="_blank" rel="noreferrer">
       {href ? (
-        <img src={href} alt={item.id} loading="lazy" />
+        <img src={fileHref(href)} alt={item.id} loading="lazy" />
       ) : (
         <span className="capture-missing">{item.status === 'processing' ? '处理中…' : '无图'}</span>
       )}
