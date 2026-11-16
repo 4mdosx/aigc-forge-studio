@@ -2,9 +2,9 @@
   "name": "aigc-web",
   "private": true,
   "scripts": {
-    "dev": "next dev --hostname 127.0.0.1 --port 3000",
+    "dev": "next dev --hostname 0.0.0.0 --port 3000",
     "build": "next build",
-    "start": "next start --hostname 127.0.0.1 --port 3000"
+    "start": "next start --hostname 0.0.0.0 --port 3000"
   },
   "dependencies": {
     "lucide-react": "^1.72.0",
