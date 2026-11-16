@@ -1399,3 +1399,118 @@ button.task-pick.current {
   white-space: nowrap;
   border: 0;
 }
+
+/* ---- dice 掷骰工作台 ---- */
+
+.dice-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+@media (min-width: 760px) {
+  .dice-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.dice-field {
+  border: 1px solid #e4dacd;
+  border-radius: 8px;
+  padding: 0.6rem;
+  background: #fffdf8;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.dice-head {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.dice-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono, monospace);
+  font-size: 0.85rem;
+  padding: 0.3rem 0.5rem;
+}
+
+.dice-remove {
+  border: 0;
+  background: transparent;
+  color: #a04030;
+  font-size: 1rem;
+  cursor: pointer;
+  padding: 0.1rem 0.4rem;
+}
+
+.dice-field textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #c9beae;
+  border-radius: 6px;
+  background: #f7f3ea;
+  color: #241f1a;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.dice-foot {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.dice-count {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: #5c564e;
+}
+
+.dice-count input {
+  width: 3.2rem;
+  padding: 0.25rem 0.4rem;
+}
+
+.dice-roll {
+  border: 0;
+  background: #0c5c49;
+  color: #f7f3ea;
+  border-radius: 999px;
+  width: 2.2rem;
+  height: 2.2rem;
+  font-size: 1.05rem;
+  cursor: pointer;
+  flex: none;
+}
+
+.dice-roll:hover {
+  background: #0e6d55;
+}
+
+.dice-picked {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.75rem;
+  color: #0c5c49;
+  overflow-wrap: anywhere;
+}
+
+.dice-json {
+  background: #f7f3ea;
+  border: 1px solid #e4dacd;
+  border-radius: 8px;
+  padding: 0.7rem;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}

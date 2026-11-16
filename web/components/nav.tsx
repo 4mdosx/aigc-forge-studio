@@ -8,6 +8,7 @@ export function Nav() {
   const work = path === '/' || path.startsWith('/tasks')
   const poses = path.startsWith('/poses')
   const capture = path.startsWith('/capture')
+  const dice = path.startsWith('/dice')
   const library = path.startsWith('/library') || path.startsWith('/workflows')
   return (
     <nav>
@@ -19,6 +20,9 @@ export function Nav() {
       </Link>
       <Link className={capture ? 'active' : ''} href="/capture">
         Capture
+      </Link>
+      <Link className={dice ? 'active' : ''} href="/dice">
+        🎲 Dice
       </Link>
       <Link className={library ? 'active' : ''} href="/library">
         Library
