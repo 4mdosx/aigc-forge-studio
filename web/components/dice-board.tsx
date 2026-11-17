@@ -2,54 +2,30 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { api, fileHref } from '@/lib/api'
-import { fail, messageOf } from '@/lib/notify'
+import { api } from '@/lib/api'
+import { initialIntent, type CreativeIntent } from '@/lib/intent'
+import { fail, messageOf, notify } from '@/lib/notify'
 
-// 🎲 掷骰工作台：字段池存 runner SQLite（dice_fields.tiers JSON）。
-// 每字段分层：common（手动公共池）+ general/sensitive/questionable/explicit（tag 分类导入）；
-// 顶部勾选参与掷骰的层级；每层独立「摇几个」，行内显示该层池子总数。
-// 导出 = 配置 JSON 下载；导入 = 配置回填 或 tag_classify 输出（buckets → 层）。
-// 配置改动静默防抖 PUT 全量保存；「重置为默认」走 POST /dice/reset。
-// pose 池：data/pose/<动作>/<id>/depth.png 经 manifest 列出，按动作分组勾选；
-// 「一起生成」从勾选池随机挑一张，动作 tag 注入拼合 prompt。选择存 localStorage。
+// 造型页：顶部先选角色再选 pose，分别写入各字段的 character / pose。
+// 卡片输入顺序与选择顺序一致：角色、pose、input。
+// role.json 的词只作快速输入；已经由角色或 pose 写入的词在候选里不可再选。
+// 生成按角色、pose、input 合成 CreativeIntent。
 
-type Tier = 'common' | 'general' | 'sensitive' | 'questionable' | 'explicit'
+const FORM_KEYS = ['character', 'pose', 'input'] as const
 
-const TIERS: Tier[] = ['common', 'general', 'sensitive', 'questionable', 'explicit']
+type FormKey = (typeof FORM_KEYS)[number]
 
-const TIER_LABEL: Record<Tier, string> = {
-  common: 'common',
-  general: 'general',
-  sensitive: 'sensitive',
-  questionable: 'questionable',
-  explicit: 'explicit',
+const FIELD_LABEL: Record<FormKey, string> = {
+  character: '角色',
+  pose: 'pose',
+  input: 'input',
 }
 
-interface TierConfig {
-  values: string
-  min: number
-  max: number
+interface FieldForm {
+  pose: string
+  character: string
+  input: string
 }
-
-interface DiceField {
-  name: string
-  tiers: Partial<Record<Tier, TierConfig>>
-}
-
-interface LoadedField extends DiceField {
-  picked: Partial<Record<Tier, string[]>>
-}
-
-const DEFAULT_RATINGS: Record<Tier, boolean> = {
-  common: true,
-  general: true,
-  sensitive: false,
-  questionable: false,
-  explicit: false,
-}
-
-const RATINGS_STORAGE_KEY = 'dice-ratings-v1'
-const POSES_STORAGE_KEY = 'dice-poses-v1'
 
 interface PoseEntry {
   id: string
@@ -60,224 +36,425 @@ interface PoseEntry {
   variants?: Record<string, { depth?: string }>
 }
 
-// manifest depth 路径形如 pose/<动作>/<id>/depth.png（相对 data 根），原样透传给 pose-file 端点
-// （端点要求路径必须以 pose/ 开头，这里不做剥前缀——剥了就 400）
-function depthUrl(entry: PoseEntry): string | null {
-  for (const variant of Object.values(entry.variants ?? {})) {
-    const depth = variant?.depth
-    if (depth) {
-      return `/api/runner/data/pose-file/${depth
-        .split('/')
-        .map(encodeURIComponent)
-        .join('/')}`
+interface CharacterSummary {
+  slug: string
+  display?: string
+  preview?: string | null
+}
+
+interface CharacterRecipe {
+  display?: { zh?: string; en?: string }
+  person?: {
+    character_tag?: string
+    series_tag?: string
+    tags?: string[]
+  }
+  outfits?: Record<
+    string,
+    {
+      label?: string
+      tags?: string[]
+      layers?: { base?: string[]; wear?: string[]; gear?: string[] }
     }
+  >
+  negative_tags?: string[]
+}
+
+interface TagGroup {
+  name: string
+  tags: string[]
+}
+
+interface RoleSection {
+  name: string
+  groups: TagGroup[]
+}
+
+interface TagBatch {
+  tags: string[]
+  fallback: string
+}
+
+interface TagHit {
+  section: string
+  canonical: string
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function tagsOf(value: unknown): string[] {
+  if (isStringArray(value)) return value
+  if (!Array.isArray(value)) return []
+  const tags: string[] = []
+  for (const item of value) tags.push(...tagsOf(item))
+  return tags
+}
+
+function uniqueTags(tags: string[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const tag of tags) {
+    const text = tag.trim()
+    if (text === '' || seen.has(text)) continue
+    seen.add(text)
+    out.push(text)
   }
-  return null
+  return out
 }
 
-// pose 注入 prompt 的词：meta tags + guide.shot（如 kneeling + full body）
-function poseTagsOf(entry: PoseEntry): string[] {
-  return [...new Set([...(entry.tags ?? []), ...(entry.guide?.shot ?? [])])]
-}
-
-// 拼某字段当前勾选层的词（rollAll 与渲染共用同一实现，避免结果不一致）
-function composeOfField(field: LoadedField, enabled: Record<Tier, boolean>): string {
-  return TIERS.filter((tier) => enabled[tier])
-    .flatMap((tier) => field.picked[tier] ?? [])
-    .join(', ')
-}
-
-interface RollRecord {
-  id: string
-  poseName: string | null
-  poseId: string | null
-  fields: Record<string, unknown>
-  prompt: string
-  negative: string | null
-  createdAt: string
-}
-
-interface GenerationRecord {
-  id: string
-  taskId: string
-  status: string
-  outputs: string[]
-  seed: number | null
-  error: string | null
-  createdAt: string
-}
-
-const GEN_STATUS_LABEL: Record<string, string> = {
-  pending: '等待',
-  running: '生成中',
-  completed: '完成',
-  failed: '失败',
-  cancelled: '取消',
-  timeout: '超时',
-}
-
-function wordsOf(values: string): string[] {
-  return [...new Set(values.split(/[,;\n]/).map((w) => w.trim()).filter((w) => w !== ''))]
-}
-
-// 区间内随机取 n，再部分洗牌取前 n 个
-function pickWords(values: string, min: number, max: number): string[] {
-  const words = wordsOf(values)
-  const lo = Math.min(min, max)
-  const hi = Math.max(min, max)
-  const span = hi - lo + 1
-  const n = Math.max(0, Math.min(lo + Math.floor(Math.random() * span), words.length))
-  for (let i = 0; i < n; i += 1) {
-    const j = i + Math.floor(Math.random() * (words.length - i))
-    ;[words[i], words[j]] = [words[j], words[i]]
+function groupsOf(value: unknown): TagGroup[] {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return Object.entries(value).map(([name, pool]) => ({
+      name,
+      tags: uniqueTags(tagsOf(pool)),
+    }))
   }
-  return words.slice(0, n)
+  const groups = Array.isArray(value) && value.some((item) => Array.isArray(item)) ? value : [value]
+  return groups
+    .map((group, index) => ({
+      name: groups.length > 1 ? `组 ${index + 1}` : '',
+      tags: uniqueTags(tagsOf(group)),
+    }))
+    .filter((group) => group.tags.length > 0)
 }
 
-const tierOf = (field: LoadedField, tier: Tier): TierConfig =>
-  field.tiers[tier] ?? { values: '', min: 1, max: 1 }
+function sectionsOf(role: unknown): RoleSection[] {
+  if (!role || typeof role !== 'object' || Array.isArray(role)) return []
+  return Object.entries(role as Record<string, unknown>).map(([name, value]) => ({
+    name,
+    groups: groupsOf(value),
+  }))
+}
 
-// 旧版单值 count → min=max=count；区间不合法时收拢
-function normalizeTiers(raw: unknown): Partial<Record<Tier, TierConfig>> {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
-  const out: Partial<Record<Tier, TierConfig>> = {}
-  for (const [tier, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!TIERS.includes(tier as Tier)) continue
-    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
-    const t = value as Record<string, unknown>
-    const clamp = (n: number) =>
-      Number.isInteger(n) && n >= 0 ? Math.min(n, 99) : 1
-    let min = clamp(Number(t.min ?? t.count ?? 1))
-    let max = clamp(Number(t.max ?? t.count ?? 1))
-    if (max < min) max = min
-    out[tier as Tier] = {
-      values: typeof t.values === 'string' ? t.values : '',
-      min,
-      max,
+function emptyForm(): FieldForm {
+  return { pose: '', character: '', input: '' }
+}
+
+function formsOf(sections: RoleSection[]): Record<string, FieldForm> {
+  return Object.fromEntries(sections.map((section) => [section.name, emptyForm()]))
+}
+
+function normTag(tag: string): string {
+  return tag.trim().toLowerCase().replace(/[\s_]+/g, '_')
+}
+
+function textList(...values: Array<string | string[] | undefined>): string[] {
+  const out: string[] = []
+  for (const value of values) {
+    if (typeof value === 'string') out.push(value)
+    else if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === 'string') out.push(item)
+      }
     }
   }
   return out
 }
 
-function asLoaded(rows: Array<{ name: string; tiers?: unknown }>): LoadedField[] {
-  return rows.map((row) => ({ name: row.name, tiers: normalizeTiers(row.tiers), picked: {} }))
+function tagIndexOf(orderOf: Map<string, string[]>): Map<string, TagHit[]> {
+  const index = new Map<string, TagHit[]>()
+  for (const [section, tags] of orderOf) {
+    for (const tag of tags) {
+      const key = normTag(tag)
+      if (key === '') continue
+      const list = index.get(key) ?? []
+      list.push({ section, canonical: tag })
+      index.set(key, list)
+    }
+  }
+  return index
 }
 
-// 移动端媒体查询（SSR 首帧 false，首屏数据拉取后 effect 已跑，无闪烁风险）
-function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(false)
-  useEffect(() => {
-    const mq = window.matchMedia(query)
-    const onChange = () => setMatches(mq.matches)
-    onChange()
-    mq.addEventListener('change', onChange)
-    return () => mq.removeEventListener('change', onChange)
-  }, [query])
-  return matches
+// 命中 role.json 的词写回该词表里的写法，并按原顺序排列。对不上的词落到 fallback 字段末尾。
+function placeTags(
+  batches: TagBatch[],
+  orderOf: Map<string, string[]>,
+  index: Map<string, TagHit[]>,
+): Map<string, string> {
+  const ordered = new Map<string, Set<string>>()
+  const extra = new Map<string, string[]>()
+  const extraSeen = new Map<string, Set<string>>()
+  for (const batch of batches) {
+    for (const raw of batch.tags) {
+      const text = raw.trim()
+      if (text === '') continue
+      const hits = index.get(normTag(text)) ?? []
+      if (hits.length === 0) {
+        if (!orderOf.has(batch.fallback)) continue
+        const seen = extraSeen.get(batch.fallback) ?? new Set<string>()
+        const key = normTag(text)
+        if (seen.has(key)) continue
+        seen.add(key)
+        extraSeen.set(batch.fallback, seen)
+        const list = extra.get(batch.fallback) ?? []
+        list.push(text)
+        extra.set(batch.fallback, list)
+        continue
+      }
+      for (const hit of hits) {
+        const set = ordered.get(hit.section) ?? new Set<string>()
+        set.add(hit.canonical)
+        ordered.set(hit.section, set)
+      }
+    }
+  }
+  const out = new Map<string, string>()
+  for (const [section, known] of orderOf) {
+    const picked = known.filter((tag) => ordered.get(section)?.has(tag))
+    const knownNorm = new Set(picked.map(normTag))
+    const rest = (extra.get(section) ?? []).filter((tag) => !knownNorm.has(normTag(tag)))
+    out.set(section, joinTags([...picked, ...rest]))
+  }
+  return out
 }
 
-export function DiceBoard() {
-  const [fields, setFields] = useState<LoadedField[]>([])
-  const [loaded, setLoaded] = useState(false)
-  const [rolled, setRolled] = useState(false)
-  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
-  const [enabled, setEnabled] = useState<Record<Tier, boolean>>(DEFAULT_RATINGS)
-  const [importMsg, setImportMsg] = useState('')
+function outfitTags(recipe: CharacterRecipe): string[] {
+  const outfit = recipe.outfits?.default
+  if (!outfit) return []
+  if (Array.isArray(outfit.tags) && outfit.tags.length > 0) return outfit.tags
+  const layers = outfit.layers
+  return textList(layers?.base, layers?.wear, layers?.gear)
+}
+
+function characterBatches(recipe: CharacterRecipe): TagBatch[] {
+  const person = recipe.person ?? {}
+  return [
+    { tags: textList(person.character_tag, person.series_tag), fallback: 'subject.type' },
+    { tags: textList(person.tags), fallback: 'subject.description' },
+    { tags: outfitTags(recipe), fallback: 'outfit.clothing' },
+    { tags: textList(recipe.negative_tags), fallback: 'constraints.exclude' },
+  ]
+}
+
+function poseBatches(entry: PoseEntry, orderOf: Map<string, string[]>): TagBatch[] {
+  const framing = orderOf.has('composition.framing') ? 'composition.framing' : 'composition.shot'
+  return [
+    { tags: textList(entry.poseName, entry.tags), fallback: 'pose.action' },
+    { tags: textList(entry.guide?.shot), fallback: 'composition.shot' },
+    { tags: textList(entry.guide?.view), fallback: 'composition.view' },
+    { tags: textList(entry.guide?.framing), fallback: framing },
+  ]
+}
+
+// 从文本里认出 role.json 的词，其余片段保留。词本身可以含逗号或空格，按最长匹配切。
+function partsOf(input: string, ordered: string[]): { known: Set<string>; extras: string[] } {
+  const byLength = [...ordered].sort((a, b) => b.length - a.length)
+  const known = new Set<string>()
+  const extras: string[] = []
+  const extraSeen = new Set<string>()
+  let pending = ''
+  const flush = () => {
+    const piece = pending.trim().replace(/^,+|,+$/g, '').trim()
+    pending = ''
+    if (piece === '') return
+    const key = normTag(piece)
+    if (key === '' || extraSeen.has(key) || [...known].some((tag) => normTag(tag) === key)) return
+    extraSeen.add(key)
+    extras.push(piece)
+  }
+  let index = 0
+  const text = input.trim()
+  while (index < text.length) {
+    while (index < text.length && (text[index] === ',' || text[index] === '\n')) index += 1
+    if (index >= text.length) break
+    const slice = text.slice(index)
+    const spaceStartsTag = byLength.some((tag) => tag.startsWith(' ') && slice.startsWith(tag))
+    if (!spaceStartsTag && text[index] === ' ') {
+      pending += text[index]
+      index += 1
+      continue
+    }
+    const hit = byLength.find((tag) => {
+      if (!slice.startsWith(tag)) return false
+      const next = slice[tag.length]
+      return next === undefined || next === ',' || next === '\n'
+    })
+    if (!hit) {
+      const next = text.indexOf(',', index)
+      const end = next === -1 ? text.length : next
+      pending += text.slice(index, end)
+      flush()
+      index = next === -1 ? text.length : next + 1
+      continue
+    }
+    flush()
+    known.add(hit)
+    index += hit.length
+  }
+  flush()
+  return { known, extras }
+}
+
+function selectedTags(input: string, ordered: string[]): string[] {
+  const { known } = partsOf(input, ordered)
+  return ordered.filter((tag) => known.has(tag))
+}
+
+function appendTag(current: string, tag: string, ordered: string[]): string {
+  const text = tag.trim()
+  if (text === '') return current
+  const { known, extras } = partsOf(current, ordered)
+  const key = normTag(text)
+  if ([...known].some((item) => normTag(item) === key) || extras.some((item) => normTag(item) === key)) {
+    return current
+  }
+  const canonical = ordered.find((item) => normTag(item) === key)
+  if (canonical) known.add(canonical)
+  else extras.push(text)
+  return joinTags([...ordered.filter((item) => known.has(item)), ...extras])
+}
+
+function joinTags(tags: string[]): string {
+  return tags.join(',')
+}
+
+function splitTags(value: string): string[] {
+  return value
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter((tag) => tag !== '')
+}
+
+function mergeSlots(form: FieldForm): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const part of [form.character, form.pose, form.input]) {
+    for (const tag of splitTags(part)) {
+      const key = normTag(tag)
+      if (key === '' || seen.has(key)) continue
+      seen.add(key)
+      out.push(tag)
+    }
+  }
+  return out
+}
+
+function composeIntent(sections: RoleSection[], forms: Record<string, FieldForm>): CreativeIntent {
+  const intent = structuredClone(initialIntent)
+  for (const section of sections) {
+    const dot = section.name.indexOf('.')
+    if (dot < 1) continue
+    const group = section.name.slice(0, dot)
+    const field = section.name.slice(dot + 1)
+    const parent = intent[group as keyof CreativeIntent]
+    if (!parent || typeof parent !== 'object') continue
+    const record = parent as Record<string, string | string[]>
+    if (!(field in record)) continue
+    const tags = mergeSlots(forms[section.name] ?? emptyForm())
+    if (Array.isArray(record[field])) record[field] = tags
+    else record[field] = tags.join(',')
+  }
+  return intent
+}
+
+function promptOf(intent: CreativeIntent): { positive: string; negative: string } {
+  const seen = new Set<string>()
+  const positive: string[] = []
+  for (const item of [
+    intent.subject.type,
+    intent.subject.description,
+    intent.outfit.clothing,
+    ...intent.outfit.accessories,
+    intent.pose.action,
+    intent.pose.expression,
+    intent.composition.shot,
+    intent.composition.view,
+    intent.composition.framing,
+    intent.environment.background,
+    intent.lighting.type,
+    intent.style.genre,
+    intent.style.rendering,
+  ]) {
+    for (const tag of splitTags(item)) {
+      const key = normTag(tag)
+      if (key === '' || seen.has(key)) continue
+      seen.add(key)
+      positive.push(tag)
+    }
+  }
+  return { positive: positive.join(','), negative: intent.constraints.exclude.join(',') }
+}
+
+function assetUrl(prefix: 'pose-file' | 'character-file', path: string | null | undefined): string | null {
+  if (!path) return null
+  return `/api/runner/data/${prefix}/${path
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/')}`
+}
+
+function depthUrl(entry: PoseEntry): string | null {
+  for (const variant of Object.values(entry.variants ?? {})) {
+    const depth = variant?.depth
+    if (depth) {
+      return assetUrl('pose-file', depth)
+    }
+  }
+  return null
+}
+
+function writeSlot(
+  forms: Record<string, FieldForm>,
+  names: string[],
+  slot: 'pose' | 'character',
+  values: Map<string, string>,
+): Record<string, FieldForm> {
+  const next = { ...forms }
+  for (const name of names) {
+    const form = next[name] ?? emptyForm()
+    next[name] = { ...form, [slot]: values.get(name) ?? '' }
+  }
+  return next
+}
+
+export function DiceBoard({ role }: { role: unknown }) {
+  const sections = useMemo(() => sectionsOf(role), [role])
+  const sectionNames = useMemo(() => sections.map((section) => section.name), [sections])
+  const [forms, setForms] = useState<Record<string, FieldForm>>(() => formsOf(sections))
+  const [characters, setCharacters] = useState<CharacterSummary[]>([])
+  const [characterSlug, setCharacterSlug] = useState('')
+  const [characterNote, setCharacterNote] = useState('')
   const [poses, setPoses] = useState<PoseEntry[]>([])
-  const [poseSel, setPoseSel] = useState<Set<string>>(new Set())
-  const [posePick, setPosePick] = useState<PoseEntry | null>(null)
-  const [openIndex, setOpenIndex] = useState<number | null>(null)
-  const [tab, setTab] = useState<'template' | 'rolls'>('template')
-  const [rollsVersion, setRollsVersion] = useState(0)
-  const isMobile = useMediaQuery('(max-width: 759px)')
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const fileRef = useRef<HTMLInputElement>(null)
+  const [poseId, setPoseId] = useState('')
+  const [poseError, setPoseError] = useState('')
+  const [generated, setGenerated] = useState<CreativeIntent | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [focus, setFocus] = useState<{ section: string; key: FormKey } | null>(null)
+  const [recommendations, setRecommendations] = useState<string[]>([])
+  const [recStatus, setRecStatus] = useState('')
+  const characterRequest = useRef(0)
+  const recRequest = useRef(0)
+  const blurTimer = useRef<number | undefined>(undefined)
+  const formsRef = useRef(forms)
+  formsRef.current = forms
 
-  const togglePose = useCallback((id: string) => {
-    setPoseSel((cur) => {
-      const next = new Set(cur)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      try {
-        localStorage.setItem(POSES_STORAGE_KEY, JSON.stringify([...next]))
-      } catch {
-        // 存不了就算了
-      }
-      return next
-    })
-  }, [])
-
-  const setAllPoses = useCallback((entries: PoseEntry[], on: boolean) => {
-    setPoseSel(() => {
-      const next = new Set(on ? entries.map((p) => p.id) : [])
-      try {
-        localStorage.setItem(POSES_STORAGE_KEY, JSON.stringify([...next]))
-      } catch {
-        // 忽略
-      }
-      return next
-    })
-  }, [])
-
-  const save = useCallback(async (list: LoadedField[]) => {
-    setSaveState('saving')
-    try {
-      await api('dice/fields', {
-        method: 'PUT',
-        body: JSON.stringify({
-          fields: list.map((f) => ({ name: f.name, tiers: f.tiers })),
-        }),
-      })
-      setSaveState('saved')
-    } catch (err) {
-      setSaveState('error')
-      fail(messageOf(err))
+  const orderOf = useMemo(() => {
+    const map = new Map<string, string[]>()
+    for (const section of sections) {
+      map.set(section.name, uniqueTags(section.groups.flatMap((group) => group.tags)))
     }
-  }, [])
-
-  const scheduleSave = useCallback(
-    (list: LoadedField[]) => {
-      if (saveTimer.current) clearTimeout(saveTimer.current)
-      saveTimer.current = setTimeout(() => void save(list), 600)
-    },
-    [save],
-  )
+    return map
+  }, [sections])
+  const tagIndex = useMemo(() => tagIndexOf(orderOf), [orderOf])
 
   useEffect(() => {
     let cancelled = false
     void (async () => {
       try {
-        const body = await api<{ fields: Array<{ name: string; tiers?: unknown }> }>('dice/fields')
+        const [poseBody, characterBody] = await Promise.all([
+          api<{ poses: PoseEntry[] }>('data/poses?enabled=true'),
+          api<{ characters: CharacterSummary[] }>('data/characters'),
+        ])
         if (cancelled) return
-        setFields(asLoaded(body.fields))
+        setPoses(poseBody.poses)
+        setCharacters(characterBody.characters)
       } catch (err) {
-        fail(messageOf(err))
-      }
-      if (!cancelled) setLoaded(true)
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  // pose 池：manifest 只读列出；首次进入默认全选，之后以 localStorage 存档为准
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const body = await api<{ poses: PoseEntry[] }>('data/poses?enabled=true')
         if (cancelled) return
-        setPoses(body.poses)
-        let saved: string[] | null = null
-        try {
-          const raw = localStorage.getItem(POSES_STORAGE_KEY)
-          if (raw) saved = JSON.parse(raw) as string[]
-        } catch {
-          // 无存档
-        }
-        setPoseSel(new Set(saved ?? body.poses.map((p) => p.id)))
-      } catch (err) {
-        fail(messageOf(err))
+        const message = messageOf(err)
+        setPoseError(message)
+        fail(message)
       }
     })()
     return () => {
@@ -285,753 +462,509 @@ export function DiceBoard() {
     }
   }, [])
 
-  // rating 勾选是 UI 偏好，存浏览器本地（导出文件里也带一份）
-  useEffect(() => {
-    try {
-      const raw = localStorage.getItem(RATINGS_STORAGE_KEY)
-      if (raw) {
-        const parsed = JSON.parse(raw) as Record<string, unknown>
-        setEnabled((cur) => {
-          const next = { ...cur }
-          for (const tier of TIERS) {
-            if (typeof parsed[tier] === 'boolean') next[tier] = parsed[tier] as boolean
-          }
-          return next
-        })
-      }
-    } catch {
-      // 无存档就用默认勾选
-    }
-  }, [])
-
-  const toggleRating = useCallback((tier: Tier) => {
-    setEnabled((cur) => {
-      const next = { ...cur, [tier]: !cur[tier] }
-      try {
-        localStorage.setItem(RATINGS_STORAGE_KEY, JSON.stringify(next))
-      } catch {
-        // 存不了就算了
-      }
-      return next
-    })
-  }, [])
-
-  // patch 带 picked = 掷骰结果，不触发保存；其他 = 配置变更，防抖落库
-  const updateField = useCallback(
-    (index: number, patch: Partial<LoadedField>) => {
-      setFields((cur) => {
-        const next = cur.map((f, i) => (i === index ? { ...f, ...patch } : f))
-        if (!('picked' in patch)) scheduleSave(next)
-        return next
-      })
+  const applyCharacter = useCallback(
+    (recipe: CharacterRecipe | null) => {
+      const values = placeTags(recipe ? characterBatches(recipe) : [], orderOf, tagIndex)
+      setForms((cur) => writeSlot(cur, sectionNames, 'character', values))
     },
-    [scheduleSave],
+    [orderOf, tagIndex, sectionNames],
   )
 
-  const updateTier = useCallback(
-    (index: number, tier: Tier, patch: Partial<TierConfig>) => {
-      setFields((cur) => {
-        const next = cur.map((f, i) => {
-          if (i !== index) return f
-          return {
-            ...f,
-            tiers: { ...f.tiers, [tier]: { ...tierOf(f, tier), ...patch } },
-          }
-        })
-        scheduleSave(next)
-        return next
-      })
+  const applyPose = useCallback(
+    (entry: PoseEntry | null) => {
+      const values = placeTags(entry ? poseBatches(entry, orderOf) : [], orderOf, tagIndex)
+      setForms((cur) => writeSlot(cur, sectionNames, 'pose', values))
     },
-    [scheduleSave],
+    [orderOf, tagIndex, sectionNames],
   )
 
-  const rollField = useCallback(
-    (index: number) => {
-      setFields((cur) =>
-        cur.map((f, i) => {
-          if (i !== index) return f
-          const picked: Partial<Record<Tier, string[]>> = {}
-          for (const tier of TIERS) {
-            if (!enabled[tier]) continue
-            const cfg = tierOf(f, tier)
-            const words = pickWords(cfg.values, cfg.min, cfg.max)
-            if (words.length > 0) picked[tier] = words
-          }
-          return { ...f, picked }
-        }),
-      )
-      setRolled(true)
-    },
-    [enabled],
-  )
-
-  const rollAll = useCallback(() => {
-    const next = fields.map((f) => {
-      const picked: Partial<Record<Tier, string[]>> = {}
-      for (const tier of TIERS) {
-        if (!enabled[tier]) continue
-        const cfg = tierOf(f, tier)
-        const words = pickWords(cfg.values, cfg.min, cfg.max)
-        if (words.length > 0) picked[tier] = words
+  const chooseCharacter = useCallback(
+    (slug: string) => {
+      const request = characterRequest.current + 1
+      characterRequest.current = request
+      setCharacterSlug(slug)
+      setGenerated(null)
+      if (slug === '') {
+        setCharacterNote('')
+        applyCharacter(null)
+        return
       }
-      return { ...f, picked }
-    })
-    setFields(next)
-    const pool = poses.filter((p) => poseSel.has(p.id))
-    const pose = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : null
-    setPosePick(pose)
-    setRolled(true)
-    // 灵感表：每次一起生成落一条（runner SQLite dice_rolls）
-    const poseTags = pose ? poseTagsOf(pose) : []
-    const composed: Record<string, string> = {}
-    for (const f of next) {
-      const v = composeOfField(f, enabled)
-      if (v !== '') composed[f.name] = v
-    }
-    const negative = composed['constraints.exclude'] ?? null
-    const prompt = [
-      ...next
-        .filter((f) => f.name !== 'constraints.exclude')
-        .map((f) => composeOfField(f, enabled))
-        .filter((v) => v !== ''),
-      poseTags.join(', '),
-    ]
-      .filter((v) => v !== '')
-      .join(', ')
-    void api('dice/rolls', {
-      method: 'POST',
-      body: JSON.stringify({
-        poseName: pose?.poseName ?? null,
-        poseId: pose?.id ?? null,
-        fields: {
-          ...composed,
-          ...(pose ? { pose: { id: pose.id, name: pose.poseName, tags: poseTags } } : {}),
-        },
-        prompt,
-        negative,
-      }),
-    })
-      .then(() => setRollsVersion((v) => v + 1))
-      .catch(() => {
-        // 记录失败不影响掷骰结果展示
-      })
-  }, [fields, enabled, poses, poseSel])
-
-  const addField = useCallback(() => {
-    setFields((cur) => {
-      let name = 'custom.field'
-      for (let n = 2; cur.some((f) => f.name === name); n += 1) {
-        name = `custom.field${n}`
-      }
-      const next = [...cur, { name, tiers: {}, picked: {} }]
-      scheduleSave(next)
-      return next
-    })
-  }, [scheduleSave])
-
-  const removeField = useCallback(
-    (index: number) => {
-      setFields((cur) => {
-        const next = cur.filter((_, i) => i !== index)
-        scheduleSave(next)
-        return next
-      })
-    },
-    [scheduleSave],
-  )
-
-  const resetToSeed = useCallback(() => {
-    void (async () => {
-      try {
-        await api('dice/reset', { method: 'POST' })
-        const body = await api<{ fields: Array<{ name: string; tiers?: unknown }> }>('dice/fields')
-        setFields(asLoaded(body.fields))
-        setRolled(false)
-        setSaveState('saved')
-      } catch (err) {
-        fail(messageOf(err))
-      }
-    })()
-  }, [])
-
-  // ---- 导入导出 ----
-
-  const exportConfig = useCallback(() => {
-    const payload = {
-      version: 1,
-      kind: 'dice-config',
-      enabled,
-      fields: fields.map(({ name, tiers }) => ({ name, tiers })),
-    }
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'dice-config.json'
-    a.click()
-    URL.revokeObjectURL(url)
-  }, [enabled, fields])
-
-  const importFile = useCallback(
-    (file: File) => {
       void (async () => {
-        let obj: unknown
         try {
-          obj = JSON.parse(await file.text())
-        } catch {
-          fail('导入失败：不是合法 JSON')
-          return
+          const body = await api<{ recipe: CharacterRecipe | null }>(`data/characters/${slug}`)
+          if (characterRequest.current !== request) return
+          const recipe = body.recipe
+          const name = recipe?.display?.zh || recipe?.display?.en || slug
+          const outfit = recipe?.outfits?.default?.label
+          setCharacterNote(outfit ? `${name} · ${outfit}` : name)
+          applyCharacter(recipe)
+        } catch (err) {
+          if (characterRequest.current !== request) return
+          fail(messageOf(err))
         }
-        if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-          fail('导入失败：JSON 结构不对')
-          return
-        }
-        const body = obj as Record<string, unknown>
-
-        // tag_classify 输出：buckets.<rating>.<field> = tags[] → 灌进对应层级词池
-        if (body.buckets && typeof body.buckets === 'object' && !Array.isArray(body.buckets)) {
-          const next = fields.map((f) => ({ ...f, tiers: { ...f.tiers }, picked: {} }))
-          let touched = 0
-          for (const [bucket, fieldMap] of Object.entries(
-            body.buckets as Record<string, unknown>,
-          )) {
-            if (bucket === 'common' || bucket === 'unknown') continue
-            if (!TIERS.includes(bucket as Tier)) continue
-            if (!fieldMap || typeof fieldMap !== 'object' || Array.isArray(fieldMap)) continue
-            for (const [fieldName, tags] of Object.entries(
-              fieldMap as Record<string, unknown>,
-            )) {
-              if (!Array.isArray(tags)) continue
-              const words = tags.filter((t): t is string => typeof t === 'string')
-              if (words.length === 0) continue
-              let field = next.find((f) => f.name === fieldName)
-              if (!field) {
-                field = { name: fieldName, tiers: {}, picked: {} }
-                next.push(field)
-              }
-              const existing = field.tiers[bucket as Tier]
-              field.tiers[bucket as Tier] = {
-                values: words.join(', '),
-                min: existing?.min ?? 1,
-                max: existing?.max ?? 1,
-              }
-              touched += 1
-            }
-          }
-          setFields(next)
-          scheduleSave(next)
-          setImportMsg(`已导入 tag 分类：灌了 ${touched} 个字段层（数量保持原值，自行调整）`)
-          setRolled(false)
-          return
-        }
-
-        // 配置回填：fields + 可选 enabled
-        if (Array.isArray(body.fields)) {
-          const restored = asLoaded(
-            (body.fields as Array<Record<string, unknown>>).map((f) => {
-              // 旧版单层配置（values/count）→ common 层
-              if (typeof f.values === 'string' || f.count !== undefined) {
-                const count = Number(f.count ?? f.max ?? 1)
-                return {
-                  name: String(f.name ?? ''),
-                  tiers: {
-                    common: {
-                      values: typeof f.values === 'string' ? f.values : '',
-                      min: Number.isInteger(count) && count >= 0 ? count : 1,
-                      max: Number.isInteger(count) && count >= 0 ? count : 1,
-                    },
-                  },
-                }
-              }
-              return { name: String(f.name ?? ''), tiers: f.tiers }
-            }),
-          )
-          if (body.enabled && typeof body.enabled === 'object' && !Array.isArray(body.enabled)) {
-            const incoming = body.enabled as Record<string, unknown>
-            setEnabled((cur) => {
-              const next = { ...cur }
-              for (const tier of TIERS) {
-                if (typeof incoming[tier] === 'boolean') next[tier] = incoming[tier] as boolean
-              }
-              try {
-                localStorage.setItem(RATINGS_STORAGE_KEY, JSON.stringify(next))
-              } catch {
-                // 忽略
-              }
-              return next
-            })
-          }
-          setFields(restored)
-          scheduleSave(restored)
-          setImportMsg(`已导入配置：${restored.length} 个字段`)
-          setRolled(false)
-          return
-        }
-
-        fail('导入失败：既不是 dice 配置也不是 tag 分类输出')
       })()
     },
-    [fields, scheduleSave],
+    [applyCharacter],
   )
 
-  // 详情页打开时 Esc 返回
-  useEffect(() => {
-    if (openIndex === null) return
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpenIndex(null)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [openIndex])
+  const rollCharacter = useCallback(() => {
+    const pool = characters.filter((item) => item.slug !== characterSlug)
+    const source = pool.length > 0 ? pool : characters
+    const pick = source[Math.floor(Math.random() * source.length)]
+    if (pick) chooseCharacter(pick.slug)
+  }, [characters, characterSlug, chooseCharacter])
 
-  // ---- 结果合成 ----
+  const rollPose = useCallback(() => {
+    const pool = poses.filter((item) => item.id !== poseId)
+    const source = pool.length > 0 ? pool : poses
+    const pick = source[Math.floor(Math.random() * source.length)]
+    if (!pick) return
+    setGenerated(null)
+    setPoseId(pick.id)
+    applyPose(pick)
+  }, [poses, poseId, applyPose])
 
-  const composeOf = (field: LoadedField): string => composeOfField(field, enabled)
-
-  const poseTags = posePick ? poseTagsOf(posePick) : []
-  const composed = Object.fromEntries(
-    fields.map((f) => [f.name, composeOf(f)]).filter(([, v]) => v !== ''),
+  const choosePose = useCallback(
+    (entry: PoseEntry) => {
+      setGenerated(null)
+      if (poseId === entry.id) {
+        setPoseId('')
+        applyPose(null)
+        return
+      }
+      setPoseId(entry.id)
+      applyPose(entry)
+    },
+    [applyPose, poseId],
   )
-  const negative = composed['constraints.exclude'] ?? null
-  const poseResult = posePick
-    ? { id: posePick.id, name: posePick.poseName, tags: poseTags }
-    : null
-  const joinedPrompt = [
-    ...fields
-      .filter((f) => f.name !== 'constraints.exclude')
-      .map((f) => composeOf(f))
-      .filter((v) => v !== ''),
-    poseTags.join(', '),
-  ]
-    .filter((v) => v !== '')
-    .join(', ')
 
-  // pose 分组（动作名 → 条目），组内按 id 稳定排序
   const poseGroups = useMemo(() => {
     const map = new Map<string, PoseEntry[]>()
-    for (const p of poses) {
-      const list = map.get(p.poseName) ?? []
-      list.push(p)
-      map.set(p.poseName, list)
+    for (const pose of poses) {
+      const list = map.get(pose.poseName) ?? []
+      list.push(pose)
+      map.set(pose.poseName, list)
     }
     return [...map.entries()]
   }, [poses])
-  const poseTotal = poses.length
-  const poseSelCount = poses.reduce((n, p) => (poseSel.has(p.id) ? n + 1 : n), 0)
+  const selectedPose = poses.find((pose) => pose.id === poseId) ?? null
 
-  function copyJson() {
-    void navigator.clipboard.writeText(
-      JSON.stringify({ ...composed, ...(poseResult ? { pose: poseResult } : {}) }, null, 2),
-    )
-  }
+  const submitRoll = useCallback(() => {
+    const intent = composeIntent(sections, forms)
+    const text = promptOf(intent)
+    setGenerated(intent)
+    setSaving(true)
+    void (async () => {
+      try {
+        const saved = await api<{ id: string }>('dice/rolls', {
+          method: 'POST',
+          body: JSON.stringify({
+            fields: intent,
+            prompt: text.positive,
+            negative: text.negative,
+            poseName: selectedPose?.poseName ?? null,
+            poseId: selectedPose?.id ?? null,
+          }),
+        })
+        notify(`已写入灵感记录 ${saved.id}`)
+      } catch (err) {
+        fail(messageOf(err))
+      } finally {
+        setSaving(false)
+      }
+    })()
+  }, [sections, forms, selectedPose])
+
+  const setFormField = useCallback((name: string, key: FormKey, value: string) => {
+    setGenerated(null)
+    setForms((cur) => ({
+      ...cur,
+      [name]: { ...(cur[name] ?? emptyForm()), [key]: value },
+    }))
+  }, [])
+
+  const fillTag = useCallback(
+    (name: string, tag: string) => {
+      setGenerated(null)
+      setForms((cur) => {
+        const form = cur[name] ?? emptyForm()
+        const ordered = orderOf.get(name) ?? []
+        const taken = new Set([
+          ...selectedTags(form.character, ordered),
+          ...selectedTags(form.pose, ordered),
+        ])
+        if (taken.has(tag)) return cur
+        const next = appendTag(form.input, tag, ordered)
+        if (next === form.input) return cur
+        return { ...cur, [name]: { ...form, input: next } }
+      })
+    },
+    [orderOf],
+  )
+
+  const rollGroupTag = useCallback(
+    (name: string, tags: string[]) => {
+      setGenerated(null)
+      setForms((cur) => {
+        const form = cur[name] ?? emptyForm()
+        const ordered = orderOf.get(name) ?? []
+        const blocked = new Set([
+          ...selectedTags(form.character, ordered),
+          ...selectedTags(form.pose, ordered),
+          ...selectedTags(form.input, ordered),
+        ])
+        const pool = tags.filter((tag) => !blocked.has(tag))
+        const pick = pool[Math.floor(Math.random() * pool.length)]
+        if (!pick) return cur
+        const next = appendTag(form.input, pick, ordered)
+        if (next === form.input) return cur
+        return { ...cur, [name]: { ...form, input: next } }
+      })
+    },
+    [orderOf],
+  )
+
+  const loadRecommendations = useCallback((section: string, key: FormKey) => {
+    const request = recRequest.current + 1
+    recRequest.current = request
+    const form = formsRef.current[section] ?? emptyForm()
+    const own = splitTags(form[key])
+    const query = own.length > 0 ? own : mergeSlots(form)
+    if (query.length === 0) {
+      setRecommendations([])
+      setRecStatus('先写入一些词，再看推荐')
+      return
+    }
+    setRecStatus('推荐中…')
+    void (async () => {
+      try {
+        const body = await api<{ recommendations: string[] }>('tag/recommend', {
+          method: 'POST',
+          body: JSON.stringify({ tags: query }),
+        })
+        if (recRequest.current !== request) return
+        const present = new Set(mergeSlots(formsRef.current[section] ?? form).map(normTag))
+        const next = body.recommendations.filter((tag) => !present.has(normTag(tag)))
+        setRecommendations(next)
+        setRecStatus(next.length === 0 ? '没有可推荐的词' : '')
+      } catch (err) {
+        if (recRequest.current !== request) return
+        setRecommendations([])
+        setRecStatus(messageOf(err))
+      }
+    })()
+  }, [])
+
+  const acceptRec = useCallback(
+    (section: string, key: FormKey, tag: string) => {
+      setGenerated(null)
+      setRecommendations((list) => list.filter((item) => normTag(item) !== normTag(tag)))
+      setForms((cur) => {
+        const form = cur[section] ?? emptyForm()
+        const next = appendTag(form[key], tag, orderOf.get(section) ?? [])
+        if (next === form[key]) return cur
+        return { ...cur, [section]: { ...form, [key]: next } }
+      })
+    },
+    [orderOf],
+  )
+
+  const focusField = useCallback(
+    (section: string, key: FormKey) => {
+      window.clearTimeout(blurTimer.current)
+      setFocus({ section, key })
+      loadRecommendations(section, key)
+    },
+    [loadRecommendations],
+  )
+
+  const blurField = useCallback((section: string, key: FormKey) => {
+    blurTimer.current = window.setTimeout(() => {
+      setFocus((cur) => (cur?.section === section && cur.key === key ? null : cur))
+    }, 180)
+  }, [])
+
+  const prompt = generated ? promptOf(generated) : null
 
   return (
     <div className="dice-page">
       <section className="panel">
         <div className="column-head">
-          <h2>🎲 掷骰工作台</h2>
-          <span className="muted">
-            分层词池 · 每层独立数量 · 模版存 runner 数据库
-            {saveState === 'saving'
-              ? ' · 保存中…'
-              : saveState === 'saved'
-                ? ' · 已保存'
-                : saveState === 'error'
-                  ? ' · 保存失败'
-                  : ''}
-          </span>
+          <h2>角色造型</h2>
+          <span className="muted">先选角色，再选 pose</span>
         </div>
-        <div className="dice-tabs">
-          <button
-            type="button"
-            className={`dice-tab ${tab === 'template' ? 'on' : ''}`}
-            onClick={() => setTab('template')}
-          >
-            template
-          </button>
-          <button
-            type="button"
-            className={`dice-tab ${tab === 'rolls' ? 'on' : ''}`}
-            onClick={() => setTab('rolls')}
-          >
-            rolls
-          </button>
-        </div>
-        {tab === 'template' ? (
-        <>
-        <div className="dice-ratings">
-          {TIERS.map((tier) => (
-            <label key={tier} className={`dice-rating ${enabled[tier] ? 'on' : ''}`}>
-              <input
-                type="checkbox"
-                checked={enabled[tier]}
-                onChange={() => toggleRating(tier)}
-              />
-              {TIER_LABEL[tier]}
-            </label>
-          ))}
-          <span className="muted dice-ratings-hint">勾选参与掷骰的层级</span>
-        </div>
-        <div className="dice-hero">
-          <label className="quiet dice-file">
-            导入
-            <input
-              ref={fileRef}
-              type="file"
-              accept="application/json,.json"
-              hidden
-              onChange={(e) => {
-                const file = e.target.files?.[0]
-                if (file) importFile(file)
-                e.target.value = ''
-              }}
-            />
-          </label>
-          <button type="button" className="quiet" onClick={exportConfig}>
-            导出
-          </button>
-          <button type="button" className="quiet" onClick={addField}>
-            ＋ 加字段
-          </button>
-          <button type="button" className="quiet" onClick={resetToSeed}>
-            重置为默认
-          </button>
-        </div>
-        {importMsg !== '' ? <p className="muted dice-import-msg">{importMsg}</p> : null}
-        </>
-        ) : null}
-      </section>
-
-      {tab === 'template' ? (
-        <>
-      <section className="panel">
-        {!loaded ? (
-          <p className="muted">加载中…</p>
-        ) : isMobile ? (
-          <>
-            <div className="dice-cards">
-              {fields.map((field, index) => {
-                const poolTotal = TIERS.filter((t) => enabled[t]).reduce(
-                  (sum, t) => sum + wordsOf(tierOf(field, t).values).length,
-                  0,
-                )
-                const takeTotal = TIERS.filter((t) => enabled[t]).reduce(
-                  (sum, t) => sum + (wordsOf(tierOf(field, t).values).length > 0 ? tierOf(field, t).max : 0),
-                  0,
-                )
-                const preview = TIERS.filter((t) => enabled[t])
-                  .flatMap((t) => field.picked[t] ?? [])
-                  .join(', ')
-                return (
-                  <div
-                    key={field.name}
-                    className="dice-card"
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setOpenIndex(index)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && e.target === e.currentTarget) setOpenIndex(index)
-                    }}
-                  >
-                    <div className="dice-card-main">
-                      <div className="dice-card-name">{field.name}</div>
-                      <div className="dice-card-sum muted">
-                        池 {poolTotal} · 抽 ≤{takeTotal}
-                      </div>
-                      <div className={`dice-card-picked mono ${preview !== '' ? '' : 'muted'}`}>
-                        {preview !== '' ? preview : '未掷骰'}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      className="dice-roll"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        rollField(index)
-                      }}
-                      title="本字段掷骰"
-                    >
-                      🎲
-                    </button>
-                    <span className="dice-card-arrow" aria-hidden={true}>
-                      ›
-                    </span>
-                  </div>
-                )
-              })}
-            </div>
-            {openIndex !== null && fields[openIndex] ? (
-              <DiceFieldDetail
-                field={fields[openIndex]}
-                enabled={enabled}
-                onRename={(patch) => updateField(openIndex, patch)}
-                onTier={(tier, patch) => updateTier(openIndex, tier, patch)}
-                onRoll={() => rollField(openIndex)}
-                onRemove={() => {
-                  removeField(openIndex)
-                  setOpenIndex(null)
-                }}
-                onClose={() => setOpenIndex(null)}
-              />
-            ) : null}
-          </>
-        ) : (
-          <div className="dice-grid">
-            {fields.map((field, index) => {
-              const poolTotal = TIERS.filter((t) => enabled[t]).reduce(
-                (sum, t) => sum + wordsOf(tierOf(field, t).values).length,
-                0,
-              )
-              const takeTotal = TIERS.filter((t) => enabled[t]).reduce(
-                (sum, t) => sum + (wordsOf(tierOf(field, t).values).length > 0 ? tierOf(field, t).max : 0),
-                0,
-              )
-              return (
-                <div key={field.name} className="dice-field">
-                  <div className="dice-head">
-                    <input
-                      className="dice-name"
-                      value={field.name}
-                      onChange={(e) => updateField(index, { name: e.target.value })}
-                      aria-label="字段名"
-                    />
-                    <button
-                      type="button"
-                      className="quiet dice-remove"
-                      onClick={() => removeField(index)}
-                      title="删除字段"
-                    >
-                      ×
-                    </button>
-                  </div>
-                  <div className="dice-tiers">
-                    {TIERS.map((tier) => {
-                      const cfg = tierOf(field, tier)
-                      const pool = wordsOf(cfg.values).length
-                      const picks = field.picked[tier] ?? []
-                      return (
-                        <div
-                          key={tier}
-                          className={`dice-tier ${enabled[tier] ? 'on' : 'off'}`}
-                        >
-                          <div className="dice-tier-row">
-                            <span className={`dice-tier-label tier-${tier}`}>{tier}</span>
-                            <label className="dice-count">
-                              取
-                              <input
-                                type="number"
-                                min={0}
-                                max={cfg.max}
-                                value={cfg.min}
-                                onChange={(e) => {
-                                  // min 最多到 max；max 跟着抬起，保持区间合法
-                                  const min = Math.min(99, Math.max(0, Number(e.target.value) || 0))
-                                  updateTier(index, tier, {
-                                    min,
-                                    max: Math.max(min, cfg.max),
-                                  })
-                                }}
-                              />
-                              –
-                              <input
-                                type="number"
-                                min={cfg.min}
-                                max={99}
-                                value={cfg.max}
-                                onChange={(e) => {
-                                  // max 至少为 min；min 跟着压下
-                                  const max = Math.min(99, Math.max(0, Number(e.target.value) || 0))
-                                  updateTier(index, tier, {
-                                    max,
-                                    min: Math.min(max, cfg.min),
-                                  })
-                                }}
-                              />
-                              个
-                            </label>
-                            <span className="dice-pool">池 {pool}</span>
-                          </div>
-                          {picks.length > 0 ? (
-                            <span className="dice-picked mono">{picks.join(', ')}</span>
-                          ) : null}
-                          <details className="dice-tier-edit">
-                            <summary>词池</summary>
-                            <textarea
-                              rows={3}
-                              value={cfg.values}
-                              placeholder={`${tier} 层候选词，逗号分隔`}
-                              onChange={(e) =>
-                                updateTier(index, tier, { values: e.target.value })
-                              }
-                            />
-                          </details>
-                        </div>
-                      )
-                    })}
-                  </div>
-                  <div className="dice-foot">
-                    <span className="muted">
-                      抽取 {takeTotal} / 池 {poolTotal}
-                    </span>
-                    <button
-                      type="button"
-                      className="dice-roll"
-                      onClick={() => rollField(index)}
-                      title="本字段掷骰"
-                    >
-                      🎲
-                    </button>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        )}
-      </section>
-
-      <section className="panel">
         <div className="column-head">
-          <h2>🧍 pose 池</h2>
+          <div className="dice-head-title">
+            <h2>角色</h2>
+            <button
+              type="button"
+              className="dice-roll"
+              aria-label="随机角色"
+              disabled={characters.length === 0}
+              onClick={rollCharacter}
+            >
+              🎲
+            </button>
+          </div>
+          <span className="muted">{characterNote !== '' ? characterNote : '未选择'}</span>
+        </div>
+        {characterSlug !== '' ? (
+          <div className="dice-pose-tools">
+            <button
+              type="button"
+              className="quiet"
+              onClick={() => chooseCharacter('')}
+            >
+              清除角色
+            </button>
+          </div>
+        ) : null}
+        {characters.length === 0 && poseError === '' ? <p className="muted">加载中…</p> : null}
+        <div className="dice-pose-grid dice-character-grid">
+          {characters.map((character) => {
+            const on = character.slug === characterSlug
+            const url = assetUrl('character-file', character.preview)
+            const name = character.display || character.slug
+            return (
+              <button
+                key={character.slug}
+                type="button"
+                className={`dice-pose-item dice-character-item ${on ? 'on' : ''}`}
+                onClick={() => chooseCharacter(on ? '' : character.slug)}
+                title={name}
+                aria-pressed={on}
+                aria-label={name}
+              >
+                {url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={url} alt={name} />
+                ) : (
+                  <span className="muted">无图</span>
+                )}
+                <span className="dice-character-name">{name}</span>
+                <span className="dice-pose-check" aria-hidden={true}>
+                  {on ? '✓' : ''}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+        <div className="column-head">
+          <div className="dice-head-title">
+            <h2>pose</h2>
+            <button
+              type="button"
+              className="dice-roll"
+              aria-label="随机 pose"
+              disabled={poses.length === 0}
+              onClick={rollPose}
+            >
+              🎲
+            </button>
+          </div>
           <span className="muted">
-            按动作分组 · 点缩略图勾选 · 已选 {poseSelCount}/{poseTotal}
+            {selectedPose ? `${selectedPose.poseName} · ${selectedPose.id}` : '未选择'}
+            {poses.length > 0 ? ` · ${poses.length}` : ''}
           </span>
         </div>
-        <div className="dice-pose-tools">
-          <button type="button" className="quiet" onClick={() => setAllPoses(poses, true)}>
-            全选
-          </button>
-          <button type="button" className="quiet" onClick={() => setAllPoses(poses, false)}>
-            清空
-          </button>
-          <span className="muted dice-pose-hint">「一起生成」时从勾选池随机挑一张</span>
-        </div>
+        {poseId !== '' ? (
+          <div className="dice-pose-tools">
+            <button
+              type="button"
+              className="quiet"
+              onClick={() => {
+                setPoseId('')
+                setGenerated(null)
+                applyPose(null)
+              }}
+            >
+              清除 pose
+            </button>
+          </div>
+        ) : null}
+        {poseError !== '' ? <p className="muted">{poseError}</p> : null}
+        {poses.length === 0 && poseError === '' ? <p className="muted">加载中…</p> : null}
         <div className="dice-pose-groups">
           {poseGroups.map(([poseName, entries]) => (
             <PoseGroup
               key={poseName}
               poseName={poseName}
               entries={entries}
-              poseSel={poseSel}
-              onToggle={togglePose}
-              onSetAll={(on) => setAllPoses(entries, on)}
+              poseId={poseId}
+              onChoose={choosePose}
             />
           ))}
         </div>
       </section>
 
+      {sections.map((section) => {
+        const form = forms[section.name] ?? emptyForm()
+        const ordered = orderOf.get(section.name) ?? []
+        const filled = new Set(selectedTags(form.input, ordered))
+        const locked = new Set([
+          ...selectedTags(form.character, ordered),
+          ...selectedTags(form.pose, ordered),
+        ])
+        return (
+          <section className="panel" key={section.name}>
+            <div className="column-head">
+              <h2>{section.name}</h2>
+            </div>
+            <div className="dice-form-fields">
+              {FORM_KEYS.map((key) => (
+                <label key={key}>
+                  <span className="dice-card-title">{FIELD_LABEL[key]}</span>
+                  {key === 'input' ? (
+                    <textarea
+                      rows={3}
+                      value={form.input}
+                      spellCheck={false}
+                      aria-label={`${section.name} input`}
+                      onChange={(event) => setFormField(section.name, key, event.target.value)}
+                      onFocus={() => focusField(section.name, key)}
+                      onBlur={() => blurField(section.name, key)}
+                    />
+                  ) : (
+                    <input
+                      value={form[key]}
+                      spellCheck={false}
+                      aria-label={`${section.name} ${key}`}
+                      onChange={(event) => setFormField(section.name, key, event.target.value)}
+                      onFocus={() => focusField(section.name, key)}
+                      onBlur={() => blurField(section.name, key)}
+                    />
+                  )}
+                  {focus?.section === section.name && focus.key === key ? (
+                    <div className="dice-recs">
+                      {recStatus !== '' ? <p className="muted dice-pose-hint">{recStatus}</p> : null}
+                      {recommendations.length > 0 ? (
+                        <div className="dice-tags">
+                          {recommendations.map((tag) => (
+                            <button
+                              key={tag}
+                              type="button"
+                              className="dice-tag dice-rec"
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => acceptRec(section.name, key, tag)}
+                            >
+                              {tag}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </label>
+              ))}
+            </div>
+            {section.groups.map((group) => (
+              <div className="dice-tag-group" key={group.name || section.name}>
+                <div className="dice-group-head">
+                  {group.name !== '' ? <div className="dice-group-label">{group.name}</div> : null}
+                  <button
+                    type="button"
+                    className="dice-roll"
+                    aria-label={`随机 ${section.name}${group.name !== '' ? ` ${group.name}` : ''}`}
+                    disabled={!group.tags.some((tag) => !locked.has(tag) && !filled.has(tag))}
+                    onClick={() => rollGroupTag(section.name, group.tags)}
+                  >
+                    🎲
+                  </button>
+                </div>
+                <div className="dice-tags">
+                  {group.tags.map((tag) => {
+                    const blocked = locked.has(tag)
+                    return (
+                      <button
+                        key={tag}
+                        type="button"
+                        className={`dice-tag ${blocked ? 'locked' : filled.has(tag) ? 'on' : ''}`}
+                        aria-pressed={filled.has(tag)}
+                        aria-disabled={blocked}
+                        disabled={blocked}
+                        onClick={() => fillTag(section.name, tag)}
+                      >
+                        {tag}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </section>
+        )
+      })}
+
       <section className="panel">
         <div className="column-head">
-          <h2>结果</h2>
-          <span className="dice-result-actions">
-            <button type="button" className="dice-hero-roll" onClick={rollAll}>
-              🎲 一起生成
-            </button>
-            <button type="button" className="quiet" onClick={copyJson} disabled={!rolled}>
-              复制 JSON
-            </button>
-          </span>
+          <h2>结构化 prompt</h2>
+          <span className="muted">角色、pose、input 按这个顺序合成</span>
         </div>
-        {posePick ? (
-          <div className="dice-pose-result">
-            {depthUrl(posePick) ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                className="dice-pose-result-img"
-                src={depthUrl(posePick) as string}
-                alt={`pose ${posePick.poseName} ${posePick.id}`}
-              />
-            ) : null}
-            <div className="dice-pose-result-meta">
-              <strong>
-                {posePick.poseName} · {posePick.id}
-              </strong>
-              {poseTags.length > 0 ? <span className="dice-picked mono">{poseTags.join(', ')}</span> : null}
-            </div>
+        <div className="dice-pose-tools">
+          <button
+            type="button"
+            onClick={() => setGenerated(composeIntent(sections, forms))}
+          >
+            生成
+          </button>
+          <button type="button" className="quiet" disabled={saving} onClick={submitRoll}>
+            {saving ? '提交中…' : '提交'}
+          </button>
+        </div>
+        {generated && prompt ? (
+          <div className="dice-generated">
+            <p className="dice-prompt-line">
+              <span className="dice-card-title">positive </span>
+              {prompt.positive || '（空）'}
+            </p>
+            <p className="dice-prompt-line">
+              <span className="dice-card-title">negative </span>
+              {prompt.negative || '（空）'}
+            </p>
+            <pre className="dice-json">{JSON.stringify(generated, null, 2)}</pre>
           </div>
         ) : null}
-        <pre className="dice-json mono">
-          {rolled ? JSON.stringify({ ...composed, ...(poseResult ? { pose: poseResult } : {}) }, null, 2) : '按 🎲 一起生成'}
-        </pre>
-        {joinedPrompt !== '' ? (
-          <p className="dice-prompt mono">
-            <span className="muted">拼合 prompt：</span>
-            {joinedPrompt}
-            {negative ? (
-              <>
-                {' '}
-                <span className="muted">｜负面：</span>
-                {negative}
-              </>
-            ) : null}
-          </p>
-        ) : null}
       </section>
-        </>
-      ) : (
-        <RollsPanel poses={poses} reloadKey={rollsVersion} />
-      )}
     </div>
   )
 }
 
-// 动作分组：折叠面板 + 组级三态勾选。缩略图网格只在展开时渲染（469 张不能全挂）。
 function PoseGroup({
   poseName,
   entries,
-  poseSel,
-  onToggle,
-  onSetAll,
+  poseId,
+  onChoose,
 }: {
   poseName: string
   entries: PoseEntry[]
-  poseSel: Set<string>
-  onToggle: (id: string) => void
-  onSetAll: (on: boolean) => void
+  poseId: string
+  onChoose: (entry: PoseEntry) => void
 }) {
-  const total = entries.length
-  const sel = entries.reduce((n, p) => (poseSel.has(p.id) ? n + 1 : n), 0)
-  const allOn = sel === total
-  const checkRef = useRef<HTMLInputElement>(null)
-  useEffect(() => {
-    if (checkRef.current) checkRef.current.indeterminate = sel > 0 && sel < total
-  }, [sel, total])
+  const selected = entries.some((pose) => pose.id === poseId)
   return (
     <details className="dice-pose-group">
       <summary>
-        <input
-          ref={checkRef}
-          type="checkbox"
-          checked={allOn}
-          onChange={() => onSetAll(!allOn)}
-          onClick={(e) => {
-            // 点组勾选不展开/收起面板
-            e.preventDefault()
-            e.stopPropagation()
-            onSetAll(!allOn)
-          }}
-          aria-label={`全选 ${poseName}`}
-        />
         <span className="dice-pose-group-name">{poseName}</span>
         <span className="muted dice-pose-group-count">
-          {sel}/{total}
+          {selected ? '已选' : entries.length}
         </span>
       </summary>
       <div className="dice-pose-grid">
-        {entries.map((p) => {
-          const on = poseSel.has(p.id)
-          const url = depthUrl(p)
+        {entries.map((pose) => {
+          const on = pose.id === poseId
+          const url = depthUrl(pose)
           return (
             <button
-              key={p.id}
+              key={pose.id}
               type="button"
               className={`dice-pose-item ${on ? 'on' : ''}`}
-              onClick={() => onToggle(p.id)}
-              title={`${p.poseName} · ${p.id}`}
+              onClick={() => onChoose(pose)}
+              title={`${pose.poseName} · ${pose.id}`}
               aria-pressed={on}
             >
               {url ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={url} alt={`${p.poseName} ${p.id}`} loading="lazy" />
+                <img src={url} alt={`${pose.poseName} ${pose.id}`} loading="lazy" />
               ) : (
                 <span className="muted">无图</span>
               )}
@@ -1043,403 +976,5 @@ function PoseGroup({
         })}
       </div>
     </details>
-  )
-}
-
-// 移动端二级页：单字段详情。全屏覆盖，Esc 返回；编辑即防抖落库（与桌面共用 handler）。
-function DiceFieldDetail({
-  field,
-  enabled,
-  onRename,
-  onTier,
-  onRoll,
-  onRemove,
-  onClose,
-}: {
-  field: LoadedField
-  enabled: Record<Tier, boolean>
-  onRename: (patch: Partial<LoadedField>) => void
-  onTier: (tier: Tier, patch: Partial<TierConfig>) => void
-  onRoll: () => void
-  onRemove: () => void
-  onClose: () => void
-}) {
-  const poolTotal = TIERS.filter((t) => enabled[t]).reduce(
-    (sum, t) => sum + wordsOf(tierOf(field, t).values).length,
-    0,
-  )
-  const takeTotal = TIERS.filter((t) => enabled[t]).reduce(
-    (sum, t) => sum + (wordsOf(tierOf(field, t).values).length > 0 ? tierOf(field, t).max : 0),
-    0,
-  )
-  return (
-    <div className="dice-detail" role="dialog" aria-modal="true" aria-label={`编辑字段 ${field.name}`}>
-      <div className="dice-detail-head">
-        <button type="button" className="quiet dice-detail-back" onClick={onClose}>
-          ‹ 返回
-        </button>
-        <input
-          className="dice-name"
-          value={field.name}
-          onChange={(e) => onRename({ name: e.target.value })}
-          aria-label="字段名"
-        />
-        <button type="button" className="dice-roll" onClick={onRoll} title="本字段掷骰">
-          🎲
-        </button>
-      </div>
-      <div className="dice-detail-tiers">
-        {TIERS.map((tier) => {
-          const cfg = tierOf(field, tier)
-          const pool = wordsOf(cfg.values).length
-          const picks = field.picked[tier] ?? []
-          return (
-            <div key={tier} className={`dice-tier ${enabled[tier] ? 'on' : 'off'}`}>
-              <div className="dice-tier-row">
-                <span className={`dice-tier-label tier-${tier}`}>{tier}</span>
-                <label className="dice-count">
-                  取
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min={0}
-                    max={cfg.max}
-                    value={cfg.min}
-                    onChange={(e) => {
-                      const min = Math.min(99, Math.max(0, Number(e.target.value) || 0))
-                      onTier(tier, { min, max: Math.max(min, cfg.max) })
-                    }}
-                  />
-                  –
-                  <input
-                    type="number"
-                    inputMode="numeric"
-                    min={cfg.min}
-                    max={99}
-                    value={cfg.max}
-                    onChange={(e) => {
-                      const max = Math.min(99, Math.max(0, Number(e.target.value) || 0))
-                      onTier(tier, { max, min: Math.min(max, cfg.min) })
-                    }}
-                  />
-                  个
-                </label>
-                <span className="dice-pool">池 {pool}</span>
-              </div>
-              {picks.length > 0 ? (
-                <span className="dice-picked mono">{picks.join(', ')}</span>
-              ) : null}
-              <textarea
-                className="dice-tier-open"
-                rows={4}
-                value={cfg.values}
-                placeholder={`${tier} 层候选词，逗号分隔`}
-                onChange={(e) => onTier(tier, { values: e.target.value })}
-              />
-            </div>
-          )
-        })}
-      </div>
-      <div className="dice-detail-foot">
-        <span className="muted">
-          抽取 ≤{takeTotal} / 池 {poolTotal}
-        </span>
-        <button
-          type="button"
-          className="quiet dice-detail-remove"
-          onClick={() => {
-            if (window.confirm(`删除字段 ${field.name}？`)) onRemove()
-          }}
-        >
-          删除字段
-        </button>
-      </div>
-    </div>
-  )
-}
-
-const ROLLS_PAGE_SIZE = 20
-
-// rolls tab：灵感记录分页列表 + 点开详情
-function RollsPanel({ poses, reloadKey }: { poses: PoseEntry[]; reloadKey: number }) {
-  const [rows, setRows] = useState<RollRecord[]>([])
-  const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(0)
-  const [loaded, setLoaded] = useState(false)
-  const [detail, setDetail] = useState<RollRecord | null>(null)
-  const poseMap = useMemo(() => new Map(poses.map((p) => [p.id, p])), [poses])
-
-  const load = useCallback((p: number) => {
-    void (async () => {
-      try {
-        const body = await api<{ total: number; rolls: RollRecord[] }>(
-          `dice/rolls?limit=${ROLLS_PAGE_SIZE}&offset=${p * ROLLS_PAGE_SIZE}`,
-        )
-        setRows(body.rolls)
-        setTotal(body.total)
-        setLoaded(true)
-        // 当前页翻空了（记录被删等）就回退一页
-        if (body.rolls.length === 0 && p > 0) setPage(p - 1)
-      } catch (err) {
-        fail(messageOf(err))
-      }
-    })()
-  }, [])
-
-  useEffect(() => {
-    load(page)
-  }, [load, page, reloadKey])
-
-  const pages = Math.max(1, Math.ceil(total / ROLLS_PAGE_SIZE))
-
-  return (
-    <section className="panel">
-      <div className="column-head">
-        <h2>📜 rolls</h2>
-        <span className="muted">{total} 条 · 每次「一起生成」自动存一条</span>
-      </div>
-      {!loaded ? (
-        <p className="muted">加载中…</p>
-      ) : rows.length === 0 ? (
-        <p className="muted">还没有记录——去 template 页掷一次 🎲</p>
-      ) : (
-        <>
-          <div className="dice-roll-list">
-            {rows.map((r) => {
-              const pose = r.poseId ? (poseMap.get(r.poseId) ?? null) : null
-              const url = pose ? depthUrl(pose) : null
-              return (
-                <button
-                  key={r.id}
-                  type="button"
-                  className="dice-roll-row"
-                  onClick={() => setDetail(r)}
-                >
-                  {url ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img className="dice-roll-thumb" src={url} alt="" loading="lazy" />
-                  ) : (
-                    <span className="dice-roll-thumb dice-roll-thumb-empty" />
-                  )}
-                  <span className="dice-roll-row-main">
-                    <span className="dice-roll-row-head">
-                      {r.poseName ? (
-                        <span className="dice-tier-label tier-common">{r.poseName}</span>
-                      ) : (
-                        <span className="muted">无 pose</span>
-                      )}
-                      <span className="muted dice-roll-time">
-                        {r.createdAt.slice(5, 16).replace('T', ' ')}
-                      </span>
-                    </span>
-                    <span className="mono dice-roll-prompt">
-                      {r.prompt !== '' ? r.prompt : '（空）'}
-                    </span>
-                  </span>
-                  <span className="dice-card-arrow" aria-hidden={true}>
-                    ›
-                  </span>
-                </button>
-              )
-            })}
-          </div>
-          {pages > 1 ? (
-            <div className="dice-pager">
-              <button type="button" className="quiet" onClick={() => setPage(0)} disabled={page === 0}>
-                «
-              </button>
-              <button
-                type="button"
-                className="quiet"
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-                disabled={page === 0}
-              >
-                ‹
-              </button>
-              <span className="muted">
-                第 {page + 1} / {pages} 页
-              </span>
-              <button
-                type="button"
-                className="quiet"
-                onClick={() => setPage((p) => Math.min(pages - 1, p + 1))}
-                disabled={page >= pages - 1}
-              >
-                ›
-              </button>
-              <button
-                type="button"
-                className="quiet"
-                onClick={() => setPage(pages - 1)}
-                disabled={page >= pages - 1}
-              >
-                »
-              </button>
-            </div>
-          ) : null}
-        </>
-      )}
-      {detail ? (
-        <RollDetail
-          record={detail}
-          thumb={detail.poseId ? (poseMap.has(detail.poseId) ? depthUrl(poseMap.get(detail.poseId) as PoseEntry) : null) : null}
-          onClose={() => setDetail(null)}
-        />
-      ) : null}
-    </section>
-  )
-}
-
-// 单条灵感详情：全屏覆盖（与字段详情同一套样式），Esc 返回
-function RollDetail({
-  record,
-  thumb,
-  onClose,
-}: {
-  record: RollRecord
-  thumb: string | null
-  onClose: () => void
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-  const copy = (text: string) => {
-    void navigator.clipboard.writeText(text)
-  }
-
-  // 生成记录：打开即拉一次，2.5s 轮询到全部终态为止
-  const [gens, setGens] = useState<GenerationRecord[] | null>(null)
-  const [busy, setBusy] = useState(false)
-  const activeRef = useRef(false)
-  const refreshGens = useCallback(async () => {
-    try {
-      const body = await api<{ generations: GenerationRecord[] }>(
-        `dice/rolls/${record.id}/generations`,
-      )
-      setGens(body.generations)
-      activeRef.current = body.generations.some(
-        (g) => g.status === 'pending' || g.status === 'running',
-      )
-    } catch {
-      // 拉不到就下轮再试
-    }
-  }, [record.id])
-  useEffect(() => {
-    void refreshGens()
-    const timer = setInterval(() => {
-      if (activeRef.current) void refreshGens()
-    }, 2500)
-    return () => clearInterval(timer)
-  }, [refreshGens])
-
-  const generate = useCallback(async () => {
-    setBusy(true)
-    try {
-      await api(`dice/rolls/${record.id}/generate`, { method: 'POST' })
-      activeRef.current = true
-      await refreshGens()
-    } catch (err) {
-      fail(messageOf(err))
-    }
-    setBusy(false)
-  }, [record.id, refreshGens])
-  return (
-    <div className="dice-detail" role="dialog" aria-modal="true" aria-label="灵感详情">
-      <div className="dice-detail-head">
-        <button type="button" className="quiet dice-detail-back" onClick={onClose}>
-          ‹ 返回
-        </button>
-        <strong className="dice-roll-detail-title">
-          {record.poseName ?? '无 pose'} · {record.createdAt.slice(5, 19).replace('T', ' ')}
-        </strong>
-      </div>
-      <div className="dice-roll-detail-body">
-        <div className="dice-roll-detail-block">
-          <div className="dice-roll-detail-label">
-            <span className="muted">生成 · baseline_v1 · 每次随机 seed</span>
-            <button
-              type="button"
-              className="dice-hero-roll"
-              onClick={() => void generate()}
-              disabled={busy}
-            >
-              {busy ? '提交中…' : '🎲 生成图片'}
-            </button>
-          </div>
-          {gens === null ? null : gens.length === 0 ? (
-            <p className="muted">还没生成过——点上面按钮跑一次</p>
-          ) : (
-            <ul className="dice-gen-list">
-              {gens.map((g) => (
-                <li key={g.id} className="dice-gen-item">
-                  <span className={`dice-gen-status st-${g.status}`}>
-                    {GEN_STATUS_LABEL[g.status] ?? g.status}
-                  </span>
-                  {g.seed !== null ? <span className="muted dice-gen-seed">seed {g.seed}</span> : null}
-                  {g.status === 'completed' ? (
-                    <span className="dice-gen-thumbs">
-                      {g.outputs.map((p) => (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          key={p}
-                          src={fileHref(`tasks/${g.taskId}/files/${p}`)}
-                          alt="生成结果"
-                          loading="lazy"
-                        />
-                      ))}
-                    </span>
-                  ) : g.status === 'failed' ? (
-                    <span className="dice-gen-error">{g.error ?? '未知错误'}</span>
-                  ) : g.status === 'pending' || g.status === 'running' ? (
-                    <span className="muted">排队/生成中…</span>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        {thumb ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img className="dice-pose-result-img" src={thumb} alt={`pose ${record.poseName ?? ''}`} />
-        ) : null}
-        <div className="dice-roll-detail-block">
-          <div className="dice-roll-detail-label">
-            <span className="muted">拼合 prompt</span>
-            <button type="button" className="quiet" onClick={() => copy(record.prompt)}>
-              复制
-            </button>
-          </div>
-          <p className="mono dice-roll-detail-prompt">{record.prompt !== '' ? record.prompt : '（空）'}</p>
-        </div>
-        {record.negative ? (
-          <div className="dice-roll-detail-block">
-            <div className="dice-roll-detail-label">
-              <span className="muted">负面</span>
-              <button type="button" className="quiet" onClick={() => copy(record.negative as string)}>
-                复制
-              </button>
-            </div>
-            <p className="mono dice-roll-detail-prompt">{record.negative}</p>
-          </div>
-        ) : null}
-        <div className="dice-roll-detail-block">
-          <div className="dice-roll-detail-label">
-            <span className="muted">结构化字段</span>
-            <button
-              type="button"
-              className="quiet"
-              onClick={() => copy(JSON.stringify(record.fields, null, 2))}
-            >
-              复制 JSON
-            </button>
-          </div>
-          <pre className="dice-json mono">{JSON.stringify(record.fields, null, 2)}</pre>
-        </div>
-      </div>
-    </div>
   )
 }

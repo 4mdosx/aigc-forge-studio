@@ -622,6 +622,12 @@ button.graph-node.picked {
   margin-bottom: 0.75rem;
 }
 
+.dice-head-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
 .column-head {
   display: flex;
   justify-content: space-between;
@@ -1424,6 +1430,114 @@ button.task-pick.current {
   gap: 0.45rem;
 }
 
+.dice-card-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  font-weight: 650;
+}
+
+.dice-pickers {
+  display: grid;
+  gap: 0.45rem;
+  max-width: 24rem;
+  margin-bottom: 1rem;
+}
+
+.dice-pickers select {
+  width: 100%;
+}
+
+.dice-form-fields {
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 0.85rem;
+}
+
+.dice-generated {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+}
+
+.dice-prompt-line {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.dice-form-fields input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+.dice-tag-group {
+  margin-top: 0.65rem;
+}
+
+.dice-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.3rem;
+}
+
+.dice-tag {
+  border: 1px solid #c9beae;
+  background: #fffdf8;
+  color: #241f1a;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.dice-tag.on {
+  background: #0c5c49;
+  border-color: #0c5c49;
+  color: #f7f3ea;
+}
+
+.dice-tag.locked,
+.dice-tag:disabled {
+  background: #ece7df;
+  border-color: #ddd4c8;
+  color: #8a8176;
+  cursor: not-allowed;
+}
+
+.dice-group-label {
+  font-size: 0.72rem;
+  color: #746c63;
+}
+
+.dice-group-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.dice-group-head .dice-roll {
+  width: 1.65rem;
+  height: 1.65rem;
+  padding: 0;
+  font-size: 0.85rem;
+}
+
+.dice-recs {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.dice-rec {
+  border-style: dashed;
+  border-color: #0c5c49;
+  color: #0c5c49;
+}
+
 .dice-head {
   display: flex;
   gap: 0.4rem;
@@ -1805,6 +1919,31 @@ button.task-pick.current {
 
 .dice-pose-item:not(.on) .dice-pose-check {
   background: transparent;
+}
+
+.dice-character-grid {
+  margin-bottom: 1rem;
+}
+
+.dice-character-item {
+  aspect-ratio: auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dice-character-item img {
+  aspect-ratio: 1;
+  flex: 1;
+}
+
+.dice-character-name {
+  width: 100%;
+  padding: 0.15rem 0.2rem 0.28rem;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  text-align: center;
+  color: #241f1a;
+  background: #fffdf8;
 }
 
 .dice-pose-result {
@@ -2190,7 +2329,7 @@ button.task-pick.current {
 
 @media (max-width: 759px) {
   .dice-page {
-    padding-bottom: 4.4rem;
+    padding-bottom: 0;
   }
 
   .dice-tabs {

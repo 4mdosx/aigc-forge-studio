@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import type { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import { join } from 'node:path'
 
 import { RunnerError } from '../errors.ts'
@@ -83,6 +83,8 @@ export function mountData(app: Hono, runner: Runner): void {
       const refs = safeList(join(base, 'ref'))
       return {
         slug,
+        display: characterDisplay(base, slug),
+        preview: characterPreview(base, slug),
         hasRecipe: existsSync(join(base, 'recipe.json')),
         files: safeList(base),
         refCount: refs.length,
@@ -112,30 +114,13 @@ export function mountData(app: Hono, runner: Runner): void {
     })
   })
 
-  // 只读服务 data/pose 下的资产图（depth/bone 等），路径相对 data 根、必须以 pose/ 开头
-  app.get('/data/pose-file/*', (c) => {
-    const rel = relativePath(c.req.path.slice('/data/pose-file/'.length))
-    if (!rel.startsWith('pose/')) {
-      throw new RunnerError('path must be under pose/', 400)
-    }
-    const file = join(root, rel)
-    if (!existsSync(file) || !statSync(file).isFile()) {
-      throw new RunnerError(`pose file not found: ${rel}`, 404)
-    }
-    const ext = (rel.slice(rel.lastIndexOf('.')) || '').toLowerCase()
-    const type =
-      ext === '.png'
-        ? 'image/png'
-        : ext === '.jpg' || ext === '.jpeg'
-          ? 'image/jpeg'
-          : ext === '.webp'
-            ? 'image/webp'
-            : null
-    if (!type) {
-      throw new RunnerError(`unsupported file type: ${ext}`, 400)
-    }
-    return c.body(readFileSync(file), 200, { 'content-type': type })
-  })
+  // 只读服务 data/pose 与 data/character 下的图，路径相对 data 根
+  app.get('/data/pose-file/*', (c) =>
+    imageFile(c, root, c.req.path.slice('/data/pose-file/'.length), 'pose/'),
+  )
+  app.get('/data/character-file/*', (c) =>
+    imageFile(c, root, c.req.path.slice('/data/character-file/'.length), 'character/'),
+  )
 }
 
 function flagMatches(
@@ -154,6 +139,53 @@ function poseMatches(entry: ManifestEntry, pose: string): boolean {
     ? entry.poseName
     : [entry.poseName ?? entry.compositionName ?? '']
   return names.includes('*') || names.includes(pose)
+}
+
+function imageFile(c: Context, root: string, input: string, prefix: string) {
+  const rel = relativePath(input)
+  if (!rel.startsWith(prefix)) {
+    throw new RunnerError(`path must be under ${prefix}`, 400)
+  }
+  const file = join(root, rel)
+  if (!existsSync(file) || !statSync(file).isFile()) {
+    throw new RunnerError(`file not found: ${rel}`, 404)
+  }
+  const ext = (rel.slice(rel.lastIndexOf('.')) || '').toLowerCase()
+  const type =
+    ext === '.png'
+      ? 'image/png'
+      : ext === '.jpg' || ext === '.jpeg'
+        ? 'image/jpeg'
+        : ext === '.webp'
+          ? 'image/webp'
+          : null
+  if (!type) throw new RunnerError(`unsupported file type: ${ext}`, 400)
+  return c.body(readFileSync(file), 200, { 'content-type': type })
+}
+
+const PREVIEW_NAMES = ['front_default.png', 'front_default.jpg', 'front_default.jpeg', 'front_default.webp']
+
+function characterDisplay(base: string, slug: string): string {
+  const recipePath = join(base, 'recipe.json')
+  if (!existsSync(recipePath)) return slug
+  try {
+    const recipe = JSON.parse(readFileSync(recipePath, 'utf8')) as {
+      display?: { zh?: string; en?: string }
+    }
+    return recipe.display?.zh || recipe.display?.en || slug
+  } catch {
+    return slug
+  }
+}
+
+function characterPreview(base: string, slug: string): string | null {
+  for (const name of PREVIEW_NAMES) {
+    if (existsSync(join(base, name))) return `character/${slug}/${name}`
+  }
+  const refImage = safeList(join(base, 'ref')).find((name) => PREVIEW_NAMES.includes(name))
+  if (refImage) return `character/${slug}/ref/${refImage}`
+  const image = safeList(base).find((name) => /\.(png|jpe?g|webp)$/i.test(name))
+  return image ? `character/${slug}/${image}` : null
 }
 
 function listDirs(dir: string): string[] {
