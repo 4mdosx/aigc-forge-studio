@@ -103,3 +103,47 @@ test('relative paths reject escape', () => {
   assert.throws(() => relativePath('jobs/%2e%2e/face.png'), /invalid path/)
   assert.throws(() => relativePath('/jobs/face.png'), /invalid path/)
 })
+
+test('binding map maps values and rejects misses', () => {
+  const prompt = {
+    '1': { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: 'pdv10.safetensors' } },
+    '2': { class_type: 'LoraLoader', inputs: { lora_name: 'style-v1-formal-000002.safetensors', strength_model: 1.0, strength_clip: 1.0, model: ['1', 0], clip: ['1', 1] } },
+    '3': { class_type: 'KSampler', inputs: { seed: 1, model: ['2', 0], positive: 0, negative: 0, latent_image: 0, steps: 30, cfg: 5, sampler_name: 'dpmpp_2m', scheduler: 'karras', denoise: 1 } },
+  }
+  const adapter = parseAdapter({
+    inputs: {
+      step: {
+        class_type: 'LoraLoader',
+        input: 'lora_name',
+        map: {
+          '600': 'style-v1-formal-000001.safetensors',
+          '1200': 'style-v1-formal-000002.safetensors',
+          '1800': 'style-v1-formal.safetensors',
+        },
+      },
+      seed: { class_type: 'KSampler', input: 'seed' },
+    },
+    outputs: {},
+  })
+  // number 1200 → String 命中 map
+  const r1 = applyAdapter(prompt, adapter, { step: 1200, seed: 7 }, () => 0)
+  assert.equal(r1.prompt['2'].inputs.lora_name, 'style-v1-formal-000002.safetensors')
+  assert.equal(r1.input.step, 1200) // input 记原始值（重放幂等）
+  // 字符串档位
+  const r2 = applyAdapter(prompt, adapter, { step: '600', seed: 7 }, () => 0)
+  assert.equal(r2.prompt['2'].inputs.lora_name, 'style-v1-formal-000001.safetensors')
+  // 未命中 → 报错且列出合法值
+  assert.throws(
+    () => applyAdapter(prompt, adapter, { step: '900', seed: 7 }, () => 0),
+    /not in map \(600\/1200\/1800\)/,
+  )
+  // 缺 step → missing
+  assert.throws(() => applyAdapter(prompt, adapter, { seed: 7 }, () => 0), /missing input step/)
+})
+
+test('binding map must be a string-to-string record', () => {
+  assert.throws(
+    () => parseAdapter({ inputs: { step: { class_type: 'LoraLoader', input: 'lora_name', map: { a: 1 } } }, outputs: {} }),
+    /map must be a string-to-string record/,
+  )
+})

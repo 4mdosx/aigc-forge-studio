@@ -7,6 +7,9 @@ export interface Binding {
   id?: string
   input?: string
   upload?: boolean
+  // 值域映射（可选）：入参值 → 节点实际值。用例：step("600"|"1200"|"1800")
+  //   → lora_name 文件名。命中 map 才写节点；未命中报错（防乱值直透）。
+  map?: Record<string, string>
 }
 
 export interface AdapterMap {
@@ -141,14 +144,25 @@ export function applyAdapter(
   for (const [key, binding] of Object.entries(adapter.inputs)) {
     if (!binding.input)
       throw new RunnerError(`adapter input ${key} needs an input name`)
-    const value = seedValue(binding, values[key], randomSeed, key)
-    if (value === undefined) throw new RunnerError(`missing input ${key}`)
+    const provided = seedValue(binding, values[key], randomSeed, key)
+    if (provided === undefined) throw new RunnerError(`missing input ${key}`)
+    let value = provided
+    if (binding.map) {
+      value = binding.map[String(provided)]
+      if (value === undefined) {
+        throw new RunnerError(
+          `input ${key}: ${String(provided)} not in map (${Object.keys(binding.map).join('/')})`,
+        )
+      }
+    }
     const node = matchNode(prompt, binding)
     if (!Object.hasOwn(node.node.inputs, binding.input)) {
       throw new RunnerError(`node ${node.id} has no input ${binding.input}`)
     }
     node.node.inputs[binding.input] = value
-    input[key] = value
+    // 记原始值（映射前）：执行期 preparedPrompt 会用 input_json 重放本函数，
+    // 存映射后的值会二次查 map 而炸。原始值重放幂等。
+    input[key] = provided
   }
   for (const key of Object.keys(values)) {
     if (!adapter.inputs[key]) throw new RunnerError(`unknown input ${key}`)
@@ -260,6 +274,19 @@ function bindings(
       throw new RunnerError(`adapter ${key} needs an input name`)
     }
     if (record.upload === true) binding.upload = true
+    if (record.map !== undefined) {
+      if (
+        !record.map ||
+        typeof record.map !== 'object' ||
+        Array.isArray(record.map) ||
+        Object.entries(record.map).some(
+          ([k, v]) => typeof k !== 'string' || typeof v !== 'string',
+        )
+      ) {
+        throw new RunnerError(`adapter ${key} map must be a string-to-string record`)
+      }
+      binding.map = record.map as Record<string, string>
+    }
     parsed[key] = binding
   }
   return parsed
