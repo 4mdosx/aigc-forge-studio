@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { Dialog } from '@/components/dialog'
 import { api } from '@/lib/api'
 import { initialIntent, type CreativeIntent } from '@/lib/intent'
 import { fail, messageOf, notify } from '@/lib/notify'
@@ -395,6 +396,41 @@ function depthUrl(entry: PoseEntry): string | null {
   return null
 }
 
+function formsFromIntent(sections: RoleSection[], fields: unknown): Record<string, FieldForm> {
+  const forms = formsOf(sections)
+  const root =
+    fields && typeof fields === 'object' && !Array.isArray(fields)
+      ? (fields as Record<string, unknown>)
+      : {}
+  for (const section of sections) {
+    const dot = section.name.indexOf('.')
+    if (dot < 1) continue
+    const group = root[section.name.slice(0, dot)]
+    const field = section.name.slice(dot + 1)
+    const parent =
+      group && typeof group === 'object' && !Array.isArray(group)
+        ? (group as Record<string, unknown>)
+        : {}
+    const value = parent[field]
+    const text = Array.isArray(value)
+      ? value.filter((item) => typeof item === 'string').join(',')
+      : typeof value === 'string'
+        ? value
+        : ''
+    forms[section.name] = { pose: '', character: '', input: text }
+  }
+  return forms
+}
+
+interface DiceTemplate {
+  id: string
+  name: string
+  character: string | null
+  poseName: string | null
+  poseId: string | null
+  fields: CreativeIntent
+}
+
 function writeSlot(
   forms: Record<string, FieldForm>,
   names: string[],
@@ -421,6 +457,11 @@ export function DiceBoard({ role }: { role: unknown }) {
   const [poseError, setPoseError] = useState('')
   const [generated, setGenerated] = useState<CreativeIntent | null>(null)
   const [saving, setSaving] = useState(false)
+  const [templates, setTemplates] = useState<DiceTemplate[]>([])
+  const [templateId, setTemplateId] = useState('')
+  const [templateOpen, setTemplateOpen] = useState(false)
+  const [pickedId, setPickedId] = useState('')
+  const [templateDraft, setTemplateDraft] = useState('')
   const [focus, setFocus] = useState<{ section: string; key: FormKey } | null>(null)
   const [recommendations, setRecommendations] = useState<string[]>([])
   const [recStatus, setRecStatus] = useState('')
@@ -443,13 +484,15 @@ export function DiceBoard({ role }: { role: unknown }) {
     let cancelled = false
     void (async () => {
       try {
-        const [poseBody, characterBody] = await Promise.all([
+        const [poseBody, characterBody, templateBody] = await Promise.all([
           api<{ poses: PoseEntry[] }>('data/poses?enabled=true'),
           api<{ characters: CharacterSummary[] }>('data/characters'),
+          api<{ templates: DiceTemplate[] }>('dice/templates'),
         ])
         if (cancelled) return
         setPoses(poseBody.poses)
         setCharacters(characterBody.characters)
+        setTemplates(templateBody.templates)
       } catch (err) {
         if (cancelled) return
         const message = messageOf(err)
@@ -575,6 +618,132 @@ export function DiceBoard({ role }: { role: unknown }) {
     })()
   }, [sections, forms, selectedPose])
 
+  const applyTemplate = useCallback(
+    (template: DiceTemplate) => {
+      characterRequest.current += 1
+      const summary = characters.find((item) => item.slug === template.character)
+      const pose = template.poseId
+        ? poses.find((item) => item.id === template.poseId)
+        : poses.find((item) => item.poseName === template.poseName)
+      const next = formsFromIntent(sections, template.fields)
+      formsRef.current = next
+      setTemplateId(template.id)
+      setCharacterSlug(template.character ?? '')
+      setCharacterNote(summary?.display || template.character || '')
+      setPoseId(pose?.id ?? '')
+      setForms(next)
+      setGenerated(template.fields)
+    },
+    [characters, poses, sections],
+  )
+
+  const openTemplateDialog = useCallback(() => {
+    const current = templates.find((item) => item.id === templateId)
+    setPickedId(current?.id ?? '')
+    setTemplateDraft(current?.name ?? '')
+    setTemplateOpen(true)
+  }, [templates, templateId])
+
+  const pickTemplate = useCallback((template: DiceTemplate) => {
+    setPickedId(template.id)
+    setTemplateDraft(template.name)
+  }, [])
+
+  const templatePayload = useCallback(() => {
+    const intent = composeIntent(sections, forms)
+    setGenerated(intent)
+    return {
+      character: characterSlug || null,
+      poseName: selectedPose?.poseName ?? null,
+      poseId: selectedPose?.id ?? null,
+      fields: intent,
+    }
+  }, [sections, forms, characterSlug, selectedPose])
+
+  const createTemplate = useCallback(() => {
+    const name = templateDraft.trim()
+    if (name === '') {
+      fail('先写模版名')
+      return
+    }
+    const payload = templatePayload()
+    void (async () => {
+      try {
+        const saved = await api<{ template: DiceTemplate }>('dice/templates', {
+          method: 'POST',
+          body: JSON.stringify({ name, ...payload }),
+        })
+        setTemplates((cur) => [saved.template, ...cur.filter((item) => item.id !== saved.template.id)])
+        setPickedId(saved.template.id)
+        setTemplateId(saved.template.id)
+        setTemplateDraft(saved.template.name)
+        notify(`已新建模版 ${saved.template.name}`)
+      } catch (err) {
+        fail(messageOf(err))
+      }
+    })()
+  }, [templateDraft, templatePayload])
+
+  const renameTemplate = useCallback(() => {
+    const name = templateDraft.trim()
+    if (pickedId === '' || name === '') {
+      fail('先选中模版并写上新名字')
+      return
+    }
+    void (async () => {
+      try {
+        const saved = await api<{ template: DiceTemplate }>(`dice/templates/${pickedId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ name }),
+        })
+        setTemplates((cur) => cur.map((item) => (item.id === saved.template.id ? saved.template : item)))
+        setTemplateDraft(saved.template.name)
+        notify(`已改名为 ${saved.template.name}`)
+      } catch (err) {
+        fail(messageOf(err))
+      }
+    })()
+  }, [templateDraft, pickedId])
+
+  const deleteTemplate = useCallback(() => {
+    if (pickedId === '') return
+    const id = pickedId
+    void (async () => {
+      try {
+        await api(`dice/templates/${id}`, { method: 'DELETE' })
+        setTemplates((cur) => cur.filter((item) => item.id !== id))
+        setPickedId('')
+        setTemplateDraft('')
+        setTemplateId((cur) => (cur === id ? '' : cur))
+        notify('已删除模版')
+      } catch (err) {
+        fail(messageOf(err))
+      }
+    })()
+  }, [pickedId])
+
+  const confirmTemplate = useCallback(() => {
+    if (pickedId === '') {
+      fail('先选一个模版')
+      return
+    }
+    const payload = templatePayload()
+    void (async () => {
+      try {
+        const saved = await api<{ template: DiceTemplate }>(`dice/templates/${pickedId}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload),
+        })
+        setTemplates((cur) => cur.map((item) => (item.id === saved.template.id ? saved.template : item)))
+        setTemplateId(saved.template.id)
+        setTemplateOpen(false)
+        notify(`已保存到 ${saved.template.name}`)
+      } catch (err) {
+        fail(messageOf(err))
+      }
+    })()
+  }, [pickedId, templatePayload])
+
   const setFormField = useCallback((name: string, key: FormKey, value: string) => {
     setGenerated(null)
     setForms((cur) => ({
@@ -691,7 +860,30 @@ export function DiceBoard({ role }: { role: unknown }) {
       <section className="panel">
         <div className="column-head">
           <h2>角色造型</h2>
-          <span className="muted">先选角色，再选 pose</span>
+          <span className="muted">先选模版，或先选角色再选 pose</span>
+        </div>
+        <div className="column-head">
+          <h2>模版</h2>
+          <span className="muted">
+            {templates.find((item) => item.id === templateId)?.name ?? '未选择'}
+          </span>
+        </div>
+        {templates.length === 0 ? <p className="muted">还没有模版</p> : null}
+        <div className="dice-tags dice-template-list">
+          {templates.map((template) => {
+            const on = template.id === templateId
+            return (
+              <button
+                key={template.id}
+                type="button"
+                className={`dice-tag ${on ? 'on' : ''}`}
+                aria-pressed={on}
+                onClick={() => applyTemplate(template)}
+              >
+                {template.name}
+              </button>
+            )
+          })}
         </div>
         <div className="column-head">
           <div className="dice-head-title">
@@ -910,7 +1102,58 @@ export function DiceBoard({ role }: { role: unknown }) {
           <button type="button" className="quiet" disabled={saving} onClick={submitRoll}>
             {saving ? '提交中…' : '提交'}
           </button>
+          <button type="button" className="quiet" onClick={openTemplateDialog}>
+            保存到模版
+          </button>
         </div>
+        <Dialog open={templateOpen} title="保存到模版" onClose={() => setTemplateOpen(false)}>
+          <div className="dice-template-dialog">
+            <p className="muted">选一个模版后确认，当前结构化 prompt、角色和 pose 会写进这条模版。</p>
+            {templates.length === 0 ? <p className="muted">还没有模版，先在下面新建。</p> : null}
+            <div className="dice-tags dice-template-list">
+              {templates.map((template) => {
+                const on = template.id === pickedId
+                return (
+                  <button
+                    key={template.id}
+                    type="button"
+                    className={`dice-tag ${on ? 'on' : ''}`}
+                    aria-pressed={on}
+                    onClick={() => pickTemplate(template)}
+                  >
+                    {template.name}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="dice-template-edit">
+              <input
+                value={templateDraft}
+                spellCheck={false}
+                aria-label="模版名"
+                placeholder="模版名"
+                onChange={(event) => setTemplateDraft(event.target.value)}
+              />
+              <button type="button" onClick={createTemplate}>
+                新建模版
+              </button>
+              <button type="button" className="quiet" disabled={pickedId === ''} onClick={renameTemplate}>
+                改名
+              </button>
+              <button type="button" className="quiet" disabled={pickedId === ''} onClick={deleteTemplate}>
+                删除
+              </button>
+            </div>
+            <div className="dice-pose-tools">
+              <button type="button" disabled={pickedId === ''} onClick={confirmTemplate}>
+                确认
+              </button>
+              <button type="button" className="quiet" onClick={() => setTemplateOpen(false)}>
+                取消
+              </button>
+            </div>
+          </div>
+        </Dialog>
         {generated && prompt ? (
           <div className="dice-generated">
             <p className="dice-prompt-line">

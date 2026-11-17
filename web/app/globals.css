@@ -1136,6 +1136,26 @@ button.task-pick.current {
 }
 
 @media (max-width: 720px) {
+  .top {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.55rem 0.75rem;
+  }
+
+  .mark {
+    font-size: 1.35rem;
+  }
+
+  nav {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.85rem;
+  }
+
+  .tabs {
+    flex-wrap: wrap;
+  }
+
   .task-split {
     grid-template-columns: 1fr;
   }
@@ -1451,6 +1471,35 @@ button.task-pick.current {
   display: grid;
   gap: 0.55rem;
   margin-bottom: 0.85rem;
+}
+
+.dice-template-list {
+  margin-bottom: 1rem;
+}
+
+.dice-template-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.dice-template-edit input {
+  flex: 1;
+  min-width: 8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+
+.dice-template-dialog {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.dice-template-dialog .dice-template-list,
+.dice-template-dialog .dice-template-edit {
+  margin: 0;
 }
 
 .dice-generated {

@@ -147,6 +147,19 @@ CREATE TABLE IF NOT EXISTS dice_roll_tasks (
 );
 
 CREATE INDEX IF NOT EXISTS dice_roll_tasks_by_roll ON dice_roll_tasks (roll_id, created_at);
+
+CREATE TABLE IF NOT EXISTS dice_templates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  character_slug TEXT,
+  pose_name TEXT,
+  pose_id TEXT,
+  fields_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS dice_templates_by_name ON dice_templates (name);
 `
 
 export interface WorkRow {

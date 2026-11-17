@@ -217,6 +217,96 @@ export function mountDice(app: Hono, runner: Runner): void {
     return c.json({ deleted: result.changes })
   })
 
+  // 造型模版：结构化 prompt + 角色 + poseName。填回时由页面写入 input，不重跑角色/pose 填词。
+  app.get('/dice/templates', (c) => {
+    const rows = runner.db
+      .prepare(
+        `SELECT id, name, character_slug, pose_name, pose_id, fields_json, created_at, updated_at
+         FROM dice_templates ORDER BY updated_at DESC, rowid DESC`,
+      )
+      .all() as TemplateRow[]
+    return c.json({ templates: rows.map(templateOf) })
+  })
+
+  app.post('/dice/templates', async (c) => {
+    const body = await jsonObject(c.req)
+    const name = templateName(body.name)
+    const fields = templateFields(body.fields)
+    const id = randomUUID()
+    const now = runner.now().toISOString()
+    const character = optionalText(body.character)
+    const poseName = optionalText(body.poseName)
+    const poseId = optionalText(body.poseId)
+    runner.db
+      .prepare(
+        `INSERT INTO dice_templates
+           (id, name, character_slug, pose_name, pose_id, fields_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, name, character, poseName, poseId, JSON.stringify(fields), now, now)
+    return c.json(
+      {
+        template: {
+          id,
+          name,
+          character,
+          poseName,
+          poseId,
+          fields,
+          createdAt: now,
+          updatedAt: now,
+        },
+      },
+      201,
+    )
+  })
+
+  app.patch('/dice/templates/:id', async (c) => {
+    const id = c.req.param('id')
+    const body = await jsonObject(c.req)
+    const current = runner.db
+      .prepare(
+        `SELECT id, name, character_slug, pose_name, pose_id, fields_json, created_at, updated_at
+         FROM dice_templates WHERE id = ?`,
+      )
+      .get(id) as TemplateRow | undefined
+    if (!current) throw new RunnerError(`template ${id} not found`, 404)
+    const name = body.name === undefined ? current.name : templateName(body.name)
+    const saving =
+      body.fields !== undefined ||
+      body.character !== undefined ||
+      body.poseName !== undefined ||
+      body.poseId !== undefined
+    const character = saving ? optionalText(body.character) : current.character_slug
+    const poseName = saving ? optionalText(body.poseName) : current.pose_name
+    const poseId = saving ? optionalText(body.poseId) : current.pose_id
+    const fieldsJson =
+      body.fields === undefined ? current.fields_json : JSON.stringify(templateFields(body.fields))
+    const now = runner.now().toISOString()
+    runner.db
+      .prepare(
+        `UPDATE dice_templates
+         SET name = ?, character_slug = ?, pose_name = ?, pose_id = ?, fields_json = ?, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(name, character, poseName, poseId, fieldsJson, now, id)
+    const row = runner.db
+      .prepare(
+        `SELECT id, name, character_slug, pose_name, pose_id, fields_json, created_at, updated_at
+         FROM dice_templates WHERE id = ?`,
+      )
+      .get(id) as TemplateRow
+    return c.json({ template: templateOf(row) })
+  })
+
+  app.delete('/dice/templates/:id', (c) => {
+    const result = runner.db
+      .prepare('DELETE FROM dice_templates WHERE id = ?')
+      .run(c.req.param('id'))
+    if (result.changes === 0) throw new RunnerError('template not found', 404)
+    return c.json({ deleted: result.changes })
+  })
+
   // 灵感 → baseline_v1 出图：pose 图推 ComfyUI input 后建任务，记录挂到 roll 上
   app.post('/dice/rolls/:id/generate', async (c) => {
     const rollId = c.req.param('id')
@@ -370,4 +460,54 @@ export function mountDice(app: Hono, runner: Runner): void {
       }),
     })
   })
+}
+
+interface TemplateRow {
+  id: string
+  name: string
+  character_slug: string | null
+  pose_name: string | null
+  pose_id: string | null
+  fields_json: string
+  created_at: string
+  updated_at: string
+}
+
+function templateOf(row: TemplateRow) {
+  let fields: unknown = {}
+  try {
+    fields = JSON.parse(row.fields_json)
+  } catch {
+    fields = {}
+  }
+  return {
+    id: row.id,
+    name: row.name,
+    character: row.character_slug,
+    poseName: row.pose_name,
+    poseId: row.pose_id,
+    fields,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function templateName(value: unknown): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new RunnerError('name must be a non-empty string')
+  }
+  return value.trim()
+}
+
+function templateFields(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RunnerError('fields must be an object')
+  }
+  return value as Record<string, unknown>
+}
+
+function optionalText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  return text === '' ? null : text
 }

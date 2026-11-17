@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useEffect, useState, type FormEvent } from 'react'
 
 import { Dialog } from '@/components/dialog'
+import { RollsPanel } from '@/components/rolls-panel'
 import { api } from '@/lib/api'
 import { fail, messageOf, notify } from '@/lib/notify'
 import type { Workflow } from '@/lib/types'
@@ -29,7 +30,7 @@ export function LibraryBoard() {
   const [filePath, setFilePath] = useState('')
   const [busy, setBusy] = useState(false)
   const [view, setView] = useState<'list' | 'grid'>('list')
-  const [tab, setTab] = useState<'input' | 'output' | 'workflow'>('input')
+  const [tab, setTab] = useState<'inspiration' | 'input' | 'output' | 'workflow'>('inspiration')
 
   async function load() {
     const [library, inputFiles, outputFiles] = await Promise.all([
@@ -129,6 +130,7 @@ export function LibraryBoard() {
         <div className="tabs" role="tablist">
           {(
             [
+              ['inspiration', '灵感'],
               ['input', 'Input'],
               ['output', 'Output'],
               ['workflow', 'Workflow'],
@@ -146,7 +148,7 @@ export function LibraryBoard() {
             </button>
           ))}
         </div>
-        {tab === 'workflow' ? null : (
+        {tab === 'workflow' || tab === 'inspiration' ? null : (
           <button
             type="button"
             className="quiet"
@@ -156,6 +158,7 @@ export function LibraryBoard() {
           </button>
         )}
       </div>
+      {tab === 'inspiration' ? <RollsPanel /> : null}
       {tab === 'input' ? (
       <section className="panel">
         <form onSubmit={(event) => void upload(event)}>
