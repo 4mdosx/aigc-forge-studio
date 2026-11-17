@@ -127,6 +127,19 @@ function asLoaded(rows: Array<{ name: string; tiers?: unknown }>): LoadedField[]
   return rows.map((row) => ({ name: row.name, tiers: normalizeTiers(row.tiers), picked: {} }))
 }
 
+// 移动端媒体查询（SSR 首帧 false，首屏数据拉取后 effect 已跑，无闪烁风险）
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia(query)
+    const onChange = () => setMatches(mq.matches)
+    onChange()
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [query])
+  return matches
+}
+
 export function DiceBoard() {
   const [fields, setFields] = useState<LoadedField[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -137,6 +150,8 @@ export function DiceBoard() {
   const [poses, setPoses] = useState<PoseEntry[]>([])
   const [poseSel, setPoseSel] = useState<Set<string>>(new Set())
   const [posePick, setPosePick] = useState<PoseEntry | null>(null)
+  const [openIndex, setOpenIndex] = useState<number | null>(null)
+  const isMobile = useMediaQuery('(max-width: 759px)')
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -487,6 +502,16 @@ export function DiceBoard() {
     [fields, scheduleSave],
   )
 
+  // 详情页打开时 Esc 返回
+  useEffect(() => {
+    if (openIndex === null) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenIndex(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [openIndex])
+
   // ---- 结果合成 ----
 
   const composeOf = (field: LoadedField): string =>
@@ -594,6 +619,74 @@ export function DiceBoard() {
       <section className="panel">
         {!loaded ? (
           <p className="muted">加载中…</p>
+        ) : isMobile ? (
+          <>
+            <div className="dice-cards">
+              {fields.map((field, index) => {
+                const poolTotal = TIERS.filter((t) => enabled[t]).reduce(
+                  (sum, t) => sum + wordsOf(tierOf(field, t).values).length,
+                  0,
+                )
+                const takeTotal = TIERS.filter((t) => enabled[t]).reduce(
+                  (sum, t) => sum + (wordsOf(tierOf(field, t).values).length > 0 ? tierOf(field, t).max : 0),
+                  0,
+                )
+                const preview = TIERS.filter((t) => enabled[t])
+                  .flatMap((t) => field.picked[t] ?? [])
+                  .join(', ')
+                return (
+                  <div
+                    key={field.name}
+                    className="dice-card"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setOpenIndex(index)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && e.target === e.currentTarget) setOpenIndex(index)
+                    }}
+                  >
+                    <div className="dice-card-main">
+                      <div className="dice-card-name">{field.name}</div>
+                      <div className="dice-card-sum muted">
+                        池 {poolTotal} · 抽 ≤{takeTotal}
+                      </div>
+                      <div className={`dice-card-picked mono ${preview !== '' ? '' : 'muted'}`}>
+                        {preview !== '' ? preview : '未掷骰'}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="dice-roll"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        rollField(index)
+                      }}
+                      title="本字段掷骰"
+                    >
+                      🎲
+                    </button>
+                    <span className="dice-card-arrow" aria-hidden={true}>
+                      ›
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+            {openIndex !== null && fields[openIndex] ? (
+              <DiceFieldDetail
+                field={fields[openIndex]}
+                enabled={enabled}
+                onRename={(patch) => updateField(openIndex, patch)}
+                onTier={(tier, patch) => updateTier(openIndex, tier, patch)}
+                onRoll={() => rollField(openIndex)}
+                onRemove={() => {
+                  removeField(openIndex)
+                  setOpenIndex(null)
+                }}
+                onClose={() => setOpenIndex(null)}
+              />
+            ) : null}
+          </>
         ) : (
           <div className="dice-grid">
             {fields.map((field, index) => {
@@ -853,5 +946,117 @@ function PoseGroup({
         })}
       </div>
     </details>
+  )
+}
+
+// 移动端二级页：单字段详情。全屏覆盖，Esc 返回；编辑即防抖落库（与桌面共用 handler）。
+function DiceFieldDetail({
+  field,
+  enabled,
+  onRename,
+  onTier,
+  onRoll,
+  onRemove,
+  onClose,
+}: {
+  field: LoadedField
+  enabled: Record<Tier, boolean>
+  onRename: (patch: Partial<LoadedField>) => void
+  onTier: (tier: Tier, patch: Partial<TierConfig>) => void
+  onRoll: () => void
+  onRemove: () => void
+  onClose: () => void
+}) {
+  const poolTotal = TIERS.filter((t) => enabled[t]).reduce(
+    (sum, t) => sum + wordsOf(tierOf(field, t).values).length,
+    0,
+  )
+  const takeTotal = TIERS.filter((t) => enabled[t]).reduce(
+    (sum, t) => sum + (wordsOf(tierOf(field, t).values).length > 0 ? tierOf(field, t).max : 0),
+    0,
+  )
+  return (
+    <div className="dice-detail" role="dialog" aria-modal="true" aria-label={`编辑字段 ${field.name}`}>
+      <div className="dice-detail-head">
+        <button type="button" className="quiet dice-detail-back" onClick={onClose}>
+          ‹ 返回
+        </button>
+        <input
+          className="dice-name"
+          value={field.name}
+          onChange={(e) => onRename({ name: e.target.value })}
+          aria-label="字段名"
+        />
+        <button type="button" className="dice-roll" onClick={onRoll} title="本字段掷骰">
+          🎲
+        </button>
+      </div>
+      <div className="dice-detail-tiers">
+        {TIERS.map((tier) => {
+          const cfg = tierOf(field, tier)
+          const pool = wordsOf(cfg.values).length
+          const picks = field.picked[tier] ?? []
+          return (
+            <div key={tier} className={`dice-tier ${enabled[tier] ? 'on' : 'off'}`}>
+              <div className="dice-tier-row">
+                <span className={`dice-tier-label tier-${tier}`}>{tier}</span>
+                <label className="dice-count">
+                  取
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    max={cfg.max}
+                    value={cfg.min}
+                    onChange={(e) => {
+                      const min = Math.min(99, Math.max(0, Number(e.target.value) || 0))
+                      onTier(tier, { min, max: Math.max(min, cfg.max) })
+                    }}
+                  />
+                  –
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min={cfg.min}
+                    max={99}
+                    value={cfg.max}
+                    onChange={(e) => {
+                      const max = Math.min(99, Math.max(0, Number(e.target.value) || 0))
+                      onTier(tier, { max, min: Math.min(max, cfg.min) })
+                    }}
+                  />
+                  个
+                </label>
+                <span className="dice-pool">池 {pool}</span>
+              </div>
+              {picks.length > 0 ? (
+                <span className="dice-picked mono">{picks.join(', ')}</span>
+              ) : null}
+              <textarea
+                className="dice-tier-open"
+                rows={4}
+                value={cfg.values}
+                placeholder={`${tier} 层候选词，逗号分隔`}
+                onChange={(e) => onTier(tier, { values: e.target.value })}
+              />
+            </div>
+          )
+        })}
+      </div>
+      <div className="dice-detail-foot">
+        <span className="muted">
+          抽取 ≤{takeTotal} / 池 {poolTotal}
+        </span>
+        <button
+          type="button"
+          className="quiet dice-detail-remove"
+          onClick={() => {
+            if (window.confirm(`删除字段 ${field.name}？`)) onRemove()
+          }}
+        >
+          删除字段
+        </button>
+      </div>
+    </div>
   )
 }

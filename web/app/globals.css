@@ -1830,3 +1830,160 @@ button.task-pick.current {
   gap: 0.3rem;
   min-width: 0;
 }
+
+/* ---- dice 移动端卡片 + 二级详情页 ---- */
+
+/* 卡片列表（仅移动端渲染；桌面走 dice-grid） */
+.dice-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.dice-card {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid #e4dacd;
+  border-radius: 10px;
+  padding: 0.7rem 0.75rem;
+  background: #fffdf8;
+  cursor: pointer;
+}
+
+.dice-card:active {
+  background: #f7f3ea;
+}
+
+.dice-card:focus-visible {
+  outline: 2px solid #0c5c49;
+  outline-offset: 1px;
+}
+
+.dice-card-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.dice-card-name {
+  font-weight: 600;
+  font-family: var(--mono, monospace);
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dice-card-sum {
+  font-size: 0.78rem;
+}
+
+.dice-card-picked {
+  font-size: 0.78rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dice-card-arrow {
+  color: #a99e8e;
+  font-size: 1.3rem;
+  flex: none;
+  line-height: 1;
+}
+
+/* 二级详情页：全屏覆盖 */
+.dice-detail {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background:
+    radial-gradient(1100px 420px at 8% -10%, #f7f1e6, transparent 55%),
+    #efe7da;
+  overflow-y: auto;
+  padding: 0.7rem 0.8rem 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  -webkit-overflow-scrolling: touch;
+}
+
+.dice-detail-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  background: inherit;
+}
+
+.dice-detail-back {
+  flex: none;
+  font-size: 1rem;
+  padding: 0.35rem 0.6rem;
+}
+
+.dice-detail-head .dice-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 1rem;
+}
+
+.dice-detail-tiers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.dice-detail-tiers .dice-tier {
+  padding: 0.55rem 0.6rem;
+  border-radius: 8px;
+}
+
+.dice-detail-tiers .dice-tier-row {
+  flex-wrap: wrap;
+}
+
+/* 详情页输入优化：数字框更大更好点，词池直接展开不用折叠 */
+.dice-detail .dice-count input {
+  width: 3rem;
+  padding: 0.4rem 0.5rem;
+  font-size: 1rem;
+}
+
+.dice-tier-open {
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 0.4rem;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #c9beae;
+  border-radius: 8px;
+  background: #f7f3ea;
+  color: #241f1a;
+  resize: vertical;
+}
+
+.dice-detail-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding-top: 0.4rem;
+}
+
+.dice-detail-remove {
+  color: #a04030;
+  border: 1px solid #d8b0a4;
+  border-radius: 8px;
+  padding: 0.45rem 0.8rem;
+}
