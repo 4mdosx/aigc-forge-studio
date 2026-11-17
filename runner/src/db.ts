@@ -137,6 +137,16 @@ CREATE TABLE IF NOT EXISTS dice_rolls (
 );
 
 CREATE INDEX IF NOT EXISTS dice_rolls_by_time ON dice_rolls (created_at);
+
+CREATE TABLE IF NOT EXISTS dice_roll_tasks (
+  id TEXT PRIMARY KEY,
+  roll_id TEXT NOT NULL,
+  task_id TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (roll_id) REFERENCES dice_rolls(id)
+);
+
+CREATE INDEX IF NOT EXISTS dice_roll_tasks_by_roll ON dice_roll_tasks (roll_id, created_at);
 `
 
 export interface WorkRow {

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { api } from '@/lib/api'
+import { api, fileHref } from '@/lib/api'
 import { fail, messageOf } from '@/lib/notify'
 
 // 🎲 掷骰工作台：字段池存 runner SQLite（dice_fields.tiers JSON）。
@@ -95,6 +95,25 @@ interface RollRecord {
   prompt: string
   negative: string | null
   createdAt: string
+}
+
+interface GenerationRecord {
+  id: string
+  taskId: string
+  status: string
+  outputs: string[]
+  seed: number | null
+  error: string | null
+  createdAt: string
+}
+
+const GEN_STATUS_LABEL: Record<string, string> = {
+  pending: '等待',
+  running: '生成中',
+  completed: '完成',
+  failed: '失败',
+  cancelled: '取消',
+  timeout: '超时',
 }
 
 function wordsOf(values: string): string[] {
@@ -1291,6 +1310,43 @@ function RollDetail({
   const copy = (text: string) => {
     void navigator.clipboard.writeText(text)
   }
+
+  // 生成记录：打开即拉一次，2.5s 轮询到全部终态为止
+  const [gens, setGens] = useState<GenerationRecord[] | null>(null)
+  const [busy, setBusy] = useState(false)
+  const activeRef = useRef(false)
+  const refreshGens = useCallback(async () => {
+    try {
+      const body = await api<{ generations: GenerationRecord[] }>(
+        `dice/rolls/${record.id}/generations`,
+      )
+      setGens(body.generations)
+      activeRef.current = body.generations.some(
+        (g) => g.status === 'pending' || g.status === 'running',
+      )
+    } catch {
+      // 拉不到就下轮再试
+    }
+  }, [record.id])
+  useEffect(() => {
+    void refreshGens()
+    const timer = setInterval(() => {
+      if (activeRef.current) void refreshGens()
+    }, 2500)
+    return () => clearInterval(timer)
+  }, [refreshGens])
+
+  const generate = useCallback(async () => {
+    setBusy(true)
+    try {
+      await api(`dice/rolls/${record.id}/generate`, { method: 'POST' })
+      activeRef.current = true
+      await refreshGens()
+    } catch (err) {
+      fail(messageOf(err))
+    }
+    setBusy(false)
+  }, [record.id, refreshGens])
   return (
     <div className="dice-detail" role="dialog" aria-modal="true" aria-label="灵感详情">
       <div className="dice-detail-head">
@@ -1302,6 +1358,50 @@ function RollDetail({
         </strong>
       </div>
       <div className="dice-roll-detail-body">
+        <div className="dice-roll-detail-block">
+          <div className="dice-roll-detail-label">
+            <span className="muted">生成 · baseline_v1 · 每次随机 seed</span>
+            <button
+              type="button"
+              className="dice-hero-roll"
+              onClick={() => void generate()}
+              disabled={busy}
+            >
+              {busy ? '提交中…' : '🎲 生成图片'}
+            </button>
+          </div>
+          {gens === null ? null : gens.length === 0 ? (
+            <p className="muted">还没生成过——点上面按钮跑一次</p>
+          ) : (
+            <ul className="dice-gen-list">
+              {gens.map((g) => (
+                <li key={g.id} className="dice-gen-item">
+                  <span className={`dice-gen-status st-${g.status}`}>
+                    {GEN_STATUS_LABEL[g.status] ?? g.status}
+                  </span>
+                  {g.seed !== null ? <span className="muted dice-gen-seed">seed {g.seed}</span> : null}
+                  {g.status === 'completed' ? (
+                    <span className="dice-gen-thumbs">
+                      {g.outputs.map((p) => (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          key={p}
+                          src={fileHref(`tasks/${g.taskId}/files/${p}`)}
+                          alt="生成结果"
+                          loading="lazy"
+                        />
+                      ))}
+                    </span>
+                  ) : g.status === 'failed' ? (
+                    <span className="dice-gen-error">{g.error ?? '未知错误'}</span>
+                  ) : g.status === 'pending' || g.status === 'running' ? (
+                    <span className="muted">排队/生成中…</span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
         {thumb ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img className="dice-pose-result-img" src={thumb} alt={`pose ${record.poseName ?? ''}`} />

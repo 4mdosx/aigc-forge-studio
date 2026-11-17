@@ -2212,3 +2212,72 @@ button.task-pick.current {
     flex: 1;
   }
 }
+
+/* ---- dice 灵感生成 ---- */
+
+.dice-gen-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.dice-gen-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  border-bottom: 1px dashed #e4dacd;
+  padding-bottom: 0.35rem;
+}
+
+.dice-gen-status {
+  flex: none;
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+  font-size: 0.72rem;
+  background: #efe7da;
+  color: #5c564e;
+}
+
+.dice-gen-status.st-completed {
+  background: #0c5c49;
+  color: #f7f3ea;
+}
+
+.dice-gen-status.st-failed,
+.dice-gen-status.st-timeout {
+  background: #a04030;
+  color: #f7f3ea;
+}
+
+.dice-gen-status.st-running,
+.dice-gen-status.st-pending {
+  background: #d9a441;
+  color: #241f1a;
+}
+
+.dice-gen-seed {
+  font-variant-numeric: tabular-nums;
+}
+
+.dice-gen-thumbs {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.dice-gen-thumbs img {
+  height: 120px;
+  border-radius: 6px;
+  border: 1px solid #e4dacd;
+  background: #f7f3ea;
+}
+
+.dice-gen-error {
+  color: #a04030;
+  word-break: break-all;
+}

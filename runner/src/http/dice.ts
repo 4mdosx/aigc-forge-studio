@@ -1,8 +1,11 @@
 import type { Hono } from 'hono'
 import { randomUUID } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { RunnerError } from '../errors.ts'
 import { DEFAULT_DICE_FIELDS, transaction } from '../db.ts'
+import { createTask, storedPaths } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
 import { jsonObject } from './request.ts'
 
@@ -212,5 +215,159 @@ export function mountDice(app: Hono, runner: Runner): void {
   app.delete('/dice/rolls/:id', (c) => {
     const result = runner.db.prepare('DELETE FROM dice_rolls WHERE id = ?').run(c.req.param('id'))
     return c.json({ deleted: result.changes })
+  })
+
+  // 灵感 → baseline_v1 出图：pose 图推 ComfyUI input 后建任务，记录挂到 roll 上
+  app.post('/dice/rolls/:id/generate', async (c) => {
+    const rollId = c.req.param('id')
+    const roll = runner.db
+      .prepare('SELECT id, pose_id, prompt, negative FROM dice_rolls WHERE id = ?')
+      .get(rollId) as
+      | { id: string; pose_id: string | null; prompt: string; negative: string | null }
+      | undefined
+    if (!roll) throw new RunnerError('roll not found', 404)
+    if (!roll.pose_id) throw new RunnerError('roll has no pose', 400)
+    const poseId = roll.pose_id
+
+    // manifest 里反查 pose 条目（depth/bone 路径 + 生成尺寸）
+    const manifestPath = join(runner.dataDir, 'pose', 'manifest.json')
+    if (!existsSync(manifestPath)) {
+      throw new RunnerError('data/pose/manifest.json missing', 404)
+    }
+    interface PoseVariant {
+      gen?: number[]
+      depth?: string
+      bone?: string
+    }
+    let entry: { variants?: Record<string, PoseVariant> } | null = null
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+        poses?: Array<{ id: string; variants?: Record<string, PoseVariant> }>
+      }
+      entry = (manifest.poses ?? []).find((p) => p.id === poseId) ?? null
+    } catch (err) {
+      throw new RunnerError(`invalid manifest: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    if (!entry) throw new RunnerError(`pose ${poseId} not in manifest`, 404)
+    const variant = Object.values(entry.variants ?? {}).find((v) => v.gen && v.depth && v.bone)
+    if (!variant) throw new RunnerError(`pose ${poseId} has no usable variant`, 404)
+
+    // pose 图推 ComfyUI input（任务链无自动上传，必须先 await 再建任务）
+    const client = runner.clients[0]
+    if (!client) throw new RunnerError('no ComfyUI instance')
+    const sub = `dice/${rollId}`
+    const readPoseFile = (rel: string, label: string): Uint8Array => {
+      const path = join(runner.dataDir, rel)
+      if (!existsSync(path)) {
+        throw new RunnerError(`pose ${label} file missing: ${rel}`, 404)
+      }
+      return new Uint8Array(readFileSync(path))
+    }
+    const depthBytes = readPoseFile(variant.depth as string, 'depth')
+    const boneBytes = readPoseFile(variant.bone as string, 'bone')
+    await client.uploadBytes(depthBytes, 'depth.png', sub)
+    await client.uploadBytes(boneBytes, 'bone.png', sub)
+
+    const gen = variant.gen as number[]
+    const seed = runner.randomSeed()
+    const task = createTask(
+      runner.db,
+      {
+        task: `dice-roll-${rollId.slice(0, 8)}`,
+        workName: 'baseline',
+        workflowName: 'baseline_v1',
+        version: 'g3317g3t',
+        payload: {
+          positive: roll.prompt,
+          negative: roll.negative ?? '',
+          pose_image: `${sub}/bone.png`,
+          depth_image: `${sub}/depth.png`,
+          width: gen[0],
+          height: gen[1],
+          seed,
+          batch: 1,
+          denoise: 1.0,
+          skeleton_strength: 1.0,
+          depth_strength: 0.5,
+          step: '1200',
+          lora_strength: 1.0,
+        },
+      },
+      runner.now(),
+      runner.randomSeed,
+      runner.dataDir,
+    )
+    const recordId = randomUUID()
+    runner.db
+      .prepare(
+        'INSERT INTO dice_roll_tasks (id, roll_id, task_id, created_at) VALUES (?, ?, ?, ?)',
+      )
+      .run(recordId, rollId, task.id, runner.now().toISOString())
+    return c.json({ id: recordId, taskId: task.id, seed }, 201)
+  })
+
+  app.get('/dice/rolls/:id/generations', (c) => {
+    const rollId = c.req.param('id')
+    const rows = runner.db
+      .prepare(
+        `SELECT t.id, t.task_id, tk.status, tk.output_path, tk.process_json, tk.error, tk.input_json,
+                tk.created_at AS task_created_at, t.created_at
+         FROM dice_roll_tasks t
+         JOIN tasks tk ON tk.id = t.task_id
+         WHERE t.roll_id = ?
+         ORDER BY t.created_at DESC, t.rowid DESC`,
+      )
+      .all(rollId) as Array<{
+      id: string
+      task_id: string
+      status: string
+      output_path: string | null
+      process_json: string | null
+      error: string | null
+      input_json: string | null
+      task_created_at: string
+      created_at: string
+    }>
+    return c.json({
+      generations: rows.map((row) => {
+        let seed: number | null = null
+        try {
+          seed = (JSON.parse(row.input_json ?? '{}') as { seed?: number }).seed ?? null
+        } catch {
+          seed = null
+        }
+        let outputs: string[] = []
+        try {
+          // resultPaths：单产物存裸字符串，多产物存 JSON 数组
+          const parsed = JSON.parse(row.output_path ?? '') as unknown
+          outputs = Array.isArray(parsed) ? (parsed as string[]) : []
+        } catch {
+          outputs =
+            row.output_path && row.output_path !== '' && row.output_path !== '[]'
+              ? [row.output_path]
+              : []
+        }
+        // 旧任务（adapter 无 outputs 时期）产物记在 process_json 里，兜底补上
+        if (outputs.length === 0 && row.process_json) {
+          try {
+            const items = JSON.parse(row.process_json) as Array<{ path?: unknown }>
+            outputs = items
+              .map((item) => (typeof item.path === 'string' ? item.path : ''))
+              .filter((p) => p.startsWith('output/'))
+          } catch {
+            // 忽略
+          }
+        }
+        return {
+          id: row.id,
+          taskId: row.task_id,
+          status: row.status,
+          outputs,
+          seed,
+          error: row.error,
+          createdAt: row.created_at,
+        }
+      }),
+    })
   })
 }
