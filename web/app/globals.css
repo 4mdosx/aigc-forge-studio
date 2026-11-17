@@ -2185,3 +2185,30 @@ button.task-pick.current {
   line-height: 1.5;
   word-break: break-all;
 }
+
+/* ---- dice 移动端：tab 固定底栏（长页面随时可切） ---- */
+
+@media (max-width: 759px) {
+  .dice-page {
+    padding-bottom: 4.4rem;
+  }
+
+  .dice-tabs {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 30;
+    margin: 0;
+    background: #fffdf8;
+    border-top: 1px solid #e4dacd;
+    border-radius: 0;
+    padding: 0.55rem 0.9rem;
+    padding-bottom: calc(0.55rem + env(safe-area-inset-bottom));
+    justify-content: stretch;
+  }
+
+  .dice-tab {
+    flex: 1;
+  }
+}

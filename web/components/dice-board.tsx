@@ -607,7 +607,7 @@ export function DiceBoard() {
   }
 
   return (
-    <>
+    <div className="dice-page">
       <section className="panel">
         <div className="column-head">
           <h2>🎲 掷骰工作台</h2>
@@ -951,7 +951,7 @@ export function DiceBoard() {
       ) : (
         <RollsPanel poses={poses} reloadKey={rollsVersion} />
       )}
-    </>
+    </div>
   )
 }
 
