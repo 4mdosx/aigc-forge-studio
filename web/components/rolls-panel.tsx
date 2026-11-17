@@ -1,5 +1,6 @@
 'use client'
 
+import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { api, fileHref } from '@/lib/api'
@@ -257,6 +258,7 @@ function RollDetail({
     setBusy(false)
   }, [record.id, refreshGens])
 
+  const router = useRouter()
   const copy = (text: string) => {
     void navigator.clipboard.writeText(text)
   }
@@ -270,6 +272,15 @@ function RollDetail({
         <strong className="dice-roll-detail-title">
           {record.poseName ?? '无 pose'} · {record.createdAt.slice(5, 19).replace('T', ' ')}
         </strong>
+        <button
+          type="button"
+          className="dice-roll"
+          aria-label="填回造型页"
+          title="用这条结构化 prompt 填回造型页"
+          onClick={() => router.push(`/dice?rid=${record.id}`)}
+        >
+          🧠
+        </button>
       </div>
       <div className="dice-roll-detail-body">
         <div className="dice-roll-detail-block">

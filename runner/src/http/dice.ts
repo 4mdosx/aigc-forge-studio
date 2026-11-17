@@ -212,6 +212,43 @@ export function mountDice(app: Hono, runner: Runner): void {
     })
   })
 
+  app.get('/dice/rolls/:id', (c) => {
+    const row = runner.db
+      .prepare(
+        `SELECT id, pose_name, pose_id, fields_json, prompt, negative, created_at
+         FROM dice_rolls WHERE id = ?`,
+      )
+      .get(c.req.param('id')) as
+      | {
+          id: string
+          pose_name: string | null
+          pose_id: string | null
+          fields_json: string
+          prompt: string
+          negative: string | null
+          created_at: string
+        }
+      | undefined
+    if (!row) throw new RunnerError('roll not found', 404)
+    let fields: unknown = {}
+    try {
+      fields = JSON.parse(row.fields_json)
+    } catch {
+      fields = {}
+    }
+    return c.json({
+      roll: {
+        id: row.id,
+        poseName: row.pose_name,
+        poseId: row.pose_id,
+        fields,
+        prompt: row.prompt,
+        negative: row.negative,
+        createdAt: row.created_at,
+      },
+    })
+  })
+
   app.delete('/dice/rolls/:id', (c) => {
     const result = runner.db.prepare('DELETE FROM dice_rolls WHERE id = ?').run(c.req.param('id'))
     return c.json({ deleted: result.changes })

@@ -1,8 +1,10 @@
 'use client'
 
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Dialog } from '@/components/dialog'
+import { TaskDetail } from '@/components/task-detail'
 import { api } from '@/lib/api'
 import { initialIntent, type CreativeIntent } from '@/lib/intent'
 import { fail, messageOf, notify } from '@/lib/notify'
@@ -307,6 +309,19 @@ function appendTag(current: string, tag: string, ordered: string[]): string {
   return joinTags([...ordered.filter((item) => known.has(item)), ...extras])
 }
 
+function removeTag(current: string, tag: string, ordered: string[]): string {
+  const key = normTag(tag)
+  if (key === '') return current
+  const { known, extras } = partsOf(current, ordered)
+  for (const item of known) {
+    if (normTag(item) === key) known.delete(item)
+  }
+  return joinTags([
+    ...ordered.filter((item) => known.has(item)),
+    ...extras.filter((item) => normTag(item) !== key),
+  ])
+}
+
 function joinTags(tags: string[]): string {
   return tags.join(',')
 }
@@ -318,11 +333,27 @@ function splitTags(value: string): string[] {
     .filter((tag) => tag !== '')
 }
 
-function mergeSlots(form: FieldForm): string[] {
+function fieldText(value: unknown): string {
+  if (Array.isArray(value)) return value.filter((item) => typeof item === 'string').join(',')
+  if (typeof value === 'string') return value
+  return ''
+}
+
+function sectionOrder(section: RoleSection): string[] {
+  return uniqueTags(section.groups.flatMap((group) => group.tags))
+}
+
+function tokensOf(text: string, ordered: string[]): string[] {
+  if (ordered.length === 0) return splitTags(text)
+  const { known, extras } = partsOf(text, ordered)
+  return [...ordered.filter((tag) => known.has(tag)), ...extras]
+}
+
+function mergeSlots(form: FieldForm, ordered: string[] = []): string[] {
   const seen = new Set<string>()
   const out: string[] = []
   for (const part of [form.character, form.pose, form.input]) {
-    for (const tag of splitTags(part)) {
+    for (const tag of tokensOf(part, ordered)) {
       const key = normTag(tag)
       if (key === '' || seen.has(key)) continue
       seen.add(key)
@@ -330,6 +361,12 @@ function mergeSlots(form: FieldForm): string[] {
     }
   }
   return out
+}
+
+function writeField(record: Record<string, string | string[]>, field: string, tags: string[]) {
+  if (!(field in record)) return
+  if (Array.isArray(record[field])) record[field] = tags
+  else record[field] = tags.join(',')
 }
 
 function composeIntent(sections: RoleSection[], forms: Record<string, FieldForm>): CreativeIntent {
@@ -343,9 +380,21 @@ function composeIntent(sections: RoleSection[], forms: Record<string, FieldForm>
     if (!parent || typeof parent !== 'object') continue
     const record = parent as Record<string, string | string[]>
     if (!(field in record)) continue
-    const tags = mergeSlots(forms[section.name] ?? emptyForm())
-    if (Array.isArray(record[field])) record[field] = tags
-    else record[field] = tags.join(',')
+    const ordered = sectionOrder(section)
+    const tags = mergeSlots(forms[section.name] ?? emptyForm(), ordered)
+    const used = new Set<string>()
+    for (const subgroup of section.groups) {
+      if (subgroup.name === '' || subgroup.name === field || !(subgroup.name in record)) continue
+      const member = new Set(subgroup.tags.map(normTag))
+      const picked = tags.filter((tag) => member.has(normTag(tag)) && !used.has(normTag(tag)))
+      for (const tag of picked) used.add(normTag(tag))
+      writeField(record, subgroup.name, picked)
+    }
+    writeField(
+      record,
+      field,
+      tags.filter((tag) => !used.has(normTag(tag))),
+    )
   }
   return intent
 }
@@ -411,13 +460,18 @@ function formsFromIntent(sections: RoleSection[], fields: unknown): Record<strin
       group && typeof group === 'object' && !Array.isArray(group)
         ? (group as Record<string, unknown>)
         : {}
-    const value = parent[field]
-    const text = Array.isArray(value)
-      ? value.filter((item) => typeof item === 'string').join(',')
-      : typeof value === 'string'
-        ? value
-        : ''
-    forms[section.name] = { pose: '', character: '', input: text }
+    const chunks = [fieldText(parent[field])]
+    for (const subgroup of section.groups) {
+      if (subgroup.name === '' || subgroup.name === field || !(subgroup.name in parent)) continue
+      chunks.push(fieldText(parent[subgroup.name]))
+    }
+    const ordered = sectionOrder(section)
+    const { known, extras } = partsOf(chunks.filter((chunk) => chunk !== '').join(','), ordered)
+    forms[section.name] = {
+      pose: '',
+      character: '',
+      input: joinTags([...ordered.filter((tag) => known.has(tag)), ...extras]),
+    }
   }
   return forms
 }
@@ -446,6 +500,11 @@ function writeSlot(
 }
 
 export function DiceBoard({ role }: { role: unknown }) {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const taskId = searchParams.get('tid') ?? ''
+  const rollId = searchParams.get('rid') ?? ''
+  const appliedRoll = useRef('')
   const sections = useMemo(() => sectionsOf(role), [role])
   const sectionNames = useMemo(() => sections.map((section) => section.name), [sections])
   const [forms, setForms] = useState<Record<string, FieldForm>>(() => formsOf(sections))
@@ -470,6 +529,39 @@ export function DiceBoard({ role }: { role: unknown }) {
   const blurTimer = useRef<number | undefined>(undefined)
   const formsRef = useRef(forms)
   formsRef.current = forms
+
+  useEffect(() => {
+    if (rollId === '' || appliedRoll.current === rollId) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const body = await api<{
+          roll: { fields: unknown; poseId: string | null }
+        }>(`dice/rolls/${rollId}`)
+        if (cancelled || appliedRoll.current === rollId) return
+        appliedRoll.current = rollId
+        characterRequest.current += 1
+        const next = formsFromIntent(sections, body.roll.fields)
+        formsRef.current = next
+        setCharacterSlug('')
+        setCharacterNote('')
+        setTemplateId('')
+        setPoseId(body.roll.poseId ?? '')
+        setForms(next)
+        const fields = body.roll.fields
+        setGenerated(
+          fields && typeof fields === 'object' && !Array.isArray(fields) && 'subject' in fields
+            ? (fields as CreativeIntent)
+            : null,
+        )
+      } catch (err) {
+        if (!cancelled) fail(messageOf(err))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [rollId, sections])
 
   const orderOf = useMemo(() => {
     const map = new Map<string, string[]>()
@@ -618,6 +710,42 @@ export function DiceBoard({ role }: { role: unknown }) {
     })()
   }, [sections, forms, selectedPose])
 
+  const submitGenerate = useCallback(() => {
+    if (!selectedPose) {
+      fail('先选一个 pose，才能出图')
+      return
+    }
+    const intent = composeIntent(sections, forms)
+    const text = promptOf(intent)
+    setGenerated(intent)
+    setSaving(true)
+    void (async () => {
+      try {
+        const saved = await api<{ id: string }>('dice/rolls', {
+          method: 'POST',
+          body: JSON.stringify({
+            fields: intent,
+            prompt: text.positive,
+            negative: text.negative,
+            poseName: selectedPose.poseName,
+            poseId: selectedPose.id,
+          }),
+        })
+        const created = await api<{ taskId: string }>(`dice/rolls/${saved.id}/generate`, {
+          method: 'POST',
+        })
+        const next = new URLSearchParams(searchParams.toString())
+        next.set('tid', created.taskId)
+        router.replace(`/dice?${next.toString()}`, { scroll: false })
+        notify(`已提交生成 ${created.taskId}`)
+      } catch (err) {
+        fail(messageOf(err))
+      } finally {
+        setSaving(false)
+      }
+    })()
+  }, [sections, forms, selectedPose, router, searchParams])
+
   const applyTemplate = useCallback(
     (template: DiceTemplate) => {
       characterRequest.current += 1
@@ -763,7 +891,8 @@ export function DiceBoard({ role }: { role: unknown }) {
           ...selectedTags(form.pose, ordered),
         ])
         if (taken.has(tag)) return cur
-        const next = appendTag(form.input, tag, ordered)
+        const selected = selectedTags(form.input, ordered).includes(tag)
+        const next = selected ? removeTag(form.input, tag, ordered) : appendTag(form.input, tag, ordered)
         if (next === form.input) return cur
         return { ...cur, [name]: { ...form, input: next } }
       })
@@ -797,8 +926,9 @@ export function DiceBoard({ role }: { role: unknown }) {
     const request = recRequest.current + 1
     recRequest.current = request
     const form = formsRef.current[section] ?? emptyForm()
-    const own = splitTags(form[key])
-    const query = own.length > 0 ? own : mergeSlots(form)
+    const ordered = orderOf.get(section) ?? []
+    const own = tokensOf(form[key], ordered)
+    const query = own.length > 0 ? own : mergeSlots(form, ordered)
     if (query.length === 0) {
       setRecommendations([])
       setRecStatus('先写入一些词，再看推荐')
@@ -812,7 +942,7 @@ export function DiceBoard({ role }: { role: unknown }) {
           body: JSON.stringify({ tags: query }),
         })
         if (recRequest.current !== request) return
-        const present = new Set(mergeSlots(formsRef.current[section] ?? form).map(normTag))
+        const present = new Set(mergeSlots(formsRef.current[section] ?? form, ordered).map(normTag))
         const next = body.recommendations.filter((tag) => !present.has(normTag(tag)))
         setRecommendations(next)
         setRecStatus(next.length === 0 ? '没有可推荐的词' : '')
@@ -822,7 +952,7 @@ export function DiceBoard({ role }: { role: unknown }) {
         setRecStatus(messageOf(err))
       }
     })()
-  }, [])
+  }, [orderOf])
 
   const acceptRec = useCallback(
     (section: string, key: FormKey, tag: string) => {
@@ -1102,10 +1232,14 @@ export function DiceBoard({ role }: { role: unknown }) {
           <button type="button" className="quiet" disabled={saving} onClick={submitRoll}>
             {saving ? '提交中…' : '提交'}
           </button>
+          <button type="button" disabled={saving || selectedPose === null} onClick={submitGenerate}>
+            {saving ? '提交中…' : '提交生成'}
+          </button>
           <button type="button" className="quiet" onClick={openTemplateDialog}>
             保存到模版
           </button>
         </div>
+        {taskId !== '' ? <TaskDetail id={taskId} embedded /> : null}
         <Dialog open={templateOpen} title="保存到模版" onClose={() => setTemplateOpen(false)}>
           <div className="dice-template-dialog">
             <p className="muted">选一个模版后确认，当前结构化 prompt、角色和 pose 会写进这条模版。</p>

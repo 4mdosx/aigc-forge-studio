@@ -806,6 +806,10 @@ button.task-pick.current {
   background: #e7f0ec;
 }
 
+.dice-pose-tools + .task-embedded {
+  margin-top: 0.85rem;
+}
+
 .task-embedded h2 {
   font-family: "Iowan Old Style", Palatino, serif;
   font-size: 1.15rem;
@@ -2343,6 +2347,7 @@ button.task-pick.current {
 }
 
 .dice-roll-detail-title {
+  flex: 1;
   font-size: 0.95rem;
   min-width: 0;
   overflow: hidden;
