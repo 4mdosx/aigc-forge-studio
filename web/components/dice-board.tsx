@@ -60,13 +60,13 @@ interface PoseEntry {
   variants?: Record<string, { depth?: string }>
 }
 
-// manifest depth 路径形如 pose/<动作>/<id>/depth.png（相对 data 根），转 pose-file URL
+// manifest depth 路径形如 pose/<动作>/<id>/depth.png（相对 data 根），原样透传给 pose-file 端点
+// （端点要求路径必须以 pose/ 开头，这里不做剥前缀——剥了就 400）
 function depthUrl(entry: PoseEntry): string | null {
   for (const variant of Object.values(entry.variants ?? {})) {
     const depth = variant?.depth
     if (depth) {
-      const rel = depth.startsWith('pose/') ? depth.slice('pose/'.length) : depth
-      return `/api/runner/data/pose-file/${rel
+      return `/api/runner/data/pose-file/${depth
         .split('/')
         .map(encodeURIComponent)
         .join('/')}`
@@ -586,9 +586,6 @@ export function DiceBoard() {
           <span className="muted dice-ratings-hint">勾选参与掷骰的层级</span>
         </div>
         <div className="dice-hero">
-          <button type="button" className="dice-hero-roll" onClick={rollAll}>
-            🎲 一起生成
-          </button>
           <label className="quiet dice-file">
             导入
             <input
@@ -834,9 +831,14 @@ export function DiceBoard() {
       <section className="panel">
         <div className="column-head">
           <h2>结果</h2>
-          <button type="button" className="quiet" onClick={copyJson} disabled={!rolled}>
-            复制 JSON
-          </button>
+          <span className="dice-result-actions">
+            <button type="button" className="dice-hero-roll" onClick={rollAll}>
+              🎲 一起生成
+            </button>
+            <button type="button" className="quiet" onClick={copyJson} disabled={!rolled}>
+              复制 JSON
+            </button>
+          </span>
         </div>
         {posePick ? (
           <div className="dice-pose-result">

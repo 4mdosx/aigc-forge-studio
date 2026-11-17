@@ -1987,3 +1987,9 @@ button.task-pick.current {
   border-radius: 8px;
   padding: 0.45rem 0.8rem;
 }
+
+.dice-result-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
