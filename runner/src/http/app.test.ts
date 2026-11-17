@@ -467,6 +467,7 @@ function testRunner(clients: ComfyClient[]): Runner {
     db: openDatabase(':memory:'),
     clients,
     chat: null,
+    trainerBaseURL: null,
     dataDir: '/tmp/aigc-runner-test-data',
     timeoutMs: 600_000,
     now: () => new Date('2026-01-01T00:00:00.000Z'),

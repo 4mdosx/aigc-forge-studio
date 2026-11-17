@@ -16,6 +16,7 @@ export interface Runner {
   db: DatabaseSync
   clients: ComfyClient[]
   chat: ChatClient | null
+  trainerBaseURL: string | null
   timeoutMs: number
   dataDir: string
   now: () => Date

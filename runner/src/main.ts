@@ -32,6 +32,7 @@ async function main(): Promise<void> {
       (baseURL) => new ComfyClient(baseURL),
     ),
     chat: gateway ? gatewayChat(gateway) : null,
+    trainerBaseURL: config.runner.trainerBaseURL,
     timeoutMs: timeoutMs(values.timeout, config.runner.timeout),
     dataDir: resolve(root, config.runner.dataDir),
     now: () => new Date(),
@@ -47,6 +48,7 @@ async function main(): Promise<void> {
   const server = serve({ fetch: app.fetch, hostname: host, port })
   log(root, `Runner http://${host}:${port}`)
   log(root, `ComfyUI ${config.runner.comfyUiBaseURLs.join(', ')}`)
+  if (config.runner.trainerBaseURL) log(root, `Trainer ${config.runner.trainerBaseURL}`)
   log(root, gateway ? `Gateway ${gateway.models.join(', ')}` : 'Gateway off')
   process.once('SIGINT', () => {
     log(root, 'interrupting')

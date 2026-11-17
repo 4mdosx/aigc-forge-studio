@@ -11,7 +11,9 @@
     "port": 8787,
     "timeout": 600,
     "out": "outputs/runner",
-    "db": "data/runner.sqlite"
+    "db": "data/runner.sqlite",
+    "trainerBaseURL": "http://192.168.8.136:8788",
+    "//trainerBaseURL": "训练机 trainer 服务；未配置时 /train/* 路由返回 503"
   },
   "trainer": {
     "host": "0.0.0.0",

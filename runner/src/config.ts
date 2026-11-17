@@ -9,6 +9,7 @@ export interface AppConfig {
   }
   runner: {
     comfyUiBaseURLs: string[]
+    trainerBaseURL: string | null
     host: string
     port: number
     timeout: number
@@ -44,6 +45,7 @@ export function loadConfig(path: string): AppConfig {
     comfyui: { baseURL },
     runner: {
       comfyUiBaseURLs: comfyUrlsOf(runner, baseURL, path),
+      trainerBaseURL: trainerUrlOf(runner),
       host: hostOf(runner, path),
       port: portOf(runner, path),
       timeout: timeoutOf(runner, path),
@@ -113,12 +115,19 @@ function comfyUrlsOf(
   })
 }
 
+// 训练机 trainer 服务地址：可选；未配置时 runner 的 /train/* 路由返回 503
+function trainerUrlOf(runner: Record<string, unknown>): string | null {
+  const value = runner.trainerBaseURL
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string' || value.trim() === '') return null
+  return value.trim().replace(/\/+$/, '')
+}
+
 function comfyUrlOf(
   runner: Record<string, unknown>,
   fallback: string,
   path: string,
-): string {
-  if (!Object.hasOwn(runner, 'comfyUiBaseURL') || runner.comfyUiBaseURL == null)
+): string {  if (!Object.hasOwn(runner, 'comfyUiBaseURL') || runner.comfyUiBaseURL == null)
     return fallback
   const value = runner.comfyUiBaseURL
   if (typeof value !== 'string') {
