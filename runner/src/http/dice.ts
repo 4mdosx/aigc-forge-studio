@@ -168,12 +168,17 @@ export function mountDice(app: Hono, runner: Runner): void {
   app.get('/dice/rolls', (c) => {
     const limitRaw = Number(c.req.query('limit') ?? '50')
     const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 50
+    const offsetRaw = Number(c.req.query('offset') ?? '0')
+    const offset = Number.isInteger(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0
+    const total = (
+      runner.db.prepare('SELECT COUNT(*) AS n FROM dice_rolls').get() as { n: number }
+    ).n
     const rows = runner.db
       .prepare(
         `SELECT id, pose_name, pose_id, fields_json, prompt, negative, created_at
-         FROM dice_rolls ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+         FROM dice_rolls ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
       )
-      .all(limit) as Array<{
+      .all(limit, offset) as Array<{
       id: string
       pose_name: string | null
       pose_id: string | null
@@ -183,6 +188,7 @@ export function mountDice(app: Hono, runner: Runner): void {
       created_at: string
     }>
     return c.json({
+      total,
       rolls: rows.map((row) => {
         let fields: unknown = {}
         try {

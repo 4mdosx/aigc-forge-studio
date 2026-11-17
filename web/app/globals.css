@@ -2038,3 +2038,150 @@ button.task-pick.current {
   min-width: 12rem;
   word-break: break-all;
 }
+
+/* ---- dice tabs + rolls 分页 ---- */
+
+.dice-tabs {
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 0.7rem;
+}
+
+.dice-tab {
+  border: 1px solid #c9beae;
+  border-radius: 999px;
+  background: transparent;
+  color: #5c564e;
+  padding: 0.4rem 1.1rem;
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.dice-tab.on {
+  background: #0c5c49;
+  border-color: #0c5c49;
+  color: #f7f3ea;
+}
+
+.dice-roll-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.dice-roll-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid #e4dacd;
+  border-radius: 10px;
+  padding: 0.5rem 0.65rem;
+  background: #fffdf8;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  width: 100%;
+}
+
+.dice-roll-row:active {
+  background: #f7f3ea;
+}
+
+.dice-roll-row:focus-visible {
+  outline: 2px solid #0c5c49;
+  outline-offset: 1px;
+}
+
+.dice-roll-thumb {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #f7f3ea;
+  border: 1px solid #e4dacd;
+  flex: none;
+}
+
+.dice-roll-thumb-empty {
+  display: inline-block;
+}
+
+.dice-roll-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.dice-roll-row-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.dice-roll-time {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.dice-roll-prompt {
+  font-size: 0.8rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dice-pager {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  justify-content: center;
+  margin-top: 0.6rem;
+  font-size: 0.85rem;
+}
+
+.dice-pager .quiet {
+  min-width: 2.2rem;
+}
+
+.dice-roll-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.dice-roll-detail-title {
+  font-size: 0.95rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dice-roll-detail-block {
+  border: 1px solid #e4dacd;
+  border-radius: 8px;
+  background: #fffdf8;
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.dice-roll-detail-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.dice-roll-detail-prompt {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  word-break: break-all;
+}

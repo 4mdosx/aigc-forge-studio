@@ -168,8 +168,8 @@ export function DiceBoard() {
   const [poseSel, setPoseSel] = useState<Set<string>>(new Set())
   const [posePick, setPosePick] = useState<PoseEntry | null>(null)
   const [openIndex, setOpenIndex] = useState<number | null>(null)
-  const [rolls, setRolls] = useState<RollRecord[]>([])
-  const [rollsLoaded, setRollsLoaded] = useState(false)
+  const [tab, setTab] = useState<'template' | 'rolls'>('template')
+  const [rollsVersion, setRollsVersion] = useState(0)
   const isMobile = useMediaQuery('(max-width: 759px)')
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -346,18 +346,6 @@ export function DiceBoard() {
     [enabled],
   )
 
-  const rollsReload = useCallback(() => {
-    void (async () => {
-      try {
-        const body = await api<{ rolls: RollRecord[] }>('dice/rolls?limit=50')
-        setRolls(body.rolls)
-        setRollsLoaded(true)
-      } catch {
-        // 历史拉不到不影响掷骰
-      }
-    })()
-  }, [])
-
   const rollAll = useCallback(() => {
     const next = fields.map((f) => {
       const picked: Partial<Record<Tier, string[]>> = {}
@@ -404,11 +392,11 @@ export function DiceBoard() {
         negative,
       }),
     })
-      .then(rollsReload)
+      .then(() => setRollsVersion((v) => v + 1))
       .catch(() => {
         // 记录失败不影响掷骰结果展示
       })
-  }, [fields, enabled, poses, poseSel, rollsReload])
+  }, [fields, enabled, poses, poseSel])
 
   const addField = useCallback(() => {
     setFields((cur) => {
@@ -634,6 +622,24 @@ export function DiceBoard() {
                   : ''}
           </span>
         </div>
+        <div className="dice-tabs">
+          <button
+            type="button"
+            className={`dice-tab ${tab === 'template' ? 'on' : ''}`}
+            onClick={() => setTab('template')}
+          >
+            template
+          </button>
+          <button
+            type="button"
+            className={`dice-tab ${tab === 'rolls' ? 'on' : ''}`}
+            onClick={() => setTab('rolls')}
+          >
+            rolls
+          </button>
+        </div>
+        {tab === 'template' ? (
+        <>
         <div className="dice-ratings">
           {TIERS.map((tier) => (
             <label key={tier} className={`dice-rating ${enabled[tier] ? 'on' : ''}`}>
@@ -673,8 +679,12 @@ export function DiceBoard() {
           </button>
         </div>
         {importMsg !== '' ? <p className="muted dice-import-msg">{importMsg}</p> : null}
+        </>
+        ) : null}
       </section>
 
+      {tab === 'template' ? (
+        <>
       <section className="panel">
         {!loaded ? (
           <p className="muted">加载中…</p>
@@ -936,34 +946,11 @@ export function DiceBoard() {
             ) : null}
           </p>
         ) : null}
-        <details
-          className="dice-rolls-hist"
-          onToggle={(e) => {
-            if ((e.target as HTMLDetailsElement).open && !rollsLoaded) rollsReload()
-          }}
-        >
-          <summary>灵感史（每次一起生成自动存一条）</summary>
-          {rolls.length === 0 ? (
-            <p className="muted">还没有记录</p>
-          ) : (
-            <ul className="dice-rolls-list">
-              {rolls.map((r) => (
-                <li key={r.id}>
-                  <span className="muted dice-rolls-time">
-                    {r.createdAt.slice(5, 16).replace('T', ' ')}
-                  </span>
-                  {r.poseName ? (
-                    <span className="dice-tier-label tier-common">{r.poseName}</span>
-                  ) : (
-                    <span className="muted">无 pose</span>
-                  )}
-                  <span className="mono dice-rolls-prompt">{r.prompt !== '' ? r.prompt : '（空）'}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </details>
       </section>
+        </>
+      ) : (
+        <RollsPanel poses={poses} reloadKey={rollsVersion} />
+      )}
     </>
   )
 }
@@ -1147,6 +1134,211 @@ function DiceFieldDetail({
         >
           删除字段
         </button>
+      </div>
+    </div>
+  )
+}
+
+const ROLLS_PAGE_SIZE = 20
+
+// rolls tab：灵感记录分页列表 + 点开详情
+function RollsPanel({ poses, reloadKey }: { poses: PoseEntry[]; reloadKey: number }) {
+  const [rows, setRows] = useState<RollRecord[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(0)
+  const [loaded, setLoaded] = useState(false)
+  const [detail, setDetail] = useState<RollRecord | null>(null)
+  const poseMap = useMemo(() => new Map(poses.map((p) => [p.id, p])), [poses])
+
+  const load = useCallback((p: number) => {
+    void (async () => {
+      try {
+        const body = await api<{ total: number; rolls: RollRecord[] }>(
+          `dice/rolls?limit=${ROLLS_PAGE_SIZE}&offset=${p * ROLLS_PAGE_SIZE}`,
+        )
+        setRows(body.rolls)
+        setTotal(body.total)
+        setLoaded(true)
+        // 当前页翻空了（记录被删等）就回退一页
+        if (body.rolls.length === 0 && p > 0) setPage(p - 1)
+      } catch (err) {
+        fail(messageOf(err))
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
+    load(page)
+  }, [load, page, reloadKey])
+
+  const pages = Math.max(1, Math.ceil(total / ROLLS_PAGE_SIZE))
+
+  return (
+    <section className="panel">
+      <div className="column-head">
+        <h2>📜 rolls</h2>
+        <span className="muted">{total} 条 · 每次「一起生成」自动存一条</span>
+      </div>
+      {!loaded ? (
+        <p className="muted">加载中…</p>
+      ) : rows.length === 0 ? (
+        <p className="muted">还没有记录——去 template 页掷一次 🎲</p>
+      ) : (
+        <>
+          <div className="dice-roll-list">
+            {rows.map((r) => {
+              const pose = r.poseId ? (poseMap.get(r.poseId) ?? null) : null
+              const url = pose ? depthUrl(pose) : null
+              return (
+                <button
+                  key={r.id}
+                  type="button"
+                  className="dice-roll-row"
+                  onClick={() => setDetail(r)}
+                >
+                  {url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img className="dice-roll-thumb" src={url} alt="" loading="lazy" />
+                  ) : (
+                    <span className="dice-roll-thumb dice-roll-thumb-empty" />
+                  )}
+                  <span className="dice-roll-row-main">
+                    <span className="dice-roll-row-head">
+                      {r.poseName ? (
+                        <span className="dice-tier-label tier-common">{r.poseName}</span>
+                      ) : (
+                        <span className="muted">无 pose</span>
+                      )}
+                      <span className="muted dice-roll-time">
+                        {r.createdAt.slice(5, 16).replace('T', ' ')}
+                      </span>
+                    </span>
+                    <span className="mono dice-roll-prompt">
+                      {r.prompt !== '' ? r.prompt : '（空）'}
+                    </span>
+                  </span>
+                  <span className="dice-card-arrow" aria-hidden={true}>
+                    ›
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          {pages > 1 ? (
+            <div className="dice-pager">
+              <button type="button" className="quiet" onClick={() => setPage(0)} disabled={page === 0}>
+                «
+              </button>
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+              >
+                ‹
+              </button>
+              <span className="muted">
+                第 {page + 1} / {pages} 页
+              </span>
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => setPage((p) => Math.min(pages - 1, p + 1))}
+                disabled={page >= pages - 1}
+              >
+                ›
+              </button>
+              <button
+                type="button"
+                className="quiet"
+                onClick={() => setPage(pages - 1)}
+                disabled={page >= pages - 1}
+              >
+                »
+              </button>
+            </div>
+          ) : null}
+        </>
+      )}
+      {detail ? (
+        <RollDetail
+          record={detail}
+          thumb={detail.poseId ? (poseMap.has(detail.poseId) ? depthUrl(poseMap.get(detail.poseId) as PoseEntry) : null) : null}
+          onClose={() => setDetail(null)}
+        />
+      ) : null}
+    </section>
+  )
+}
+
+// 单条灵感详情：全屏覆盖（与字段详情同一套样式），Esc 返回
+function RollDetail({
+  record,
+  thumb,
+  onClose,
+}: {
+  record: RollRecord
+  thumb: string | null
+  onClose: () => void
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+  const copy = (text: string) => {
+    void navigator.clipboard.writeText(text)
+  }
+  return (
+    <div className="dice-detail" role="dialog" aria-modal="true" aria-label="灵感详情">
+      <div className="dice-detail-head">
+        <button type="button" className="quiet dice-detail-back" onClick={onClose}>
+          ‹ 返回
+        </button>
+        <strong className="dice-roll-detail-title">
+          {record.poseName ?? '无 pose'} · {record.createdAt.slice(5, 19).replace('T', ' ')}
+        </strong>
+      </div>
+      <div className="dice-roll-detail-body">
+        {thumb ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img className="dice-pose-result-img" src={thumb} alt={`pose ${record.poseName ?? ''}`} />
+        ) : null}
+        <div className="dice-roll-detail-block">
+          <div className="dice-roll-detail-label">
+            <span className="muted">拼合 prompt</span>
+            <button type="button" className="quiet" onClick={() => copy(record.prompt)}>
+              复制
+            </button>
+          </div>
+          <p className="mono dice-roll-detail-prompt">{record.prompt !== '' ? record.prompt : '（空）'}</p>
+        </div>
+        {record.negative ? (
+          <div className="dice-roll-detail-block">
+            <div className="dice-roll-detail-label">
+              <span className="muted">负面</span>
+              <button type="button" className="quiet" onClick={() => copy(record.negative as string)}>
+                复制
+              </button>
+            </div>
+            <p className="mono dice-roll-detail-prompt">{record.negative}</p>
+          </div>
+        ) : null}
+        <div className="dice-roll-detail-block">
+          <div className="dice-roll-detail-label">
+            <span className="muted">结构化字段</span>
+            <button
+              type="button"
+              className="quiet"
+              onClick={() => copy(JSON.stringify(record.fields, null, 2))}
+            >
+              复制 JSON
+            </button>
+          </div>
+          <pre className="dice-json mono">{JSON.stringify(record.fields, null, 2)}</pre>
+        </div>
       </div>
     </div>
   )
