@@ -125,6 +125,18 @@ CREATE TABLE IF NOT EXISTS dice_fields (
   tiers TEXT NOT NULL DEFAULT '{}',
   position INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS dice_rolls (
+  id TEXT PRIMARY KEY,
+  pose_name TEXT,
+  pose_id TEXT,
+  fields_json TEXT NOT NULL DEFAULT '{}',
+  prompt TEXT NOT NULL DEFAULT '',
+  negative TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS dice_rolls_by_time ON dice_rolls (created_at);
 `
 
 export interface WorkRow {

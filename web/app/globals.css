@@ -1993,3 +1993,48 @@ button.task-pick.current {
   gap: 0.5rem;
   align-items: center;
 }
+
+/* ---- dice 灵感史 ---- */
+
+.dice-rolls-hist {
+  margin-top: 0.6rem;
+  border-top: 1px solid #e4dacd;
+  padding-top: 0.5rem;
+}
+
+.dice-rolls-hist summary {
+  cursor: pointer;
+  color: #5c564e;
+  font-size: 0.85rem;
+  user-select: none;
+}
+
+.dice-rolls-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.dice-rolls-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  border-bottom: 1px dashed #e4dacd;
+  padding-bottom: 0.35rem;
+}
+
+.dice-rolls-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.dice-rolls-prompt {
+  flex: 1;
+  min-width: 12rem;
+  word-break: break-all;
+}

@@ -1,4 +1,5 @@
 import type { Hono } from 'hono'
+import { randomUUID } from 'node:crypto'
 
 import { RunnerError } from '../errors.ts'
 import { DEFAULT_DICE_FIELDS, transaction } from '../db.ts'
@@ -133,5 +134,77 @@ export function mountDice(app: Hono, runner: Runner): void {
       insertRows(runner, rows)
     })
     return c.json({ saved: rows.length })
+  })
+
+  // 灵感表：每次「一起生成」落一条（pose + 结构化字段 + 拼合 prompt）
+  app.post('/dice/rolls', async (c) => {
+    const body = await jsonObject(c.req)
+    const fieldsJson = body.fields
+    if (!fieldsJson || typeof fieldsJson !== 'object' || Array.isArray(fieldsJson)) {
+      throw new RunnerError('fields must be an object')
+    }
+    const prompt = typeof body.prompt === 'string' ? body.prompt : ''
+    const negative = typeof body.negative === 'string' ? body.negative : null
+    const poseName = typeof body.poseName === 'string' ? body.poseName : null
+    const poseId = typeof body.poseId === 'string' ? body.poseId : null
+    const id = randomUUID()
+    runner.db
+      .prepare(
+        `INSERT INTO dice_rolls (id, pose_name, pose_id, fields_json, prompt, negative, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        poseName,
+        poseId,
+        JSON.stringify(fieldsJson),
+        prompt,
+        negative,
+        runner.now().toISOString(),
+      )
+    return c.json({ id }, 201)
+  })
+
+  app.get('/dice/rolls', (c) => {
+    const limitRaw = Number(c.req.query('limit') ?? '50')
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 50
+    const rows = runner.db
+      .prepare(
+        `SELECT id, pose_name, pose_id, fields_json, prompt, negative, created_at
+         FROM dice_rolls ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+      )
+      .all(limit) as Array<{
+      id: string
+      pose_name: string | null
+      pose_id: string | null
+      fields_json: string
+      prompt: string
+      negative: string | null
+      created_at: string
+    }>
+    return c.json({
+      rolls: rows.map((row) => {
+        let fields: unknown = {}
+        try {
+          fields = JSON.parse(row.fields_json)
+        } catch {
+          fields = {}
+        }
+        return {
+          id: row.id,
+          poseName: row.pose_name,
+          poseId: row.pose_id,
+          fields,
+          prompt: row.prompt,
+          negative: row.negative,
+          createdAt: row.created_at,
+        }
+      }),
+    })
+  })
+
+  app.delete('/dice/rolls/:id', (c) => {
+    const result = runner.db.prepare('DELETE FROM dice_rolls WHERE id = ?').run(c.req.param('id'))
+    return c.json({ deleted: result.changes })
   })
 }

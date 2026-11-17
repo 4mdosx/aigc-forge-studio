@@ -80,6 +80,23 @@ function poseTagsOf(entry: PoseEntry): string[] {
   return [...new Set([...(entry.tags ?? []), ...(entry.guide?.shot ?? [])])]
 }
 
+// 拼某字段当前勾选层的词（rollAll 与渲染共用同一实现，避免结果不一致）
+function composeOfField(field: LoadedField, enabled: Record<Tier, boolean>): string {
+  return TIERS.filter((tier) => enabled[tier])
+    .flatMap((tier) => field.picked[tier] ?? [])
+    .join(', ')
+}
+
+interface RollRecord {
+  id: string
+  poseName: string | null
+  poseId: string | null
+  fields: Record<string, unknown>
+  prompt: string
+  negative: string | null
+  createdAt: string
+}
+
 function wordsOf(values: string): string[] {
   return [...new Set(values.split(/[,;\n]/).map((w) => w.trim()).filter((w) => w !== ''))]
 }
@@ -151,6 +168,8 @@ export function DiceBoard() {
   const [poseSel, setPoseSel] = useState<Set<string>>(new Set())
   const [posePick, setPosePick] = useState<PoseEntry | null>(null)
   const [openIndex, setOpenIndex] = useState<number | null>(null)
+  const [rolls, setRolls] = useState<RollRecord[]>([])
+  const [rollsLoaded, setRollsLoaded] = useState(false)
   const isMobile = useMediaQuery('(max-width: 759px)')
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -327,23 +346,69 @@ export function DiceBoard() {
     [enabled],
   )
 
+  const rollsReload = useCallback(() => {
+    void (async () => {
+      try {
+        const body = await api<{ rolls: RollRecord[] }>('dice/rolls?limit=50')
+        setRolls(body.rolls)
+        setRollsLoaded(true)
+      } catch {
+        // 历史拉不到不影响掷骰
+      }
+    })()
+  }, [])
+
   const rollAll = useCallback(() => {
-    setFields((cur) =>
-      cur.map((f) => {
-        const picked: Partial<Record<Tier, string[]>> = {}
-        for (const tier of TIERS) {
-          if (!enabled[tier]) continue
-          const cfg = tierOf(f, tier)
-          const words = pickWords(cfg.values, cfg.min, cfg.max)
-          if (words.length > 0) picked[tier] = words
-        }
-        return { ...f, picked }
-      }),
-    )
+    const next = fields.map((f) => {
+      const picked: Partial<Record<Tier, string[]>> = {}
+      for (const tier of TIERS) {
+        if (!enabled[tier]) continue
+        const cfg = tierOf(f, tier)
+        const words = pickWords(cfg.values, cfg.min, cfg.max)
+        if (words.length > 0) picked[tier] = words
+      }
+      return { ...f, picked }
+    })
+    setFields(next)
     const pool = poses.filter((p) => poseSel.has(p.id))
-    setPosePick(pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : null)
+    const pose = pool.length > 0 ? pool[Math.floor(Math.random() * pool.length)] : null
+    setPosePick(pose)
     setRolled(true)
-  }, [enabled, poses, poseSel])
+    // 灵感表：每次一起生成落一条（runner SQLite dice_rolls）
+    const poseTags = pose ? poseTagsOf(pose) : []
+    const composed: Record<string, string> = {}
+    for (const f of next) {
+      const v = composeOfField(f, enabled)
+      if (v !== '') composed[f.name] = v
+    }
+    const negative = composed['constraints.exclude'] ?? null
+    const prompt = [
+      ...next
+        .filter((f) => f.name !== 'constraints.exclude')
+        .map((f) => composeOfField(f, enabled))
+        .filter((v) => v !== ''),
+      poseTags.join(', '),
+    ]
+      .filter((v) => v !== '')
+      .join(', ')
+    void api('dice/rolls', {
+      method: 'POST',
+      body: JSON.stringify({
+        poseName: pose?.poseName ?? null,
+        poseId: pose?.id ?? null,
+        fields: {
+          ...composed,
+          ...(pose ? { pose: { id: pose.id, name: pose.poseName, tags: poseTags } } : {}),
+        },
+        prompt,
+        negative,
+      }),
+    })
+      .then(rollsReload)
+      .catch(() => {
+        // 记录失败不影响掷骰结果展示
+      })
+  }, [fields, enabled, poses, poseSel, rollsReload])
 
   const addField = useCallback(() => {
     setFields((cur) => {
@@ -514,10 +579,7 @@ export function DiceBoard() {
 
   // ---- 结果合成 ----
 
-  const composeOf = (field: LoadedField): string =>
-    TIERS.filter((tier) => enabled[tier])
-      .flatMap((tier) => field.picked[tier] ?? [])
-      .join(', ')
+  const composeOf = (field: LoadedField): string => composeOfField(field, enabled)
 
   const poseTags = posePick ? poseTagsOf(posePick) : []
   const composed = Object.fromEntries(
@@ -874,6 +936,33 @@ export function DiceBoard() {
             ) : null}
           </p>
         ) : null}
+        <details
+          className="dice-rolls-hist"
+          onToggle={(e) => {
+            if ((e.target as HTMLDetailsElement).open && !rollsLoaded) rollsReload()
+          }}
+        >
+          <summary>灵感史（每次一起生成自动存一条）</summary>
+          {rolls.length === 0 ? (
+            <p className="muted">还没有记录</p>
+          ) : (
+            <ul className="dice-rolls-list">
+              {rolls.map((r) => (
+                <li key={r.id}>
+                  <span className="muted dice-rolls-time">
+                    {r.createdAt.slice(5, 16).replace('T', ' ')}
+                  </span>
+                  {r.poseName ? (
+                    <span className="dice-tier-label tier-common">{r.poseName}</span>
+                  ) : (
+                    <span className="muted">无 pose</span>
+                  )}
+                  <span className="mono dice-rolls-prompt">{r.prompt !== '' ? r.prompt : '（空）'}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </details>
       </section>
     </>
   )
