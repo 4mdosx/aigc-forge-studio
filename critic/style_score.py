@@ -2,7 +2,7 @@
 """风格轴打分（Anime Style Embedder v4）。
 
 用法：
-    tools/.venv/bin/python tools/style_score.py <图片路径> [--ref <参考图>] [--json]
+    .venv/bin/python critic/style_score.py <图片路径> [--ref <参考图>] [--json]
 
 输出 7 维 styleVec（候选 B 的原始风格分数）。给 --ref 时附加 L2 距离、余弦相似度，
 以及 close / uncertain / far 三档判断。阈值来自 12 张高雄参考图实测标定，不是通用常数；

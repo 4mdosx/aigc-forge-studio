@@ -30,5 +30,10 @@
       "numCpuThreads": 8,
       "//train": "sd-scripts 由 infra/train_bootstrap.ps1 部署；日志落 trainer 包根 data/train/<jobId>.log"
     }
+  },
+  "critic": {
+    "baseURL": "http://127.0.0.1:8791",
+    "host": "127.0.0.1",
+    "port": 8791
   }
 }

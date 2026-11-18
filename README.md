@@ -10,7 +10,7 @@ Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
 
 | 路径 | 作用 |
 | --- | --- |
-| `dev.mjs` | 同时启动 Runner 和 Web 的开发服务器 |
+| `cli.js` | 交互启动。先选 dev 或 deploy，再多选服务，确认后启动 |
 | `config.json` | ComfyUI 和 Runner 的地址、超时、数据库路径 |
 | `env.example.ts` | 提示词网关的模板。复制成 `env.ts` 后填写，`env.ts` 不进版本库 |
 | `infra/data/environment.json` | ComfyUI、插件、Python、PyTorch 的版本钉扎 |
@@ -108,10 +108,10 @@ infra\install-shortcuts.ps1 -Startup
 在能访问 ComfyUI 的机器上执行。需要 Node.js 22.18 或更新版本。`runner/` 和 `web/` 都安装过依赖后，在仓库根目录执行：
 
 ```bash
-node dev.mjs
+node cli.js
 ```
 
-这会同时启动 Runner 和 Web 的开发服务器。Runner 听 `http://127.0.0.1:8787`，界面听 `http://127.0.0.1:3000`。Ctrl+C 会停掉两个进程。
+先选 `dev` 或 `deploy`，再勾选服务，回车确认后启动。可以同时选 `runner+web` 和 `critic`，Ctrl+C 一起停。`dev` 用 `npm run dev`，源码变化会重启。`deploy` 用 `npm start`，选了 `runner+web` 时 Web 会先执行 `npm run build`。Runner 听 `http://127.0.0.1:8787`，界面听 `http://127.0.0.1:3000`。`critic` 用仓库根目录的 `.venv` 启动，地址读 `config.json` 的 `critic.host` 和 `critic.port`。
 
 只启动 Runner 时：
 

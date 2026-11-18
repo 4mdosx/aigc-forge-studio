@@ -9,7 +9,7 @@
 
 模型缓存：data/models/wd14/<modelId>/（model.onnx + selected_tags.csv）
 用法：
-    tools/.venv/bin/python tools/wd14_tag.py <图片路径> [--json] [--model <id>]
+    .venv/bin/python critic/wd14_tag.py <图片路径> [--json] [--model <id>]
 仅用于 SFW 素材打标。
 """
 

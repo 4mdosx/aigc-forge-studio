@@ -8,8 +8,8 @@
     POST /embed   {"path": "...", "ref": "...", "device": "auto"}
     POST /close   {"a": "...", "b": "..."}   # 两图风格接近判定（L2 + cosine）
 
-运行（共用仓库 venv）：
-    tools/.venv/bin/python critic/server.py --port 8791
+运行（仓库根目录的 .venv）：
+    .venv/bin/python critic/server.py --port 8791
 
 仅处理本地路径图片；SFW only。
 """
@@ -17,19 +17,16 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import math
 import sys
 from pathlib import Path
 
 from flask import Flask, jsonify, request
 
-ROOT = Path(__file__).resolve().parent.parent
-TOOLS = ROOT / "tools"
-sys.path.insert(0, str(TOOLS))
+import style_score
+import wd14_tag
 
-import wd14_tag  # noqa: E402  共用 tools 下的工具实现
-import style_score  # noqa: E402
+ROOT = Path(__file__).resolve().parent.parent
 
 
 app = Flask(__name__)

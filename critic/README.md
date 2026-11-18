@@ -1,13 +1,28 @@
 # critic
 
-本地 HTTP 服务：WD14 打标 + 风格向量。与工具共用 `tools/.venv`，无独立环境。
+本地 HTTP 服务：WD14 打标 + 风格向量。打标和风格向量脚本也在这个目录，共用仓库根目录 `.venv`。
+
+## 安装
+
+需要 Python 3.12。在仓库根目录执行：
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -U pip
+.venv/bin/python -m pip install -r critic/requirements.txt
+```
+
+`.venv` 已在 `.gitignore` 里，不会进版本库。
 
 ## 启动
 
+在仓库根目录执行。地址读 `config.json` 的 `critic.host` 和 `critic.port`，默认 `127.0.0.1:8791`。
+
 ```bash
-cd aigc-forge-studio
-tools/.venv/bin/python critic/server.py --port 8791
+.venv/bin/python critic/server.py --host 127.0.0.1 --port 8791
 ```
+
+也可以 `node cli.js`，先选 dev 或 deploy，再勾选 critic，回车确认后启动。
 
 ## 接口
 
