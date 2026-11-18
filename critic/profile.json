@@ -1,0 +1,18 @@
+{
+  "default": "anime-sdxl-1024-v1",
+  "anime-sdxl-1024-v1": {
+    "profileId": "anime-sdxl-1024-v1",
+    "format": "png",
+    "colorSpace": "sRGB",
+    "channels": 3,
+    "resolution": 1024,
+    "buckets": [
+      [1024, 1024],
+      [896, 1152],
+      [832, 1216],
+      [1152, 896],
+      [1216, 832]
+    ],
+    "crop": "subject-aware"
+  }
+}

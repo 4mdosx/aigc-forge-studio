@@ -1,6 +1,6 @@
 # critic
 
-本地 HTTP 服务：WD14 打标 + 风格向量。打标和风格向量脚本也在这个目录，共用仓库根目录 `.venv`。
+本地 HTTP 服务：WD14 打标 + 风格向量。`preprocess`、`tag`、`embed` 是本目录的模块，HTTP 和 `tools/critic.py` 都直接调用，共用仓库根目录 `.venv`。
 
 ## 安装
 
@@ -24,6 +24,15 @@ python3.12 -m venv .venv
 
 也可以 `node cli.js`，先选 dev 或 deploy，再勾选 critic，回车确认后启动。
 
+不走 HTTP、直接拿本地路径时：
+
+```bash
+.venv/bin/python tools/critic.py tag data/character/takao/ref/AL_kv_full__高雄立绘.jpg
+.venv/bin/python tools/critic.py embed data/character/takao/ref/AL_kv_full__高雄立绘.jpg --json
+```
+
+`tag` 返回 tags 和 rating，`embed` 返回 7 维 `styleVec`。`--ref` 再附上 L2 和 cosine。`--json` 打印模块返回的数据。
+
 ## 接口
 
 - `GET /health` — 服务与模型加载状态
@@ -31,8 +40,8 @@ python3.12 -m venv .venv
   - `path`（必填）本地图片路径；相对路径按仓库根解析
   - `model`、`general_threshold`、`character_threshold`、`exclude`、`with_scores` 可选
 - `POST /embed` — 图片转 7 维风格向量
-  - `path`（必填）；`ref` 可选参考图（返回 L2 / cosine / verdict）；`device` 可选
-- `POST /close` — 两图风格接近判定
+  - `path`（必填）；`ref` 可选参考图（返回 L2 / cosine）；`device` 可选
+- `POST /close` — 两图风格距离（L2 / cosine）
   - `a`、`b`（必填）图片路径；`device` 可选
 
 ## 调用示例
