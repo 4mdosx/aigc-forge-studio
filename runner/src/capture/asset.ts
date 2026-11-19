@@ -1,10 +1,12 @@
 import { execFile as execFileCb } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 import type { DatabaseSync } from 'node:sqlite'
+
+import { PNG } from 'pngjs'
 
 import { transaction } from '../db.ts'
 import { RunnerError } from '../errors.ts'
@@ -35,6 +37,11 @@ export type ImageAsset = {
     width: number
     height: number
   }
+  nobg?: {
+    path: string
+    width: number
+    height: number
+  }
   tags: string[]
   embedding: number[]
   tagsModelVersion: string
@@ -45,7 +52,11 @@ export type ImageAsset = {
   updatedAt: number
   originalUrl: string
   processedUrl: string | null
+  nobgUrl: string | null
+  thumbUrl: string | null
 }
+
+export type FinalVersion = 'raw' | 'processed' | 'nobg'
 
 type AssetRow = {
   id: string
@@ -61,6 +72,10 @@ type AssetRow = {
   processed_path: string | null
   processed_width: number | null
   processed_height: number | null
+  thumb_path: string | null
+  nobg_path: string | null
+  nobg_width: number | null
+  nobg_height: number | null
   tags_json: string
   embedding_json: string
   tags_model_version: string
@@ -73,6 +88,9 @@ type AssetRow = {
 
 const EMBEDDING_MODEL = 'style-embedder-v4'
 const STEP_TIMEOUT_MS = 180_000
+const HASH_RE = /^[a-f0-9]{64}$/
+const THUMB_EDGE = 320
+const THUMB_NAME = 'thumb.png'
 
 export function listAssets(db: DatabaseSync): ImageAsset[] {
   const rows = db
@@ -84,6 +102,75 @@ export function listAssets(db: DatabaseSync): ImageAsset[] {
 export function assetById(db: DatabaseSync, id: string): ImageAsset | null {
   const row = db.prepare('SELECT * FROM image_assets WHERE id = ?').get(id) as AssetRow | undefined
   return row ? assetOf(row) : null
+}
+
+export type NearestNeighbor = {
+  id: string
+  cosine: number
+  l2: number
+  status: ImageStatus
+  thumbUrl: string | null
+  processedUrl: string | null
+  originalUrl: string
+  updatedAt: number
+}
+
+export type NearestOrder = 'near' | 'far'
+
+export async function nearestAssets(
+  runner: Runner,
+  id: string,
+  k = 10,
+  order: NearestOrder = 'near',
+): Promise<{ id: string; neighbors: NearestNeighbor[] }> {
+  if (!Number.isInteger(k) || k < 1) throw new RunnerError('k 必须是正整数')
+  if (order !== 'near' && order !== 'far') throw new RunnerError('order 必须是 near 或 far')
+  const assets = listAssets(runner.db)
+  const target = assets.find((asset) => asset.id === id)
+  if (!target) throw new RunnerError('image not found', 404)
+  const vectors = vectorsFor(assets, target)
+  if (!vectors) throw new RunnerError('这张图还没有向量')
+  const base = criticBaseURL(runner.dataDir)
+  let result: { neighbors?: Array<{ id?: unknown; cosine?: unknown; l2?: unknown }> }
+  try {
+    await criticJson(base, '/image-vector', { vectors })
+    const span = Math.max(k, Object.keys(vectors).length - 1)
+    result = await criticJson(base, '/image-vector/nearest', { id, k: span, order })
+  } catch (err) {
+    if (err instanceof RunnerError) throw err
+    const message = err instanceof Error ? err.message : String(err)
+    throw new RunnerError(message, 502)
+  }
+  const byId = new Map(assets.map((asset) => [asset.id, asset]))
+  const neighbors: NearestNeighbor[] = []
+  for (const item of result.neighbors ?? []) {
+    if (!item || typeof item.id !== 'string') continue
+    const asset = byId.get(item.id)
+    if (!asset || typeof item.cosine !== 'number' || typeof item.l2 !== 'number') continue
+    neighbors.push({
+      id: asset.id,
+      cosine: item.cosine,
+      l2: item.l2,
+      status: asset.status,
+      thumbUrl: asset.thumbUrl,
+      processedUrl: asset.processedUrl,
+      originalUrl: asset.originalUrl,
+      updatedAt: asset.updatedAt,
+    })
+  }
+  neighbors.sort((left, right) => compareNeighbors(left, right, order))
+  return { id, neighbors: neighbors.slice(0, k) }
+}
+
+function compareNeighbors(left: NearestNeighbor, right: NearestNeighbor, order: NearestOrder): number {
+  if (left.cosine !== right.cosine) {
+    return order === 'far' ? left.cosine - right.cosine : right.cosine - left.cosine
+  }
+  if (left.l2 !== right.l2) {
+    return order === 'far' ? right.l2 - left.l2 : left.l2 - right.l2
+  }
+  if (left.id === right.id) return 0
+  return left.id < right.id ? -1 : 1
 }
 
 export function assetByHash(db: DatabaseSync, hash: string): ImageAsset | null {
@@ -186,17 +273,20 @@ async function writePrepared(runner: Runner, asset: ImageAsset, signal: AbortSig
   const rootKind = asset.original.path.startsWith('capture/assets/') ? 'assets' : 'raw'
   const processedRel = join('capture', rootKind, hash, 'processed.png')
   const processedAbs = join(runner.dataDir, processedRel)
+  const thumbRel = join('capture', rootKind, hash, THUMB_NAME)
   const originalAbs = join(runner.dataDir, asset.original.path)
   const base = criticBaseURL(runner.dataDir)
   const prepared = await prepareImage(runner.dataDir, base, originalAbs, processedAbs, signal)
+  await writeThumb(processedAbs, join(runner.dataDir, thumbRel))
   const preparedAt = runner.now().getTime()
   runner.db
     .prepare(
       `UPDATE image_assets SET
-        processed_path = ?, processed_width = ?, processed_height = ?, updated_at = ?
+        processed_path = ?, processed_width = ?, processed_height = ?,
+        thumb_path = ?, updated_at = ?
       WHERE id = ?`,
     )
-    .run(processedRel, prepared.width, prepared.height, preparedAt, asset.id)
+    .run(processedRel, prepared.width, prepared.height, thumbRel, preparedAt, asset.id)
   const next = assetById(runner.db, asset.id)
   if (!next) throw new Error(`image not found: ${asset.id}`)
   return next
@@ -284,8 +374,51 @@ export function updateAsset(
   return next
 }
 
-export function approveAsset(runner: Runner, id: string): ImageAsset {
-  return moveReviewed(runner, id, 'approved')
+export function approveAsset(runner: Runner, id: string, version: FinalVersion = 'processed'): Promise<ImageAsset> {
+  return moveReviewed(runner, id, version)
+}
+
+export function replaceNobg(runner: Runner, id: string, bytes: Buffer): ImageAsset {
+  const current = assetById(runner.db, id)
+  if (!current) throw new RunnerError('image not found', 404)
+  if (current.status === 'approved') throw new RunnerError('已通过的图片不能再擦除', 409)
+  if (!current.nobg) throw new RunnerError('还没有移除背景的版本', 409)
+  if (bytes.length < 32 || bytes[0] !== 0x89 || bytes[1] !== 0x50) {
+    throw new RunnerError('需要 PNG')
+  }
+  let png: PNG
+  try {
+    png = PNG.sync.read(bytes)
+  } catch {
+    throw new RunnerError('需要 PNG')
+  }
+  if (!png.width || !png.height) throw new RunnerError('需要 PNG')
+  const abs = join(runner.dataDir, current.nobg.path)
+  writeFileSync(abs, bytes)
+  const now = runner.now().getTime()
+  runner.db
+    .prepare(
+      `UPDATE image_assets SET nobg_width = ?, nobg_height = ?, updated_at = ? WHERE id = ?`,
+    )
+    .run(png.width, png.height, now, id)
+  const next = assetById(runner.db, id)
+  if (!next) throw new RunnerError('image not found', 404)
+  return next
+}
+
+export function deleteAsset(runner: Runner, id: string): void {
+  const current = assetById(runner.db, id)
+  if (!current) throw new RunnerError('image not found', 404)
+  const hash = current.original.hash
+  if (HASH_RE.test(hash)) {
+    for (const kind of ['raw', 'assets']) {
+      rmSync(join(runner.dataDir, 'capture', kind, hash), { recursive: true, force: true })
+    }
+  }
+  transaction(runner.db, () => {
+    runner.db.prepare('DELETE FROM jobs WHERE asset_id = ?').run(id)
+    runner.db.prepare('DELETE FROM image_assets WHERE id = ?').run(id)
+  })
 }
 
 export function rejectAsset(runner: Runner, id: string): ImageAsset {
@@ -301,31 +434,132 @@ export function rejectAsset(runner: Runner, id: string): ImageAsset {
   return next
 }
 
-function moveReviewed(runner: Runner, id: string, status: 'approved'): ImageAsset {
+async function moveReviewed(runner: Runner, id: string, version: FinalVersion): Promise<ImageAsset> {
   const current = assetById(runner.db, id)
   if (!current) throw new RunnerError('image not found', 404)
   if (current.status !== 'processed') throw new RunnerError('只有处理完的图片可以通过', 409)
+  if (!current.processed) throw new RunnerError('没有处理后的图片', 409)
+  if (version === 'nobg' && !current.nobg) throw new RunnerError('还没有移除背景的版本', 409)
+  if (version === 'raw' && !current.original.path) throw new RunnerError('没有原始图片', 409)
   const hash = current.original.hash
   const from = join(runner.dataDir, 'capture', 'raw', hash)
   const to = join(runner.dataDir, 'capture', 'assets', hash)
+  const processedName = current.processed.path.split('/').pop()
+  const originalName = current.original.path.split('/').pop() ?? ''
+  if (!processedName) throw new RunnerError('没有处理后的图片', 409)
   if (existsSync(from)) {
     mkdirSync(dirname(to), { recursive: true })
     if (existsSync(to)) throw new RunnerError(`assets 已存在: ${hash}`, 409)
     renameSync(from, to)
   }
+  const keptDir = existsSync(to) ? to : from
+  const kept = await settleFinalFiles(keptDir, version, processedName, originalName)
+  const root = existsSync(to) ? 'assets' : 'raw'
+  await writeThumb(join(keptDir, kept.name), join(keptDir, THUMB_NAME))
+  const thumbRel = `capture/${root}/${hash}/${THUMB_NAME}`
+  const size =
+    kept.width && kept.height
+      ? { width: kept.width, height: kept.height }
+      : version === 'raw'
+        ? { width: current.original.width, height: current.original.height }
+        : { width: current.processed.width, height: current.processed.height }
   const now = runner.now().getTime()
-  const originalPath = current.original.path.replace(/^capture\/raw\//, 'capture/assets/')
-  const processedPath = current.processed?.path.replace(/^capture\/raw\//, 'capture/assets/') ?? null
   runner.db
     .prepare(
       `UPDATE image_assets SET
-        status = ?, original_path = ?, processed_path = ?, reviewed_at = ?, updated_at = ?
+        status = 'approved', original_path = '',
+        processed_path = ?, processed_width = ?, processed_height = ?,
+        thumb_path = ?,
+        nobg_path = NULL, nobg_width = NULL, nobg_height = NULL,
+        reviewed_at = ?, updated_at = ?
       WHERE id = ?`,
     )
-    .run(status, originalPath, processedPath, now, now, id)
+    .run(
+      `capture/${root}/${hash}/${kept.name}`,
+      size.width,
+      size.height,
+      thumbRel,
+      now,
+      now,
+      id,
+    )
   const next = assetById(runner.db, id)
   if (!next) throw new RunnerError('image not found', 404)
   return next
+}
+
+export async function settleFinalFiles(
+  dir: string,
+  version: FinalVersion,
+  processedName: string,
+  originalName: string,
+): Promise<{ name: string; width?: number; height?: number }> {
+  const processedAbs = join(dir, processedName)
+  const nobgAbs = join(dir, 'nobg.png')
+  if (version === 'nobg') {
+    if (!existsSync(nobgAbs)) throw new RunnerError('还没有移除背景的版本', 409)
+    if (!existsSync(processedAbs)) throw new RunnerError('没有处理后的图片', 409)
+    const canvas = await imageSize(processedAbs)
+    await flattenOnWhite(nobgAbs, processedAbs, canvas.width, canvas.height)
+    rmSync(nobgAbs, { force: true })
+    dropOriginalFiles(dir)
+    return { name: processedName, width: canvas.width, height: canvas.height }
+  }
+  if (version === 'raw') {
+    if (!originalName || !existsSync(join(dir, originalName))) {
+      throw new RunnerError('没有原始图片', 409)
+    }
+    rmSync(processedAbs, { force: true })
+    rmSync(nobgAbs, { force: true })
+    return { name: originalName }
+  }
+  if (!existsSync(processedAbs)) throw new RunnerError('没有处理后的图片', 409)
+  rmSync(nobgAbs, { force: true })
+  dropOriginalFiles(dir)
+  return { name: processedName }
+}
+
+async function imageSize(file: string): Promise<{ width: number; height: number }> {
+  try {
+    const png = PNG.sync.read(readFileSync(file))
+    if (!png.width || !png.height) throw new Error('empty')
+    return { width: png.width, height: png.height }
+  } catch {
+    throw new RunnerError('无法读取预处理图尺寸')
+  }
+}
+
+async function flattenOnWhite(
+  source: string,
+  dest: string,
+  width: number,
+  height: number,
+): Promise<void> {
+  const cut = PNG.sync.read(readFileSync(source))
+  const out = new PNG({ width, height, colorType: 2 })
+  for (let y = 0; y < height; y += 1) {
+    const sy = Math.min(cut.height - 1, Math.floor((y * cut.height) / height))
+    for (let x = 0; x < width; x += 1) {
+      const sx = Math.min(cut.width - 1, Math.floor((x * cut.width) / width))
+      const from = (sy * cut.width + sx) << 2
+      const alpha = (cut.data[from + 3] ?? 255) / 255
+      const to = (y * width + x) << 2
+      out.data[to] = Math.round((cut.data[from] ?? 0) * alpha + 255 * (1 - alpha))
+      out.data[to + 1] = Math.round((cut.data[from + 1] ?? 0) * alpha + 255 * (1 - alpha))
+      out.data[to + 2] = Math.round((cut.data[from + 2] ?? 0) * alpha + 255 * (1 - alpha))
+      out.data[to + 3] = 255
+    }
+  }
+  const tmp = `${dest}.white`
+  writeFileSync(tmp, PNG.sync.write(out))
+  renameSync(tmp, dest)
+}
+
+function dropOriginalFiles(dir: string): void {
+  if (!existsSync(dir)) return
+  for (const name of readdirSync(dir)) {
+    if (name.startsWith('original.')) rmSync(join(dir, name))
+  }
 }
 
 function assetOf(row: AssetRow): ImageAsset {
@@ -354,14 +588,23 @@ function assetOf(row: AssetRow): ImageAsset {
     reviewedAt: row.reviewed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    originalUrl: fileUrl(row.original_path),
+    originalUrl: row.original_path ? fileUrl(row.original_path) : '',
     processedUrl: row.processed_path ? fileUrl(row.processed_path) : null,
+    nobgUrl: row.nobg_path ? fileUrl(row.nobg_path) : null,
+    thumbUrl: row.thumb_path ? fileUrl(row.thumb_path) : null,
   }
   if (row.processed_path && row.processed_width && row.processed_height) {
     asset.processed = {
       path: row.processed_path,
       width: row.processed_width,
       height: row.processed_height,
+    }
+  }
+  if (row.nobg_path) {
+    asset.nobg = {
+      path: row.nobg_path,
+      width: row.nobg_width ?? 0,
+      height: row.nobg_height ?? 0,
     }
   }
   if (row.note) asset.note = row.note
@@ -401,7 +644,45 @@ function assetId(now: Date): string {
   return `${stamp}-${randomBytes(2).toString('hex')}`
 }
 
-async function pixelSize(file: string): Promise<{ width: number; height: number }> {
+export async function writeThumb(source: string, dest: string): Promise<void> {
+  mkdirSync(dirname(dest), { recursive: true })
+  if (existsSync(dest)) rmSync(dest)
+  await execFile('sips', ['-Z', String(THUMB_EDGE), '-s', 'format', 'png', source, '--out', dest])
+}
+
+export async function backfillAssetThumbs(dataDir: string, db: DatabaseSync): Promise<number> {
+  const root = join(dataDir, 'capture', 'assets')
+  if (!existsSync(root)) return 0
+  let written = 0
+  for (const hash of readdirSync(root)) {
+    if (!HASH_RE.test(hash)) continue
+    const dir = join(root, hash)
+    const source = thumbSource(dir)
+    if (!source) continue
+    const dest = join(dir, THUMB_NAME)
+    await writeThumb(source, dest)
+    db.prepare('UPDATE image_assets SET thumb_path = ? WHERE hash = ?').run(
+      `capture/assets/${hash}/${THUMB_NAME}`,
+      hash,
+    )
+    written += 1
+  }
+  return written
+}
+
+function thumbSource(dir: string): string | null {
+  const processed = join(dir, 'processed.png')
+  if (existsSync(processed)) return processed
+  const names = readdirSync(dir)
+  const original = names.find((name) => name.startsWith('original.'))
+  if (original) return join(dir, original)
+  const image = names.find(
+    (name) => name !== THUMB_NAME && /\.(png|jpe?g|webp)$/i.test(name),
+  )
+  return image ? join(dir, image) : null
+}
+
+export async function pixelSize(file: string): Promise<{ width: number; height: number }> {
   try {
     const { stdout } = await execFile('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', file])
     return {
@@ -411,6 +692,26 @@ async function pixelSize(file: string): Promise<{ width: number; height: number 
   } catch {
     return { width: 0, height: 0 }
   }
+}
+
+function vectorsFor(assets: ImageAsset[], target: ImageAsset): Record<string, number[]> | null {
+  const vector = usableVector(target.embedding)
+  if (!vector) return null
+  const vectors: Record<string, number[]> = { [target.id]: vector }
+  for (const asset of assets) {
+    if (asset.id === target.id) continue
+    const other = usableVector(asset.embedding)
+    if (!other || other.length !== vector.length) continue
+    vectors[asset.id] = other
+  }
+  return vectors
+}
+
+function usableVector(values: number[]): number[] | null {
+  if (values.length === 0) return null
+  if (values.some((value) => !Number.isFinite(value))) return null
+  if (values.every((value) => value === 0)) return null
+  return values
 }
 
 function criticBaseURL(dataDir: string): string {

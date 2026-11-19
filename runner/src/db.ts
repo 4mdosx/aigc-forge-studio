@@ -175,6 +175,10 @@ CREATE TABLE IF NOT EXISTS image_assets (
   processed_path TEXT,
   processed_width INTEGER,
   processed_height INTEGER,
+  thumb_path TEXT,
+  nobg_path TEXT,
+  nobg_width INTEGER,
+  nobg_height INTEGER,
   tags_json TEXT NOT NULL DEFAULT '[]',
   embedding_json TEXT NOT NULL DEFAULT '[]',
   tags_model_version TEXT NOT NULL DEFAULT '',
@@ -289,6 +293,10 @@ function migrate(db: DatabaseSync): void {
   addColumn(db, 'chats', 'system_text', 'TEXT')
   rebuildDiceFields(db)
   seedDiceFields(db)
+  addColumn(db, 'image_assets', 'thumb_path', 'TEXT')
+  addColumn(db, 'image_assets', 'nobg_path', 'TEXT')
+  addColumn(db, 'image_assets', 'nobg_width', 'INTEGER')
+  addColumn(db, 'image_assets', 'nobg_height', 'INTEGER')
 }
 
 // dice_fields 曾用保留字 values 作列名，后升 candidates；v3 = tiers JSON 列。

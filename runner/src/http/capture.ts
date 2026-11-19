@@ -18,11 +18,16 @@ import type { Hono } from 'hono'
 import {
   approveAsset,
   assetById,
+  deleteAsset,
   ingestBytes,
   listAssets,
+  nearestAssets,
   rejectAsset,
+  replaceNobg,
   updateAsset,
+  type FinalVersion,
 } from '../capture/asset.ts'
+import { removeBackground } from '../capture/nobg.ts'
 import { listCaptureJobs, resumeCaptureJobs, retryCaptureJob } from '../capture/jobs.ts'
 import { RunnerError } from '../errors.ts'
 import { relativePath } from '../path.ts'
@@ -30,6 +35,20 @@ import type { Runner } from '../task/queue.ts'
 import { bytesOf, jsonObject, stringField } from './request.ts'
 
 const execFile = promisify(execFileCb)
+
+function nearestCountOf(raw: string | undefined): number {
+  if (raw === undefined || raw === '') return 10
+  if (!/^[1-9]\d*$/.test(raw)) throw new RunnerError('k 必须是正整数')
+  const count = Number(raw)
+  if (!Number.isSafeInteger(count)) throw new RunnerError('k 必须是正整数')
+  return count
+}
+
+function nearestOrderOf(raw: string | undefined): 'near' | 'far' {
+  if (raw === undefined || raw === '' || raw === 'near') return 'near'
+  if (raw === 'far') return 'far'
+  throw new RunnerError('order 必须是 near 或 far')
+}
 
 // 采集工作台：Pinterest 链接 → 下载原图 → 异步预处理 → 手工整理素材池。
 // 目录即真相源（不进 SQLite，不再按 folder 分）：
@@ -476,6 +495,26 @@ async function processEntry(
   }
 }
 
+async function finalVersion(req: { text(): Promise<string> }): Promise<FinalVersion> {
+  const raw = await req.text()
+  if (raw.trim() === '') return 'processed'
+  let body: unknown
+  try {
+    body = JSON.parse(raw)
+  } catch {
+    throw new RunnerError('invalid JSON')
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new RunnerError('body must be a JSON object')
+  }
+  const value = (body as { version?: unknown }).version
+  if (value === undefined) return 'processed'
+  if (value !== 'raw' && value !== 'processed' && value !== 'nobg') {
+    throw new RunnerError('version 必须是 raw、processed 或 nobg')
+  }
+  return value
+}
+
 // ---- 端点 ----
 
 export function mountCapture(app: Hono, runner: Runner): void {
@@ -543,6 +582,17 @@ export function mountCapture(app: Hono, runner: Runner): void {
     return c.json(asset)
   })
 
+  app.get('/capture/assets/:id/nearest', async (c) => {
+    return c.json(
+      await nearestAssets(
+        runner,
+        c.req.param('id'),
+        nearestCountOf(c.req.query('k')),
+        nearestOrderOf(c.req.query('order')),
+      ),
+    )
+  })
+
   app.put('/capture/assets/:id', async (c) => {
     const body = await jsonObject(c.req)
     const patch: {
@@ -579,12 +629,26 @@ export function mountCapture(app: Hono, runner: Runner): void {
     return c.json(updateAsset(runner, c.req.param('id'), patch))
   })
 
-  app.post('/capture/assets/:id/approve', (c) => {
-    return c.json(approveAsset(runner, c.req.param('id')))
+  app.post('/capture/assets/:id/nobg', async (c) => {
+    return c.json(await removeBackground(runner, c.req.param('id')))
+  })
+
+  app.put('/capture/assets/:id/nobg', async (c) => {
+    const bytes = Buffer.from(await c.req.arrayBuffer())
+    return c.json(replaceNobg(runner, c.req.param('id'), bytes))
+  })
+
+  app.post('/capture/assets/:id/approve', async (c) => {
+    return c.json(await approveAsset(runner, c.req.param('id'), await finalVersion(c.req)))
   })
 
   app.post('/capture/assets/:id/reject', (c) => {
     return c.json(rejectAsset(runner, c.req.param('id')))
+  })
+
+  app.delete('/capture/assets/:id', (c) => {
+    deleteAsset(runner, c.req.param('id'))
+    return c.json({ ok: true })
   })
 
   app.get('/capture/jobs', (c) => {

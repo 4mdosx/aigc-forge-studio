@@ -1,6 +1,6 @@
 # critic
 
-本地 HTTP 服务：WD14 打标 + 风格向量。`preprocess`、`tag`、`embed` 是本目录的模块，HTTP 和 `tools/critic.py` 都直接调用，共用仓库根目录 `.venv`。
+本地 HTTP 服务：WD14 打标 + 风格向量 + 图片向量缓存。`preprocess`、`tag`、`embed`、`image_vector` 是本目录的模块，由 HTTP 直接调用；`tools/critic.py` 调用打标和风格向量。共用仓库根目录 `.venv`。
 
 ## 安装
 
@@ -48,6 +48,17 @@ python3.12 -m venv .venv
   - `path`（必填）；`ref` 可选参考图（返回 L2 / cosine）；`device` 可选
 - `POST /close` — 两图风格距离（L2 / cosine）
   - `a`、`b`（必填）图片路径；`device` 可选
+- `POST /image-vector` — 用本次要处理的全部图片替换向量缓存
+  - `vectors`（必填）`{图片 id: 数值向量}`。同一次请求里的向量维度必须一致，不能是零向量
+  - 每次都是全量替换，不与上次的缓存合并。缓存只在 critic 进程内存里，重启后需要重新传入
+- `POST /image-vector/nearest` — 某张图片在缓存里的最近邻或最远邻，默认最近 10 条
+  - `id`（必填）缓存中的图片 id；`k` 可选，默认 10；`order` 可选，`near` 或 `far`，默认 `near`
+  - `near` 按 cosine 从近到远，`far` 从远到近。不含自己。每条含 `l2` 和 `cosine`
+- `POST /image-vector/groups` — 把指定的 n 张图片分成 m 组
+  - `ids`（必填）缓存中的图片 id；`groups`（必填）组数，范围是 1 到 `ids` 的长度
+  - 按 cosine 分成恰好 m 个非空组。组的顺序按 `ids` 里先出现的那张图
+
+图片向量这一路用 scikit-learn，不需要额外的模型文件。`requirements.txt` 里已经带上。
 
 ## 调用示例
 
@@ -59,6 +70,18 @@ curl -s http://127.0.0.1:8791/tag \
 curl -s http://127.0.0.1:8791/embed \
   -H 'Content-Type: application/json' \
   -d '{"path":"data/character/takao/ref/AL_kv_full__高雄立绘.jpg"}'
+
+curl -s http://127.0.0.1:8791/image-vector \
+  -H 'Content-Type: application/json' \
+  -d '{"vectors":{"a":[1,0,0],"b":[0.9,0.1,0],"c":[0,1,0]}}'
+
+curl -s http://127.0.0.1:8791/image-vector/nearest \
+  -H 'Content-Type: application/json' \
+  -d '{"id":"a"}'
+
+curl -s http://127.0.0.1:8791/image-vector/groups \
+  -H 'Content-Type: application/json' \
+  -d '{"ids":["a","b","c"],"groups":2}'
 ```
 
 ## 依赖

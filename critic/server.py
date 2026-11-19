@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""critic — 本地 HTTP 服务：WD14 打标 + 风格向量。
+"""critic — 本地 HTTP 服务：WD14 打标 + 风格向量 + 图片向量缓存。
 
 接口：
     GET  /health
@@ -8,6 +8,9 @@
                    "character_threshold": 0.85, "exclude": [], "with_scores": false}
     POST /embed   {"path": "...", "ref": "...", "device": "auto"}
     POST /close   {"a": "...", "b": "..."}   # 两图风格距离（L2 + cosine）
+    POST /image-vector {"vectors": {"图片 id": [float, ...]}}  # 整表替换缓存
+    POST /image-vector/nearest {"id": "...", "k": 10}
+    POST /image-vector/groups {"ids": ["..."], "groups": 2}
 
 运行（仓库根目录的 .venv）：
     .venv/bin/python critic/server.py --port 8791
@@ -27,6 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from critic import embed as embedder
+from critic import image_vector
 from critic import models
 from critic import tag as tagger
 
@@ -60,6 +64,7 @@ def health():
             "taggers_loaded": tagger.loaded_models(),
             "embedder_loaded": embedder.loaded(),
             "embed_device": embedder.device(),
+            "image_vectors": image_vector.cached(),
             "wd14_models": list(tagger.MODELS),
         }
     )
@@ -129,6 +134,55 @@ def embed():
     except KeyError:
         return jsonify({"ok": False, "error": "缺少 path"}), 400
     except (ValueError, FileNotFoundError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@app.post("/image-vector")
+def image_vector_load():
+    """用本次要处理的全部图片替换向量缓存。body.vectors 为 {图片 id: 向量}。"""
+    try:
+        result = image_vector.load(_body()["vectors"])
+        return jsonify({"ok": True, **result})
+    except KeyError:
+        return jsonify({"ok": False, "error": "缺少 vectors"}), 400
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@app.post("/image-vector/nearest")
+def image_vector_nearest():
+    try:
+        data = _body()
+        raw_k = data.get("k", 10)
+        raw_order = data.get("order", "near")
+        result = image_vector.nearest(
+            data["id"],
+            10 if raw_k is None else raw_k,
+            order="near" if raw_order is None else raw_order,
+        )
+        return jsonify({"ok": True, **result})
+    except KeyError:
+        return jsonify({"ok": False, "error": "缺少 id"}), 400
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
+
+
+@app.post("/image-vector/groups")
+def image_vector_groups():
+    try:
+        data = _body()
+        result = image_vector.split(data["ids"], data["groups"])
+        return jsonify({"ok": True, **result})
+    except KeyError as exc:
+        field = exc.args[0] if exc.args else "字段"
+        return jsonify({"ok": False, "error": f"缺少 {field}"}), 400
+    except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:  # noqa: BLE001
         return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
