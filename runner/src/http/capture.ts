@@ -15,6 +15,16 @@ import { promisify } from 'node:util'
 
 import type { Hono } from 'hono'
 
+import {
+  approveAsset,
+  assetById,
+  ingestBytes,
+  listAssets,
+  processAsset,
+  rejectAsset,
+  resumeCollected,
+  updateAsset,
+} from '../capture/asset.ts'
 import { RunnerError } from '../errors.ts'
 import { relativePath } from '../path.ts'
 import type { Runner } from '../task/queue.ts'
@@ -23,15 +33,15 @@ import { bytesOf, jsonObject, stringField } from './request.ts'
 const execFile = promisify(execFileCb)
 
 // 采集工作台：Pinterest 链接 → 下载原图 → 异步预处理 → 手工整理素材池。
-// 目录即真相源（folder = data/capture 一级目录，不进 SQLite）：
-//   data/capture/<folder>/raw/<id>.<ext>    原图（尽量提升到 i.pinimg originals 分辨率）
-//   data/capture/<folder>/image/<id>.jpg    预处理产物（jpeg q88，长边 ≤3072）
-//   data/capture/<folder>/image/<id>.json   sidecar meta（source/status/尺寸/record）
+// 目录即真相源（不进 SQLite，不再按 folder 分）：
+//   data/capture/raw/<id>.<ext>     原图（尽量提升到 i.pinimg originals 分辨率）
+//   data/capture/image/<id>.jpg     预处理产物（jpeg q88，长边 ≤3072）
+//   data/capture/image/<id>.json    sidecar meta（source/status/尺寸/record）
 // 条目 id 形如 20261116-185112-a1b2，删除/整理不设端点——手工在文件系统做。
 
-const FOLDER_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 const FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
-const KINDS = ['raw', 'image'] as const
+const KINDS = ['raw', 'image', 'assets'] as const
+const HASH_RE = /^[a-f0-9]{64}$/
 const MAX_EDGE = 3072
 const JPEG_QUALITY = 88
 const MIN_IMAGE_BYTES = 1000
@@ -54,10 +64,6 @@ const CONTENT_TYPES: Record<string, string> = {
 const inflight = new Set<string>()
 
 // ---- 纯函数（测试覆盖） ----
-
-export function isFolderName(name: string): boolean {
-  return FOLDER_RE.test(name)
-}
 
 // 链接归一：i.pinimg.com 直链 → image，其余 pinterest/pin.it → page。剥 query 与 hash
 export function normalizeCaptureUrl(input: string): {
@@ -159,6 +165,24 @@ export function withSizeSegment(url: string, segment: string): string | null {
 export function extOf(url: string): string {
   const hit = /\.(jpe?g|png|gif|webp|bmp)(?:[?#].*)?$/i.exec(url)
   return hit ? `.${(hit[1] ?? 'jpg').toLowerCase()}` : '.jpg'
+}
+
+const IMAGE_EXT_BY_TYPE: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/bmp': '.bmp',
+}
+
+// 本地上传：优先看文件名后缀，没有后缀时看 MIME。jpeg 统一成 .jpg。
+export function imageExtOf(name: string, type: string): string | null {
+  const fromName = /\.(jpe?g|png|gif|webp|bmp)$/i.exec(name)
+  if (fromName) {
+    const ext = `.${(fromName[1] ?? 'jpg').toLowerCase()}`
+    return ext === '.jpeg' ? '.jpg' : ext
+  }
+  return IMAGE_EXT_BY_TYPE[type.toLowerCase()] ?? null
 }
 
 export function captureId(now: Date): string {
@@ -293,13 +317,6 @@ function captureRoot(dataDir: string): string {
   return join(dataDir, 'capture')
 }
 
-function assertFolderDir(dataDir: string, folder: string): string {
-  if (!isFolderName(folder)) throw new RunnerError('invalid folder name')
-  const dir = join(captureRoot(dataDir), folder)
-  if (!existsSync(dir)) throw new RunnerError(`folder not found: ${folder}`, 404)
-  return dir
-}
-
 function ensureEntryDirs(dir: string): void {
   mkdirSync(join(dir, 'raw'), { recursive: true })
   mkdirSync(join(dir, 'image'), { recursive: true })
@@ -385,22 +402,21 @@ async function overMaxEdge(file: string): Promise<boolean> {
 
 // 异步预处理：尺寸段阶梯提升（originals → 1200x）→ sips 转 jpeg（只缩不放）→ 尺寸 → meta 收尾
 async function processEntry(
-  folder: string,
   id: string,
   mediaUrl: string,
   paths: { dir: string; rawAbs: string; imageAbs: string },
 ): Promise<void> {
-  const key = `${folder}/${id}`
-  inflight.add(key)
+  inflight.add(id)
   try {
-    // folder 在预处理期间被删/改名：老路径不存在就放弃，避免 mkdirSync 造出幽灵目录
+    // 采集目录在预处理期间被删：老路径不存在就放弃，避免 mkdirSync 造出幽灵目录
     if (!existsSync(paths.dir)) return
-    const meta = readMeta(paths.dir, id) ?? { id, folder, status: 'processing' }
-    let record = sizeSegmentOf(mediaUrl) ?? 'og'
+    const meta = readMeta(paths.dir, id) ?? { id, status: 'processing' }
+    const remote = /^https?:\/\//i.test(mediaUrl)
+    let record = remote ? (sizeSegmentOf(mediaUrl) ?? 'og') : 'upload'
 
     // 阶梯提升：originals 优先，失败退 1200x（og:image 常给 736x 甚至 236x）
     const current = sizeSegmentOf(mediaUrl)
-    if (current !== 'originals') {
+    if (remote && current !== 'originals') {
       const candidates = [originalsOf(mediaUrl), withSizeSegment(mediaUrl, '1200x')]
       for (const candidate of candidates) {
         if (!candidate) continue
@@ -450,92 +466,136 @@ async function processEntry(
       processedAt: new Date().toISOString(),
     })
   } catch (err) {
-    const meta = readMeta(paths.dir, id) ?? { id, folder }
+    const meta = readMeta(paths.dir, id) ?? { id }
     writeMeta(paths.dir, id, {
       ...meta,
       status: 'failed',
       error: curlMessage(err),
     })
   } finally {
-    inflight.delete(key)
+    inflight.delete(id)
   }
 }
 
 // ---- 端点 ----
 
 export function mountCapture(app: Hono, runner: Runner): void {
-  // folder 列表（目录即真相源）
-  app.get('/capture/folders', (c) => {
-    const root = captureRoot(runner.dataDir)
-    const folders: Array<{ name: string; done: number; processing: number }> = []
-    if (existsSync(root)) {
-      for (const name of readdirSync(root)) {
-        if (name.startsWith('_') || name.startsWith('.')) continue
-        if (!isFolderName(name)) continue
-        const dir = join(root, name)
-        try {
-          if (!statSync(dir).isDirectory()) continue
-        } catch {
-          continue
+  // Pinterest 页面或短链 → 可下载的图片地址。前端匹配到 Pinterest 后才调用。
+  app.post('/capture/resolve', async (c) => {
+    const body = await jsonObject(c.req)
+    const provider = stringField(body, 'provider')
+    if (provider !== 'pinterest') throw new RunnerError('provider 目前只支持 pinterest')
+    const imgUrl = await resolveMediaUrl(stringField(body, 'url'))
+    return c.json({ imgUrl })
+  })
+
+  // 下载或接收本地图片：先落到 temp，算出 hash 后移入 capture/raw/<hash>/。立即返回，预处理异步。
+  app.post('/capture/collected', async (c) => {
+    const type = c.req.header('content-type') ?? ''
+    let bytes: Buffer
+    let ext: string | null
+    let sourceType: 'manual' | 'crawler' = 'manual'
+    let sourceUrl = ''
+    let imgUrl = ''
+    if (type.includes('multipart/form-data')) {
+      const body = await c.req.parseBody()
+      const file = body.file
+      if (!(file instanceof File)) throw new RunnerError('file is required')
+      ext = imageExtOf(file.name, file.type)
+      bytes = Buffer.from(await file.arrayBuffer())
+    } else {
+      const body = await jsonObject(c.req)
+      if (body.sourceType !== undefined) {
+        if (body.sourceType !== 'manual' && body.sourceType !== 'crawler') {
+          throw new RunnerError('sourceType 必须是 manual 或 crawler')
         }
-        let done = 0
-        let processing = 0
-        const imageDir = join(dir, 'image')
-        if (existsSync(imageDir)) {
-          for (const file of readdirSync(imageDir)) {
-            if (file.endsWith('.jpg')) done += 1
-          }
-          for (const file of readdirSync(imageDir)) {
-            if (!file.endsWith('.json')) continue
-            const meta = readMeta(dir, file.slice(0, -5))
-            if (meta?.status === 'processing') processing += 1
-          }
-        }
-        folders.push({ name, done, processing })
+        sourceType = body.sourceType
       }
+      sourceUrl = typeof body.sourceUrl === 'string' ? body.sourceUrl : ''
+      imgUrl = typeof body.imgUrl === 'string' ? body.imgUrl : ''
+      if (imgUrl.trim() === '') throw new RunnerError('imgUrl is required')
+      const mediaUrl = normalizeMediaUrl(imgUrl)
+      ext = extOf(mediaUrl)
+      const tempDir = join(runner.dataDir, 'capture', 'temp')
+      mkdirSync(tempDir, { recursive: true })
+      const tempAbs = join(tempDir, `${captureId(runner.now())}${ext}`)
+      await downloadTo(mediaUrl, tempAbs, refererFor(mediaUrl))
+      bytes = readFileSync(tempAbs)
+      rmSync(tempAbs, { force: true })
+      imgUrl = mediaUrl
     }
-    folders.sort((a, b) => a.name.localeCompare(b.name))
-    return c.json({ folders })
+    if (!ext) throw new RunnerError('只接受 jpg、png、gif、webp、bmp')
+    const { asset, duplicate } = await ingestBytes(runner, bytes, ext, {
+      type: sourceType,
+      sourceUrl,
+      imgUrl,
+    })
+    if (!duplicate || asset.status === 'collected') void processAsset(runner, asset.id)
+    return c.json({ ...asset, duplicate }, duplicate ? 200 : 201)
   })
 
-  app.post('/capture/folders', async (c) => {
+  app.get('/capture/assets', (c) => {
+    const items = listAssets(runner.db)
+    return c.json({ total: items.length, items })
+  })
+
+  app.get('/capture/assets/:id', (c) => {
+    const asset = assetById(runner.db, c.req.param('id'))
+    if (!asset) throw new RunnerError('image not found', 404)
+    return c.json(asset)
+  })
+
+  app.put('/capture/assets/:id', async (c) => {
     const body = await jsonObject(c.req)
-    const name = stringField(body, 'name').trim().toLowerCase()
-    if (!isFolderName(name)) {
-      throw new RunnerError(
-        'folder 名只允许小写字母、数字、连字符与下划线（字母或数字开头，≤64 字符）',
-      )
+    const patch: {
+      sourceUrl?: string
+      imgUrl?: string
+      tags?: string[]
+      embedding?: number[]
+      note?: string | null
+    } = {}
+    if (body.sourceUrl !== undefined) {
+      if (typeof body.sourceUrl !== 'string') throw new RunnerError('sourceUrl 必须是字符串')
+      patch.sourceUrl = body.sourceUrl
     }
-    const dir = join(captureRoot(runner.dataDir), name)
-    if (existsSync(dir)) {
-      throw new RunnerError(`folder already exists: ${name}`, 409)
+    if (body.imgUrl !== undefined) {
+      if (typeof body.imgUrl !== 'string') throw new RunnerError('imgUrl 必须是字符串')
+      patch.imgUrl = body.imgUrl
     }
-    ensureEntryDirs(dir)
-    return c.json({ name }, 201)
+    if (body.tags !== undefined) {
+      if (!Array.isArray(body.tags) || body.tags.some((tag) => typeof tag !== 'string')) {
+        throw new RunnerError('tags 必须是 string[]')
+      }
+      patch.tags = body.tags
+    }
+    if (body.embedding !== undefined) {
+      if (!Array.isArray(body.embedding) || body.embedding.some((value) => typeof value !== 'number')) {
+        throw new RunnerError('embedding 必须是 number[]')
+      }
+      patch.embedding = body.embedding
+    }
+    if (body.note !== undefined) {
+      if (body.note !== null && typeof body.note !== 'string') throw new RunnerError('note 必须是字符串')
+      patch.note = body.note
+    }
+    return c.json(updateAsset(runner, c.req.param('id'), patch))
   })
 
-  app.post('/capture/folders/rename', async (c) => {
-    const body = await jsonObject(c.req)
-    const from = stringField(body, 'from').trim()
-    const to = stringField(body, 'to').trim().toLowerCase()
-    if (!isFolderName(to)) {
-      throw new RunnerError('新 folder 名只允许小写字母、数字、连字符与下划线')
-    }
-    const source = assertFolderDir(runner.dataDir, from)
-    const target = join(captureRoot(runner.dataDir), to)
-    if (existsSync(target)) {
-      throw new RunnerError(`folder already exists: ${to}`, 409)
-    }
-    renameSync(source, target)
-    return c.json({ from, to }, 201)
+  app.post('/capture/assets/:id/approve', (c) => {
+    return c.json(approveAsset(runner, c.req.param('id')))
   })
 
-  // 提交 Pinterest 链接：同步完成 og:image 保底下载（图片先落 folder），预处理异步
+  app.post('/capture/assets/:id/reject', (c) => {
+    return c.json(rejectAsset(runner, c.req.param('id')))
+  })
+
+  resumeCollected(runner)
+
+  // 提交 Pinterest 链接：同步完成 og:image 保底下载（原图落到 capture/raw），预处理异步
   app.post('/capture/pins', async (c) => {
     const body = await jsonObject(c.req)
     const url = stringField(body, 'url')
-    const folder = stringField(body, 'folder')
-    const dir = assertFolderDir(runner.dataDir, folder)
+    const dir = captureRoot(runner.dataDir)
     ensureEntryDirs(dir)
 
     const mediaUrl =
@@ -558,7 +618,7 @@ export function mountCapture(app: Hono, runner: Runner): void {
           : existing === mediaUrl
         if (same) {
           return c.json(
-            { duplicate: true, id: meta?.id ?? file.slice(0, -5), folder, status: 'duplicate' },
+            { duplicate: true, id: meta?.id ?? file.slice(0, -5), status: 'duplicate' },
             200,
           )
         }
@@ -574,21 +634,50 @@ export function mountCapture(app: Hono, runner: Runner): void {
     }
     writeMeta(dir, id, {
       id,
-      folder,
       source: url,
       mediaUrl,
       status: 'processing',
       record: /\/originals\//i.test(mediaUrl) ? 'originals' : 'og',
       createdAt: runner.now().toISOString(),
     })
-    void processEntry(folder, id, mediaUrl, { dir, rawAbs, imageAbs: join(dir, 'image', `${id}.jpg`) })
-    return c.json({ id, folder, status: 'processing' }, 201)
+    void processEntry(id, mediaUrl, { dir, rawAbs, imageAbs: join(dir, 'image', `${id}.jpg`) })
+    return c.json({ id, status: 'processing' }, 201)
+  })
+
+  // 本地图片：multipart file，落到 capture/raw 后走同一套预处理
+  app.post('/capture/files', async (c) => {
+    const body = await c.req.parseBody()
+    const file = body.file
+    if (!(file instanceof File)) throw new RunnerError('file is required')
+    const dir = captureRoot(runner.dataDir)
+    ensureEntryDirs(dir)
+    const ext = imageExtOf(file.name, file.type)
+    if (!ext) throw new RunnerError('只接受 jpg、png、gif、webp、bmp')
+    const bytes = Buffer.from(await file.arrayBuffer())
+    if (bytes.length < MIN_IMAGE_BYTES) {
+      throw new RunnerError('文件太小，不是有效图片')
+    }
+    const id = captureId(runner.now())
+    const rawAbs = join(dir, 'raw', `${id}${ext}`)
+    writeFileSync(rawAbs, bytes)
+    writeMeta(dir, id, {
+      id,
+      source: file.name || 'upload',
+      status: 'processing',
+      record: 'upload',
+      createdAt: runner.now().toISOString(),
+    })
+    void processEntry(id, '', {
+      dir,
+      rawAbs,
+      imageAbs: join(dir, 'image', `${id}.jpg`),
+    })
+    return c.json({ id, status: 'processing' }, 201)
   })
 
   // 条目列表（状态从 sidecar meta 推断；重启中断的 processing 标为 failed）
   app.get('/capture/items', (c) => {
-    const folder = c.req.query('folder') ?? ''
-    const dir = assertFolderDir(runner.dataDir, folder)
+    const dir = captureRoot(runner.dataDir)
     const rawDir = join(dir, 'raw')
     const imageDir = join(dir, 'image')
 
@@ -616,7 +705,7 @@ export function mountCapture(app: Hono, runner: Runner): void {
       const meta = metas.get(id) ?? {}
       let status = String(meta.status ?? 'processing')
       let error = typeof meta.error === 'string' ? meta.error : null
-      if (status === 'processing' && !inflight.has(`${folder}/${id}`)) {
+      if (status === 'processing' && !inflight.has(id)) {
         status = 'failed'
         error = '预处理被中断（runner 重启）；raw 原图仍在，可手工处理'
       }
@@ -631,8 +720,8 @@ export function mountCapture(app: Hono, runner: Runner): void {
         width: meta.width ?? null,
         height: meta.height ?? null,
         createdAt: meta.createdAt ?? null,
-        rawUrl: rawFile ? `/capture/file/${folder}/raw/${rawFile}` : null,
-        imageUrl: imageFile ? `/capture/file/${folder}/image/${imageFile}` : null,
+        rawUrl: rawFile ? `/capture/file/raw/${rawFile}` : null,
+        imageUrl: imageFile ? `/capture/file/image/${imageFile}` : null,
         tagCount: Array.isArray(meta.tags) ? meta.tags.length : null,
         tagError: typeof meta.tagError === 'string' ? meta.tagError : null,
       })
@@ -641,15 +730,28 @@ export function mountCapture(app: Hono, runner: Runner): void {
     return c.json({ total: items.length, items })
   })
 
-  // 图片服务：/capture/file/<folder>/<raw|image>/<filename>
+  // 图片服务：/capture/file/<raw|image>/<filename>
+  // 以及 /capture/file/<raw|assets>/<hash>/<filename>
   app.get('/capture/file/*', (c) => {
     const path = relativePath(c.req.path.slice('/capture/file/'.length))
     const parts = path.split('/')
-    if (parts.length !== 3) throw new RunnerError('invalid capture file path')
-    const [folder, kind, filename] = parts as [string, string, string]
-    if (!isFolderName(folder)) throw new RunnerError('invalid folder name')
-    if (!(KINDS as readonly string[]).includes(kind)) {
-      throw new RunnerError('kind must be raw or image')
+    let abs: string
+    let filename: string
+    if (parts.length === 3) {
+      const [kind, hash, name] = parts as [string, string, string]
+      if (kind !== 'raw' && kind !== 'assets') throw new RunnerError('kind must be raw or assets')
+      if (!HASH_RE.test(hash)) throw new RunnerError('invalid hash')
+      filename = name
+      abs = join(captureRoot(runner.dataDir), kind, hash, name)
+    } else if (parts.length === 2) {
+      const [kind, name] = parts as [string, string]
+      if (!(KINDS as readonly string[]).includes(kind)) {
+        throw new RunnerError('kind must be raw or image')
+      }
+      filename = name
+      abs = join(captureRoot(runner.dataDir), kind, name)
+    } else {
+      throw new RunnerError('invalid capture file path')
     }
     if (!FILENAME_RE.test(filename) || filename.includes('..')) {
       throw new RunnerError('invalid filename')
@@ -657,7 +759,6 @@ export function mountCapture(app: Hono, runner: Runner): void {
     const dot = filename.lastIndexOf('.')
     if (dot <= 0) throw new RunnerError('invalid filename')
     const ext = filename.slice(dot).toLowerCase()
-    const abs = join(captureRoot(runner.dataDir), folder, kind, filename)
     if (!existsSync(abs)) throw new RunnerError('file not found', 404)
     return c.body(bytesOf(readFileSync(abs)) as ArrayBuffer, 200, {
       'content-type': CONTENT_TYPES[ext] ?? 'application/octet-stream',

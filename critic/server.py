@@ -3,6 +3,7 @@
 
 接口：
     GET  /health
+    POST /prepare {"path": "...", "out": "..."}  # 预处理 PNG
     POST /tag     {"path": "...", "model": "...", "general_threshold": 0.35,
                    "character_threshold": 0.85, "exclude": [], "with_scores": false}
     POST /embed   {"path": "...", "ref": "...", "device": "auto"}
@@ -58,6 +59,37 @@ def health():
             "wd14_models": list(tagger.MODELS),
         }
     )
+
+
+@app.post("/prepare")
+def prepare_image():
+    """按 profile 预处理并写成 PNG。供 runner 在打标 / embedding 之前落盘。"""
+    try:
+        data = _body()
+        image = _resolve(data["path"])
+        out_raw = data.get("out")
+        if not isinstance(out_raw, str) or not out_raw.strip():
+            raise ValueError("out 必须是非空路径")
+        out = Path(out_raw).expanduser()
+        if not out.is_absolute():
+            out = (ROOT / out).resolve()
+        else:
+            out = out.resolve()
+        if ROOT != out and ROOT not in out.parents:
+            raise ValueError("out 必须在仓库内")
+        from critic.preprocess import prepare
+
+        prepared = prepare(image)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        prepared.save(out, format="PNG")
+        width, height = prepared.size
+        return jsonify({"ok": True, "path": str(out), "width": width, "height": height})
+    except KeyError:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    except (ValueError, FileNotFoundError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
 
 
 @app.post("/tag")

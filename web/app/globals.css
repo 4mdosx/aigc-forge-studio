@@ -148,7 +148,8 @@ button:disabled {
   padding: 1.25rem 1.25rem 3rem;
 }
 
-.shell:has(.board) {
+.shell:has(.board),
+.shell:has(.capture-split) {
   max-width: none;
   height: calc(100vh - 5.5rem);
   display: flex;
@@ -1213,6 +1214,221 @@ button.task-pick.current {
   max-width: 60vw;
 }
 
+.capture-split {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.75fr);
+  gap: 1rem;
+}
+
+.capture-split > .panel {
+  margin: 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.capture-stage .capture-drop {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+}
+
+.capture-hero {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.capture-hero img {
+  max-width: 100%;
+  max-height: 100%;
+  min-height: 0;
+  object-fit: contain;
+}
+
+.capture-switch {
+  position: absolute;
+  right: 0.55rem;
+  bottom: 0.55rem;
+  display: flex;
+  gap: 0.35rem;
+}
+
+.capture-switch button {
+  background: rgb(247 243 234 / 88%);
+  color: #5c564e;
+  border: 1px solid #c9beae;
+  padding: 0.3rem 0.9rem;
+}
+
+.capture-switch button:hover:not(:disabled) {
+  background: rgb(12 92 73 / 8%);
+  border-color: #0c5c49;
+  color: #241f1a;
+}
+
+.capture-switch button.active,
+.capture-switch button.active:hover:not(:disabled) {
+  background: #0c5c49;
+  border-color: #0c5c49;
+  color: #f7f3ea;
+}
+
+.capture-actions {
+  margin-bottom: 0.75rem;
+}
+
+.capture-info-body {
+  min-height: 0;
+  overflow: auto;
+}
+
+.capture-meta {
+  display: grid;
+  grid-template-columns: 4.6rem minmax(0, 1fr);
+  gap: 0.4rem 0.75rem;
+  margin: 0 0 0.8rem;
+  font-size: 0.9rem;
+}
+
+.capture-meta dt {
+  color: #746c63;
+}
+
+.capture-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+button.capture-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 0.15rem 0.35rem;
+  background: transparent;
+  color: #241f1a;
+  border: 1px dashed transparent;
+  border-radius: 6px;
+  text-align: left;
+}
+
+button.capture-field:hover:not(:disabled) {
+  background: #f7f3ea;
+  border-color: #c9beae;
+}
+
+.capture-field-hint {
+  color: #746c63;
+  font-size: 0.72rem;
+}
+
+.capture-field-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.capture-field-edit input,
+.capture-field-edit textarea {
+  width: 100%;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid #c9beae;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: #241f1a;
+}
+
+.capture-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.9rem;
+}
+
+button.capture-pick {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0.35rem;
+  background: transparent;
+  color: #241f1a;
+  border: 1px solid transparent;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+button.capture-pick:hover:not(:disabled) {
+  background: rgb(12 92 73 / 8%);
+}
+
+button.capture-pick.active {
+  background: #e7f0ec;
+  border-color: #0c5c49;
+}
+
+.capture-pick img,
+.capture-pick-missing {
+  width: 52px;
+  height: 52px;
+  flex: none;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #fffdf8;
+  border: 1px solid #e4dacd;
+}
+
+.capture-pick-missing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #746c63;
+  font-size: 0.68rem;
+}
+
+.capture-pick-line {
+  display: block;
+  margin-top: 0.2rem;
+  color: #746c63;
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+
+.capture-drop {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.75rem;
+  padding: 0.7rem;
+  border: 2px dashed #c9beae;
+  border-radius: 10px;
+  background: #fffdf8;
+}
+
+.capture-drop.dragging {
+  border-color: #0c5c49;
+  background: #e7f0ec;
+}
+
+.capture-drop:focus {
+  outline: none;
+}
+
+.capture-drop .muted {
+  margin: 0;
+}
+
 .capture-input {
   display: flex;
   gap: 0.5rem;
@@ -1231,15 +1447,17 @@ button.task-pick.current {
   padding: 0.55rem 1rem;
 }
 
-.capture-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 0.8rem;
-}
+@media (max-width: 640px) {
+  .shell:has(.capture-split) {
+    height: auto;
+  }
 
-@media (min-width: 760px) {
-  .capture-grid {
-    grid-template-columns: repeat(4, 1fr);
+  .capture-split {
+    grid-template-columns: 1fr;
+  }
+
+  .capture-hero {
+    min-height: 52vh;
   }
 }
 
@@ -1289,17 +1507,21 @@ button.task-pick.current {
   vertical-align: 1px;
 }
 
-.capture-badge.done {
+.capture-badge.done,
+.capture-badge.processed,
+.capture-badge.approved {
   background: #e7f0ec;
   color: #0c5c49;
 }
 
-.capture-badge.processing {
+.capture-badge.processing,
+.capture-badge.collected {
   background: #f3ecdc;
   color: #8a6d1f;
 }
 
-.capture-badge.failed {
+.capture-badge.failed,
+.capture-badge.rejected {
   background: #f6e3df;
   color: #a04030;
 }

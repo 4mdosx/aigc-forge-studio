@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import {
   captureId,
   extOf,
-  isFolderName,
+  imageExtOf,
   normalizeCaptureUrl,
   normalizeMediaUrl,
   ogImageOf,
@@ -72,6 +72,13 @@ test('originalsOf upgrades sized variants and refuses originals', () => {
   )
   assert.equal(originalsOf('https://i.pinimg.com/originals/ab/cd/1234.jpg'), null)
   assert.equal(originalsOf('https://example.com/560x/a.jpg'), null)
+})
+
+test('imageExtOf prefers the filename and falls back to mime', () => {
+  assert.equal(imageExtOf('Photo.JPEG', ''), '.jpg')
+  assert.equal(imageExtOf('shot.png', 'image/jpeg'), '.png')
+  assert.equal(imageExtOf('clipboard', 'image/png'), '.png')
+  assert.equal(imageExtOf('notes.txt', 'text/plain'), null)
 })
 
 test('extOf reads extension from url', () => {
@@ -161,13 +168,4 @@ test('refererFor picks pixiv referer for pximg hosts', () => {
   assert.equal(refererFor('https://i.pximg.net/img-original/img/2026/01/01/x/12345_p0.jpg'), 'https://www.pixiv.net/')
   assert.equal(refererFor('https://i.pinimg.com/736x/3e/71/1b/3e711b280907dbc46ecb959a3b75eef0.jpg'), 'https://www.pinterest.com/')
   assert.equal(refererFor('not a url'), 'https://www.pinterest.com/')
-})
-
-test('folder names stay lowercase slugs', () => {
-  assert.equal(isFolderName('akagi'), true)
-  assert.equal(isFolderName('a1_b2-c3'), true)
-  assert.equal(isFolderName('_hidden'), false)
-  assert.equal(isFolderName('Upper'), false)
-  assert.equal(isFolderName(''), false)
-  assert.equal(isFolderName('a'.repeat(65)), false)
 })

@@ -160,6 +160,32 @@ CREATE TABLE IF NOT EXISTS dice_templates (
 );
 
 CREATE INDEX IF NOT EXISTS dice_templates_by_name ON dice_templates (name);
+
+CREATE TABLE IF NOT EXISTS image_assets (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL,
+  source_type TEXT NOT NULL,
+  source_url TEXT NOT NULL DEFAULT '',
+  img_url TEXT NOT NULL DEFAULT '',
+  parent_image_id TEXT,
+  original_path TEXT NOT NULL,
+  original_width INTEGER NOT NULL,
+  original_height INTEGER NOT NULL,
+  hash TEXT NOT NULL UNIQUE,
+  processed_path TEXT,
+  processed_width INTEGER,
+  processed_height INTEGER,
+  tags_json TEXT NOT NULL DEFAULT '[]',
+  embedding_json TEXT NOT NULL DEFAULT '[]',
+  tags_model_version TEXT NOT NULL DEFAULT '',
+  embedding_model_version TEXT NOT NULL DEFAULT '',
+  reviewed_at INTEGER NOT NULL DEFAULT 0,
+  note TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS image_assets_by_status ON image_assets (status, created_at);
 `
 
 export interface WorkRow {
