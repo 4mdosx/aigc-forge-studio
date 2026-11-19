@@ -7,6 +7,7 @@ import { mountConfig } from './config.ts'
 import { mountDice } from './dice.ts'
 import { mountChats } from './chats.ts'
 import { mountData } from './data.ts'
+import { mountDatasets } from './datasets.ts'
 import { mountFiles } from './files.ts'
 import { mountPoses } from './poses.ts'
 import { mountPosePending } from './pose-pending.ts'
@@ -34,6 +35,7 @@ export function createApp(runner: Runner): Hono {
   mountPoses(app, runner)
   mountPosePending(app, runner)
   mountCapture(app, runner)
+  mountDatasets(app, runner)
   mountDice(app, runner)
   mountConfig(app, runner)
   mountTag(app, runner)

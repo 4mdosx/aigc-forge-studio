@@ -1,8 +1,10 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 
+import { DatasetRail } from '@/components/dataset-rail'
+import { useDatasets } from '@/components/datasets'
 import { Dialog } from '@/components/dialog'
 import { ImageDetail } from '@/components/image-detail'
 import { ImageGallery } from '@/components/image-gallery'
@@ -320,29 +322,129 @@ export function LibraryBoard() {
 
 function AssetLibrary() {
   const images = useImageAssets()
+  const datasets = useDatasets()
   const tagNonce = useRef(0)
   const [tagSeed, setTagSeed] = useState<{ tag: string; nonce: number } | null>(null)
+  const [galleryIds, setGalleryIds] = useState<string[]>([])
+  const [focusId, setFocusId] = useState<string | null>(null)
+  const [onlyDataset, setOnlyDataset] = useState(false)
+  const focused = datasets.items.find((item) => item.id === focusId) ?? null
+  const members = useMemo(() => new Set(focused?.assetIds ?? []), [focused])
+
+  useEffect(() => {
+    if (!focusId || !datasets.loaded) return
+    if (datasets.items.some((item) => item.id === focusId)) return
+    setFocusId(null)
+    setOnlyDataset(false)
+  }, [datasets.items, datasets.loaded, focusId])
+
   function pickTag(tag: string) {
     tagNonce.current += 1
     setTagSeed({ tag, nonce: tagNonce.current })
   }
+
+  function focusDataset(id: string) {
+    if (focusId === id) {
+      setFocusId(null)
+      setOnlyDataset(false)
+      return
+    }
+    setFocusId(id)
+  }
+
+  async function reloadAll() {
+    await images.loadItems()
+    try {
+      await datasets.reload()
+    } catch (err) {
+      fail(messageOf(err))
+    }
+  }
+
+  async function changeDataset(action: 'add' | 'remove', ids: string[]) {
+    if (!focused) {
+      fail('先在左侧选择一个数据集')
+      return
+    }
+    const name = focused.name
+    try {
+      if (action === 'add') {
+        const result = await datasets.addAssets(focused.id, ids)
+        notify(
+          result.added === 0
+            ? `这些图片已经在「${name}」里`
+            : `已把 ${result.added} 张加入「${name}」`,
+        )
+      } else {
+        const result = await datasets.removeAssets(focused.id, ids)
+        notify(
+          result.removed === 0
+            ? `这些图片不在「${name}」里`
+            : `已从「${name}」移出 ${result.removed} 张`,
+        )
+      }
+    } catch (err) {
+      fail(messageOf(err))
+    }
+  }
+
+  function toggleDataset(datasetId: string, assetId: string, member: boolean) {
+    const run = member
+      ? datasets.removeAssets(datasetId, [assetId])
+      : datasets.addAssets(datasetId, [assetId])
+    void run.catch((err: unknown) => fail(messageOf(err)))
+  }
+
   return (
     <div className="library-split">
+      <DatasetRail
+        items={datasets.items}
+        loaded={datasets.loaded}
+        busy={datasets.busy}
+        focusId={focusId}
+        only={onlyDataset}
+        onFocus={focusDataset}
+        onOnly={setOnlyDataset}
+        onCreate={async (name) => {
+          const created = await datasets.create(name)
+          setFocusId(created.id)
+          setOnlyDataset(false)
+          notify(`已新建「${created.name}」`)
+        }}
+        onRename={async (id, name) => {
+          await datasets.rename(id, name)
+        }}
+        onDelete={datasets.remove}
+      />
       <ImageGallery
         query
+        selectable
         items={images.items}
         loaded={images.loaded}
         selectedId={images.selected?.id ?? null}
         onSelect={images.select}
         tagSeed={tagSeed}
+        onVisible={setGalleryIds}
+        onReload={reloadAll}
+        datasetFocus={focused ? { id: focused.id, name: focused.name, members } : null}
+        datasetOnly={onlyDataset && focused !== null}
+        onDatasetBatch={changeDataset}
       />
       <ImageDetail
         preview
+        browse
+        nearest={false}
+        galleryIds={galleryIds}
         loaded={images.loaded}
         selected={images.selected}
         onSelect={images.select}
-        onReload={images.loadItems}
+        onReload={reloadAll}
         onPickTag={pickTag}
+        datasets={{
+          items: datasets.items,
+          focusId,
+          onToggle: toggleDataset,
+        }}
       />
     </div>
   )

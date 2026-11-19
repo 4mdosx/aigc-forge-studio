@@ -23,6 +23,7 @@ type DownloadTask = {
   key: string;
   imageKey: string;
   state: DownloadState;
+  imgUrl?: string;
 };
 
 type CutoutTask = {
@@ -223,7 +224,7 @@ export function CaptureBoard() {
         id: downloadSeq.current,
         url,
         key,
-        imageKey: isPinterest(url) ? "" : key,
+        imageKey: needsResolve(url) ? "" : key,
         state: "queued",
       });
     }
@@ -245,16 +246,50 @@ export function CaptureBoard() {
     void pumpDownloads();
   }
 
+  function enqueueResolved(sourceUrl: string, imgUrls: string[]) {
+    if (imgUrls.length === 0) return;
+    const known = knownUrlKeys();
+    const fresh: DownloadTask[] = [];
+    for (const imgUrl of imgUrls) {
+      const key = urlKey(imgUrl);
+      if (known.has(key)) continue;
+      known.add(key);
+      downloadSeq.current += 1;
+      fresh.push({
+        id: downloadSeq.current,
+        url: sourceUrl,
+        key,
+        imageKey: key,
+        imgUrl,
+        state: "queued",
+      });
+    }
+    if (fresh.length === 0) return;
+    downloadsRef.current = [...downloadsRef.current, ...fresh];
+    publishDownloads();
+  }
+
   async function runDownload(task: DownloadTask): Promise<"added" | "duplicate"> {
-    let imgUrl = task.url;
+    let imgUrl = task.imgUrl || task.url;
     let sourceUrl = "";
     let sourceType: "manual" | "crawler" = "manual";
-    if (isPinterest(task.url)) {
-      const resolved = await api<{ imgUrl: string }>("capture/resolve", {
-        method: "POST",
-        body: JSON.stringify({ provider: "pinterest", url: task.url }),
-      });
-      imgUrl = resolved.imgUrl;
+    if (task.imgUrl || needsResolve(task.url)) {
+      if (!task.imgUrl) {
+        const provider = isPixiv(task.url) ? "pixiv" : "pinterest";
+        const resolved = await api<{ imgUrl: string; imgUrls?: string[] }>(
+          "capture/resolve",
+          {
+            method: "POST",
+            body: JSON.stringify({ provider, url: task.url }),
+          },
+        );
+        const list = (resolved.imgUrls ?? []).filter((item) => item.trim() !== "");
+        const urls = list.length > 0 ? list : [resolved.imgUrl];
+        const first = urls[0];
+        if (!first) throw new Error("没有解析出图片");
+        imgUrl = first;
+        enqueueResolved(task.url, urls.slice(1));
+      }
       sourceUrl = task.url;
       sourceType = "crawler";
       const imageKey = urlKey(imgUrl);
@@ -441,30 +476,6 @@ export function CaptureBoard() {
     return () => window.removeEventListener("paste", onPaste);
   }, []);
 
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-      const target = event.target;
-      if (
-        target instanceof HTMLElement &&
-        target.closest('input, textarea, [contenteditable="true"]')
-      )
-        return;
-      if (!selected || erasing) return;
-      const order: SlideKey[] = [];
-      if (selected.originalUrl) order.push("raw");
-      if (selected.processedUrl) order.push("image");
-      if (selected.nobgUrl) order.push("nobg");
-      const index = order.indexOf(slide);
-      const next =
-        event.key === "ArrowLeft" ? order[index - 1] : order[index + 1];
-      if (!next) return;
-      event.preventDefault();
-      setSlide(next);
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selected, slide, erasing]);
   const slides = selected
     ? [
         selected.originalUrl
@@ -496,6 +507,7 @@ export function CaptureBoard() {
     <>
       <div className="capture-split">
         <ImageGallery
+          advanceProcessed
           items={items}
           loaded={loaded}
           selectedId={selected?.id ?? null}
@@ -628,7 +640,7 @@ export function CaptureBoard() {
                     autoCapitalize="off"
                     autoCorrect="off"
                     enterKeyHint="send"
-                    placeholder="拖拽或粘贴图片、Pinterest 链接"
+                    placeholder="拖拽或粘贴图片、Pinterest / Pixiv 链接"
                     value={url}
                     onChange={(event) => setUrl(event.target.value)}
                   />
@@ -640,7 +652,7 @@ export function CaptureBoard() {
                   </button>
                 </div>
                 <p className="muted">
-                  图片和链接都可以拖进来或粘贴。
+                  图片和链接都可以拖进来或粘贴。Pixiv 作品页会收下每一页原图。
                 </p>
               </>
             )}
@@ -648,6 +660,7 @@ export function CaptureBoard() {
         </section>
 
         <ImageDetail
+          hotkeys
           loaded={loaded}
           selected={selected}
           approveVersion={versionOf(currentSlide?.key)}
@@ -752,6 +765,41 @@ function downloadLabel(tasks: DownloadTask[]): string {
   return `已下载 ${done}/${total}`;
 }
 
+function hostOf(value: string): string | null {
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function isPinterestHost(host: string): boolean {
+  return (
+    host === "pin.it" ||
+    host.endsWith(".pin.it") ||
+    host === "pinterest.com" ||
+    host.endsWith(".pinterest.com") ||
+    host === "pinimg.com" ||
+    host.endsWith(".pinimg.com")
+  );
+}
+
+function isPixivHost(host: string): boolean {
+  return host === "pixiv.net" || host.endsWith(".pixiv.net");
+}
+
+function isPximgHost(host: string): boolean {
+  return host === "pximg.net" || host.endsWith(".pximg.net");
+}
+
+function pixivArtworkId(url: URL): string | null {
+  const fromPath = /\/artworks\/(\d+)/.exec(url.pathname);
+  if (fromPath?.[1]) return fromPath[1];
+  const illustId = url.searchParams.get("illust_id");
+  if (illustId && /^\d+$/.test(illustId)) return illustId;
+  return null;
+}
+
 function urlKey(value: string): string {
   const text = value.trim();
   try {
@@ -759,14 +807,11 @@ function urlKey(value: string): string {
     url.hash = "";
     url.hostname = url.hostname.toLowerCase();
     const host = url.hostname;
-    if (
-      host === "pin.it" ||
-      host.endsWith(".pin.it") ||
-      host === "pinterest.com" ||
-      host.endsWith(".pinterest.com") ||
-      host === "pinimg.com" ||
-      host.endsWith(".pinimg.com")
-    ) {
+    if (isPixivHost(host)) {
+      const id = pixivArtworkId(url);
+      if (id) return `https://www.pixiv.net/artworks/${id}`;
+    }
+    if (isPinterestHost(host) || isPixivHost(host) || isPximgHost(host)) {
       url.search = "";
     }
     url.pathname = url.pathname.replace(/\/+$/, "") || "/";
@@ -780,19 +825,19 @@ function isPinterest(value: string): boolean {
   const text = value.trim();
   if (/^(pin\.it\/|pinterest\.|www\.pinterest\.|i\.pinimg\.)/i.test(text))
     return true;
-  try {
-    const host = new URL(text).hostname.toLowerCase();
-    return (
-      host === "pin.it" ||
-      host.endsWith(".pin.it") ||
-      host === "pinterest.com" ||
-      host.endsWith(".pinterest.com") ||
-      host === "pinimg.com" ||
-      host.endsWith(".pinimg.com")
-    );
-  } catch {
-    return false;
-  }
+  const host = hostOf(text);
+  return host ? isPinterestHost(host) : false;
+}
+
+function isPixiv(value: string): boolean {
+  const text = value.trim();
+  if (/^(pixiv\.net\/|www\.pixiv\.net\/|i\.pximg\.)/i.test(text)) return true;
+  const host = hostOf(text);
+  return host ? isPixivHost(host) || isPximgHost(host) : false;
+}
+
+function needsResolve(value: string): boolean {
+  return isPinterest(value) || isPixiv(value);
 }
 
 function imageFiles(list: FileList | null): File[] {
@@ -824,7 +869,7 @@ function urlsOnly(text: string): string[] | null {
   const parts = body.flatMap((line) => line.split(/\s+/));
   if (parts.length === 0) return null;
   const urls = parts.filter((part) =>
-    /^(https?:\/\/|pin\.it\/|pinterest\.|www\.pinterest\.|i\.pinimg\.)/i.test(
+    /^(https?:\/\/|pin\.it\/|pinterest\.|www\.pinterest\.|i\.pinimg\.|pixiv\.net\/|www\.pixiv\.net\/|i\.pximg\.)/i.test(
       part,
     ),
   );

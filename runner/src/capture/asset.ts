@@ -1,6 +1,14 @@
 import { execFile as execFileCb, spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -46,6 +54,7 @@ export type ImageAsset = {
   }
   tags: string[]
   embedding: number[]
+  rating: string
   tagsModelVersion: string
   embeddingModelVersion: string
   reviewedAt: number
@@ -81,6 +90,7 @@ type AssetRow = {
   tags_json: string
   embedding_json: string
   tags_model_version: string
+  rating: string
   embedding_model_version: string
   reviewed_at: number
   note: string | null
@@ -89,6 +99,11 @@ type AssetRow = {
 }
 
 const EMBEDDING_MODEL = 'style-embedder-v4'
+const RATINGS = new Set(['general', 'sensitive', 'questionable', 'explicit'])
+
+function ratingOf(value: unknown): string {
+  return typeof value === 'string' && RATINGS.has(value) ? value : ''
+}
 const STEP_TIMEOUT_MS = 180_000
 const HASH_RE = /^[a-f0-9]{64}$/
 const THUMB_EDGE = 320
@@ -102,7 +117,8 @@ export function listAssets(db: DatabaseSync): ImageAsset[] {
 }
 
 export function assetById(db: DatabaseSync, id: string): ImageAsset | null {
-  const row = db.prepare('SELECT * FROM image_assets WHERE id = ?').get(id) as AssetRow | undefined
+  const row = db.prepare('SELECT * FROM image_assets WHERE id = ?').get(id) as
+    AssetRow | undefined
   return row ? assetOf(row) : null
 }
 
@@ -127,7 +143,8 @@ export async function nearestAssets(
   only?: readonly string[],
 ): Promise<{ id: string; neighbors: NearestNeighbor[] }> {
   if (!Number.isInteger(k) || k < 1) throw new RunnerError('k 必须是正整数')
-  if (order !== 'near' && order !== 'far') throw new RunnerError('order 必须是 near 或 far')
+  if (order !== 'near' && order !== 'far')
+    throw new RunnerError('order 必须是 near 或 far')
   const allowed = only ? new Set(idListOf(only)) : null
   const assets = listAssets(runner.db)
   const target = assets.find((asset) => asset.id === id)
@@ -138,11 +155,17 @@ export async function nearestAssets(
   const vectors = vectorsFor(pool, target)
   if (!vectors) throw new RunnerError('这张图还没有向量')
   const base = criticBaseURL(runner.dataDir)
-  let result: { neighbors?: Array<{ id?: unknown; cosine?: unknown; l2?: unknown }> }
+  let result: {
+    neighbors?: Array<{ id?: unknown; cosine?: unknown; l2?: unknown }>
+  }
   try {
     await criticJson(base, '/image-vector', { vectors })
     const span = Math.max(k, Object.keys(vectors).length - 1)
-    result = await criticJson(base, '/image-vector/nearest', { id, k: span, order })
+    result = await criticJson(base, '/image-vector/nearest', {
+      id,
+      k: span,
+      order,
+    })
   } catch (err) {
     if (err instanceof RunnerError) throw err
     const message = err instanceof Error ? err.message : String(err)
@@ -153,7 +176,12 @@ export async function nearestAssets(
   for (const item of result.neighbors ?? []) {
     if (!item || typeof item.id !== 'string') continue
     const asset = byId.get(item.id)
-    if (!asset || typeof item.cosine !== 'number' || typeof item.l2 !== 'number') continue
+    if (
+      !asset ||
+      typeof item.cosine !== 'number' ||
+      typeof item.l2 !== 'number'
+    )
+      continue
     neighbors.push({
       id: asset.id,
       cosine: item.cosine,
@@ -180,12 +208,16 @@ export async function groupAssets(
   groups: number,
 ): Promise<AssetGroups> {
   const selected = idListOf(ids)
-  if (!Number.isInteger(groups) || groups < 1) throw new RunnerError('groups 必须是正整数')
+  if (!Number.isInteger(groups) || groups < 1)
+    throw new RunnerError('groups 必须是正整数')
   const assets = listAssets(runner.db)
   const byId = new Map(assets.map((asset) => [asset.id, asset]))
   const missing = selected.filter((id) => !byId.has(id))
   if (missing.length > 0) {
-    throw new RunnerError(`image not found: ${missing.slice(0, 8).join(', ')}`, 404)
+    throw new RunnerError(
+      `image not found: ${missing.slice(0, 8).join(', ')}`,
+      404,
+    )
   }
   const vectors: Record<string, number[]> = {}
   const skipped: string[] = []
@@ -202,7 +234,9 @@ export async function groupAssets(
   const usable = Object.keys(vectors)
   if (usable.length === 0) throw new RunnerError('这些图片还没有向量')
   if (groups > usable.length) {
-    throw new RunnerError(`可分组的图片有 ${usable.length} 张，groups 必须在 1 到 ${usable.length} 之间`)
+    throw new RunnerError(
+      `可分组的图片有 ${usable.length} 张，groups 必须在 1 到 ${usable.length} 之间`,
+    )
   }
   const packed = await splitVectors(runner.dataDir, vectors, usable, groups)
   return { groups: packed, skipped }
@@ -226,7 +260,11 @@ json.dump(split(payload["ids"], int(payload["groups"])), sys.stdout)
 `
   let stdout = ''
   try {
-    stdout = await runPython(python, script, JSON.stringify({ vectors, ids, groups }))
+    stdout = await runPython(
+      python,
+      script,
+      JSON.stringify({ vectors, ids, groups }),
+    )
   } catch (err) {
     if (err instanceof RunnerError) throw err
     const message = err instanceof Error ? err.message : String(err)
@@ -243,19 +281,31 @@ json.dump(split(payload["ids"], int(payload["groups"])), sys.stdout)
   const seen = new Set<string>()
   for (const group of parsed.groups ?? []) {
     if (!group || !Array.isArray(group.ids)) continue
-    const groupIds = group.ids.filter((id): id is string => typeof id === 'string' && id in vectors && !seen.has(id))
+    const groupIds = group.ids.filter(
+      (id): id is string =>
+        typeof id === 'string' && id in vectors && !seen.has(id),
+    )
     for (const id of groupIds) seen.add(id)
     if (groupIds.length > 0) packed.push({ ids: groupIds })
   }
   if (packed.length !== groups || seen.size !== ids.length) {
-    throw new RunnerError(`分组结果是 ${packed.length} 组，期望 ${groups} 组`, 502)
+    throw new RunnerError(
+      `分组结果是 ${packed.length} 组，期望 ${groups} 组`,
+      502,
+    )
   }
   return packed
 }
 
-function runPython(python: string, script: string, input: string): Promise<string> {
+function runPython(
+  python: string,
+  script: string,
+  input: string,
+): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(python, ['-c', script], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(python, ['-c', script], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
     const stdout: Buffer[] = []
     const stderr: Buffer[] = []
     const timer = setTimeout(() => {
@@ -271,7 +321,11 @@ function runPython(python: string, script: string, input: string): Promise<strin
     child.on('close', (code) => {
       clearTimeout(timer)
       if (code !== 0) {
-        reject(new Error(Buffer.concat(stderr).toString().trim() || `python 退出 ${code}`))
+        reject(
+          new Error(
+            Buffer.concat(stderr).toString().trim() || `python 退出 ${code}`,
+          ),
+        )
         return
       }
       resolve(Buffer.concat(stdout).toString())
@@ -286,7 +340,8 @@ export function idListOf(ids: readonly string[]): string[] {
   const seen = new Set<string>()
   const selected: string[] = []
   for (const id of ids) {
-    if (typeof id !== 'string' || id === '') throw new RunnerError('ids 里的图片 id 必须是非空字符串')
+    if (typeof id !== 'string' || id === '')
+      throw new RunnerError('ids 里的图片 id 必须是非空字符串')
     if (seen.has(id)) throw new RunnerError(`ids 有重复: ${id}`)
     seen.add(id)
     selected.push(id)
@@ -294,9 +349,15 @@ export function idListOf(ids: readonly string[]): string[] {
   return selected
 }
 
-function compareNeighbors(left: NearestNeighbor, right: NearestNeighbor, order: NearestOrder): number {
+function compareNeighbors(
+  left: NearestNeighbor,
+  right: NearestNeighbor,
+  order: NearestOrder,
+): number {
   if (left.cosine !== right.cosine) {
-    return order === 'far' ? left.cosine - right.cosine : right.cosine - left.cosine
+    return order === 'far'
+      ? left.cosine - right.cosine
+      : right.cosine - left.cosine
   }
   if (left.l2 !== right.l2) {
     return order === 'far' ? right.l2 - left.l2 : left.l2 - right.l2
@@ -306,7 +367,9 @@ function compareNeighbors(left: NearestNeighbor, right: NearestNeighbor, order: 
 }
 
 export function assetByHash(db: DatabaseSync, hash: string): ImageAsset | null {
-  const row = db.prepare('SELECT * FROM image_assets WHERE hash = ?').get(hash) as AssetRow | undefined
+  const row = db
+    .prepare('SELECT * FROM image_assets WHERE hash = ?')
+    .get(hash) as AssetRow | undefined
   return row ? assetOf(row) : null
 }
 
@@ -380,7 +443,11 @@ export async function runCaptureStep(
   if (ac.aborted) throw abortError(ac)
   const asset = assetById(runner.db, id)
   if (!asset) throw new Error(`image not found: ${id}`)
-  if (asset.status === 'approved' || asset.status === 'rejected' || asset.status === 'processed') {
+  if (
+    asset.status === 'approved' ||
+    asset.status === 'rejected' ||
+    asset.status === 'processed'
+  ) {
     return 'done'
   }
   if (step === 'prepare') {
@@ -388,27 +455,43 @@ export async function runCaptureStep(
     return 'tag'
   }
   if (step === 'tag') {
-    const current = asset.processed ? asset : await writePrepared(runner, asset, ac)
+    const current = asset.processed
+      ? asset
+      : await writePrepared(runner, asset, ac)
     await writeTags(runner, current, ac)
     return 'embed'
   }
   if (step === 'embed') {
-    const current = asset.processed ? asset : await writePrepared(runner, asset, ac)
+    const current = asset.processed
+      ? asset
+      : await writePrepared(runner, asset, ac)
     await writeEmbedding(runner, current, ac)
     return 'done'
   }
   throw new Error(`unknown step: ${step}`)
 }
 
-async function writePrepared(runner: Runner, asset: ImageAsset, signal: AbortSignal): Promise<ImageAsset> {
+async function writePrepared(
+  runner: Runner,
+  asset: ImageAsset,
+  signal: AbortSignal,
+): Promise<ImageAsset> {
   const hash = asset.original.hash
-  const rootKind = asset.original.path.startsWith('capture/assets/') ? 'assets' : 'raw'
+  const rootKind = asset.original.path.startsWith('capture/assets/')
+    ? 'assets'
+    : 'raw'
   const processedRel = join('capture', rootKind, hash, 'processed.png')
   const processedAbs = join(runner.dataDir, processedRel)
   const thumbRel = join('capture', rootKind, hash, THUMB_NAME)
   const originalAbs = join(runner.dataDir, asset.original.path)
   const base = criticBaseURL(runner.dataDir)
-  const prepared = await prepareImage(runner.dataDir, base, originalAbs, processedAbs, signal)
+  const prepared = await prepareImage(
+    runner.dataDir,
+    base,
+    originalAbs,
+    processedAbs,
+    signal,
+  )
   await writeThumb(processedAbs, join(runner.dataDir, thumbRel))
   const preparedAt = runner.now().getTime()
   runner.db
@@ -418,31 +501,53 @@ async function writePrepared(runner: Runner, asset: ImageAsset, signal: AbortSig
         thumb_path = ?, updated_at = ?
       WHERE id = ?`,
     )
-    .run(processedRel, prepared.width, prepared.height, thumbRel, preparedAt, asset.id)
+    .run(
+      processedRel,
+      prepared.width,
+      prepared.height,
+      thumbRel,
+      preparedAt,
+      asset.id,
+    )
   const next = assetById(runner.db, asset.id)
   if (!next) throw new Error(`image not found: ${asset.id}`)
   return next
 }
 
-async function writeTags(runner: Runner, asset: ImageAsset, signal: AbortSignal): Promise<void> {
+async function writeTags(
+  runner: Runner,
+  asset: ImageAsset,
+  signal: AbortSignal,
+): Promise<void> {
   const processedAbs = processedAbsOf(runner, asset)
   const base = criticBaseURL(runner.dataDir)
-  const tagged = await criticJson<{ tags?: string[]; model?: string }>(
-    base,
-    '/tag',
-    { path: processedAbs },
-    signal,
-  )
-  const tags = Array.isArray(tagged.tags) ? tagged.tags.filter((tag) => typeof tag === 'string') : []
+  const tagged = await criticJson<{
+    tags?: string[]
+    model?: string
+    rating?: string
+  }>(base, '/tag', { path: processedAbs }, signal)
+  const tags = Array.isArray(tagged.tags)
+    ? tagged.tags.filter((tag) => typeof tag === 'string')
+    : []
   runner.db
     .prepare(
-      `UPDATE image_assets SET tags_json = ?, tags_model_version = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE image_assets SET tags_json = ?, tags_model_version = ?, rating = ?, updated_at = ? WHERE id = ?`,
     )
-    .run(JSON.stringify(tags), tagged.model ?? '', runner.now().getTime(), asset.id)
+    .run(
+      JSON.stringify(tags),
+      tagged.model ?? '',
+      ratingOf(tagged.rating),
+      runner.now().getTime(),
+      asset.id,
+    )
   writeWd14TagTable(runner.db, runner.dataDir)
 }
 
-async function writeEmbedding(runner: Runner, asset: ImageAsset, signal: AbortSignal): Promise<void> {
+async function writeEmbedding(
+  runner: Runner,
+  asset: ImageAsset,
+  signal: AbortSignal,
+): Promise<void> {
   const processedAbs = processedAbsOf(runner, asset)
   const base = criticBaseURL(runner.dataDir)
   const embedded = await criticJson<{ styleVec?: number[] }>(
@@ -461,7 +566,12 @@ async function writeEmbedding(runner: Runner, asset: ImageAsset, signal: AbortSi
         embedding_json = ?, embedding_model_version = ?, updated_at = ?
       WHERE id = ?`,
     )
-    .run(JSON.stringify(embedding), EMBEDDING_MODEL, runner.now().getTime(), asset.id)
+    .run(
+      JSON.stringify(embedding),
+      EMBEDDING_MODEL,
+      runner.now().getTime(),
+      asset.id,
+    )
 }
 
 function processedAbsOf(runner: Runner, asset: ImageAsset): string {
@@ -470,7 +580,9 @@ function processedAbsOf(runner: Runner, asset: ImageAsset): string {
 }
 
 function abortError(signal: AbortSignal): Error {
-  return signal.reason instanceof Error ? signal.reason : new Error('capture job timed out')
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error('capture job timed out')
 }
 
 export function updateAsset(
@@ -481,6 +593,7 @@ export function updateAsset(
     imgUrl?: string
     tags?: string[]
     embedding?: number[]
+    rating?: string
     note?: string | null
   },
 ): ImageAsset {
@@ -490,7 +603,7 @@ export function updateAsset(
   runner.db
     .prepare(
       `UPDATE image_assets SET
-        source_url = ?, img_url = ?, tags_json = ?, embedding_json = ?, note = ?, updated_at = ?
+        source_url = ?, img_url = ?, tags_json = ?, embedding_json = ?, rating = ?, note = ?, updated_at = ?
       WHERE id = ?`,
     )
     .run(
@@ -498,6 +611,7 @@ export function updateAsset(
       patch.imgUrl ?? current.source.imgUrl,
       JSON.stringify(patch.tags ?? current.tags),
       JSON.stringify(patch.embedding ?? current.embedding),
+      patch.rating ?? current.rating,
       patch.note === undefined ? (current.note ?? null) : patch.note,
       now,
       id,
@@ -508,14 +622,23 @@ export function updateAsset(
   return next
 }
 
-export function approveAsset(runner: Runner, id: string, version: FinalVersion = 'processed'): Promise<ImageAsset> {
+export function approveAsset(
+  runner: Runner,
+  id: string,
+  version: FinalVersion = 'processed',
+): Promise<ImageAsset> {
   return moveReviewed(runner, id, version)
 }
 
-export function replaceNobg(runner: Runner, id: string, bytes: Buffer): ImageAsset {
+export function replaceNobg(
+  runner: Runner,
+  id: string,
+  bytes: Buffer,
+): ImageAsset {
   const current = assetById(runner.db, id)
   if (!current) throw new RunnerError('image not found', 404)
-  if (current.status === 'approved') throw new RunnerError('已通过的图片不能再擦除', 409)
+  if (current.status === 'approved')
+    throw new RunnerError('已通过的图片不能再擦除', 409)
   if (!current.nobg) throw new RunnerError('还没有移除背景的版本', 409)
   if (bytes.length < 32 || bytes[0] !== 0x89 || bytes[1] !== 0x50) {
     throw new RunnerError('需要 PNG')
@@ -546,7 +669,10 @@ export function deleteAsset(runner: Runner, id: string): void {
   const hash = current.original.hash
   if (HASH_RE.test(hash)) {
     for (const kind of ['raw', 'assets']) {
-      rmSync(join(runner.dataDir, 'capture', kind, hash), { recursive: true, force: true })
+      rmSync(join(runner.dataDir, 'capture', kind, hash), {
+        recursive: true,
+        force: true,
+      })
     }
   }
   transaction(runner.db, () => {
@@ -559,23 +685,33 @@ export function deleteAsset(runner: Runner, id: string): void {
 export function rejectAsset(runner: Runner, id: string): ImageAsset {
   const current = assetById(runner.db, id)
   if (!current) throw new RunnerError('image not found', 404)
-  if (current.status !== 'processed') throw new RunnerError('只有处理完的图片可以拒绝', 409)
+  if (current.status !== 'processed')
+    throw new RunnerError('只有处理完的图片可以拒绝', 409)
   const now = runner.now().getTime()
   runner.db
-    .prepare(`UPDATE image_assets SET status = 'rejected', reviewed_at = ?, updated_at = ? WHERE id = ?`)
+    .prepare(
+      `UPDATE image_assets SET status = 'rejected', reviewed_at = ?, updated_at = ? WHERE id = ?`,
+    )
     .run(now, now, id)
   const next = assetById(runner.db, id)
   if (!next) throw new RunnerError('image not found', 404)
   return next
 }
 
-async function moveReviewed(runner: Runner, id: string, version: FinalVersion): Promise<ImageAsset> {
+async function moveReviewed(
+  runner: Runner,
+  id: string,
+  version: FinalVersion,
+): Promise<ImageAsset> {
   const current = assetById(runner.db, id)
   if (!current) throw new RunnerError('image not found', 404)
-  if (current.status !== 'processed') throw new RunnerError('只有处理完的图片可以通过', 409)
+  if (current.status !== 'processed')
+    throw new RunnerError('只有处理完的图片可以通过', 409)
   if (!current.processed) throw new RunnerError('没有处理后的图片', 409)
-  if (version === 'nobg' && !current.nobg) throw new RunnerError('还没有移除背景的版本', 409)
-  if (version === 'raw' && !current.original.path) throw new RunnerError('没有原始图片', 409)
+  if (version === 'nobg' && !current.nobg)
+    throw new RunnerError('还没有移除背景的版本', 409)
+  if (version === 'raw' && !current.original.path)
+    throw new RunnerError('没有原始图片', 409)
   const hash = current.original.hash
   const from = join(runner.dataDir, 'capture', 'raw', hash)
   const to = join(runner.dataDir, 'capture', 'assets', hash)
@@ -588,7 +724,12 @@ async function moveReviewed(runner: Runner, id: string, version: FinalVersion): 
     renameSync(from, to)
   }
   const keptDir = existsSync(to) ? to : from
-  const kept = await settleFinalFiles(keptDir, version, processedName, originalName)
+  const kept = await settleFinalFiles(
+    keptDir,
+    version,
+    processedName,
+    originalName,
+  )
   const root = existsSync(to) ? 'assets' : 'raw'
   await writeThumb(join(keptDir, kept.name), join(keptDir, THUMB_NAME))
   const thumbRel = `capture/${root}/${hash}/${THUMB_NAME}`
@@ -633,7 +774,8 @@ export async function settleFinalFiles(
   const nobgAbs = join(dir, 'nobg.png')
   if (version === 'nobg') {
     if (!existsSync(nobgAbs)) throw new RunnerError('还没有移除背景的版本', 409)
-    if (!existsSync(processedAbs)) throw new RunnerError('没有处理后的图片', 409)
+    if (!existsSync(processedAbs))
+      throw new RunnerError('没有处理后的图片', 409)
     const canvas = await imageSize(processedAbs)
     await flattenOnWhite(nobgAbs, processedAbs, canvas.width, canvas.height)
     rmSync(nobgAbs, { force: true })
@@ -654,7 +796,9 @@ export async function settleFinalFiles(
   return { name: processedName }
 }
 
-async function imageSize(file: string): Promise<{ width: number; height: number }> {
+async function imageSize(
+  file: string,
+): Promise<{ width: number; height: number }> {
   try {
     const png = PNG.sync.read(readFileSync(file))
     if (!png.width || !png.height) throw new Error('empty')
@@ -679,9 +823,15 @@ async function flattenOnWhite(
       const from = (sy * cut.width + sx) << 2
       const alpha = (cut.data[from + 3] ?? 255) / 255
       const to = (y * width + x) << 2
-      out.data[to] = Math.round((cut.data[from] ?? 0) * alpha + 255 * (1 - alpha))
-      out.data[to + 1] = Math.round((cut.data[from + 1] ?? 0) * alpha + 255 * (1 - alpha))
-      out.data[to + 2] = Math.round((cut.data[from + 2] ?? 0) * alpha + 255 * (1 - alpha))
+      out.data[to] = Math.round(
+        (cut.data[from] ?? 0) * alpha + 255 * (1 - alpha),
+      )
+      out.data[to + 1] = Math.round(
+        (cut.data[from + 1] ?? 0) * alpha + 255 * (1 - alpha),
+      )
+      out.data[to + 2] = Math.round(
+        (cut.data[from + 2] ?? 0) * alpha + 255 * (1 - alpha),
+      )
       out.data[to + 3] = 255
     }
   }
@@ -718,6 +868,7 @@ function assetOf(row: AssetRow): ImageAsset {
     },
     tags,
     embedding,
+    rating: row.rating ?? '',
     tagsModelVersion: row.tags_model_version,
     embeddingModelVersion: row.embedding_model_version,
     reviewedAt: row.reviewed_at,
@@ -782,10 +933,22 @@ function assetId(now: Date): string {
 export async function writeThumb(source: string, dest: string): Promise<void> {
   mkdirSync(dirname(dest), { recursive: true })
   if (existsSync(dest)) rmSync(dest)
-  await execFile('sips', ['-Z', String(THUMB_EDGE), '-s', 'format', 'png', source, '--out', dest])
+  await execFile('sips', [
+    '-Z',
+    String(THUMB_EDGE),
+    '-s',
+    'format',
+    'png',
+    source,
+    '--out',
+    dest,
+  ])
 }
 
-export async function backfillAssetThumbs(dataDir: string, db: DatabaseSync): Promise<number> {
+export async function backfillAssetThumbs(
+  dataDir: string,
+  db: DatabaseSync,
+): Promise<number> {
   const root = join(dataDir, 'capture', 'assets')
   if (!existsSync(root)) return 0
   let written = 0
@@ -817,9 +980,17 @@ function thumbSource(dir: string): string | null {
   return image ? join(dir, image) : null
 }
 
-export async function pixelSize(file: string): Promise<{ width: number; height: number }> {
+export async function pixelSize(
+  file: string,
+): Promise<{ width: number; height: number }> {
   try {
-    const { stdout } = await execFile('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', file])
+    const { stdout } = await execFile('sips', [
+      '-g',
+      'pixelWidth',
+      '-g',
+      'pixelHeight',
+      file,
+    ])
     return {
       width: Number(/pixelWidth: (\d+)/.exec(stdout)?.[1]) || 0,
       height: Number(/pixelHeight: (\d+)/.exec(stdout)?.[1]) || 0,
@@ -829,7 +1000,10 @@ export async function pixelSize(file: string): Promise<{ width: number; height: 
   }
 }
 
-function vectorsFor(assets: ImageAsset[], target: ImageAsset): Record<string, number[]> | null {
+function vectorsFor(
+  assets: ImageAsset[],
+  target: ImageAsset,
+): Record<string, number[]> | null {
   const vector = usableVector(target.embedding)
   if (!vector) return null
   const vectors: Record<string, number[]> = { [target.id]: vector }
@@ -851,11 +1025,14 @@ function usableVector(values: number[]): number[] | null {
 
 function criticBaseURL(dataDir: string): string {
   try {
-    const raw = JSON.parse(readFileSync(join(dirname(dataDir), 'config.json'), 'utf8')) as {
+    const raw = JSON.parse(
+      readFileSync(join(dirname(dataDir), 'config.json'), 'utf8'),
+    ) as {
       critic?: { baseURL?: string }
     }
     const url = raw.critic?.baseURL
-    if (typeof url === 'string' && url.trim() !== '') return url.replace(/\/$/, '')
+    if (typeof url === 'string' && url.trim() !== '')
+      return url.replace(/\/$/, '')
   } catch {
     // 配置缺失时用本机默认端口
   }
@@ -879,7 +1056,10 @@ async function prepareImage(
   } catch (err) {
     if (signal.aborted) throw err
     const message = err instanceof Error ? err.message : String(err)
-    if (!/404|not found|unexpected token|<!doctype/i.test(message) && !message.includes('prepare')) {
+    if (
+      !/404|not found|unexpected token|<!doctype/i.test(message) &&
+      !message.includes('prepare')
+    ) {
       // 服务在，但预处理本身失败
       if (!/fetch failed|ECONNREFUSED|ENOTFOUND/i.test(message)) throw err
     }
@@ -906,7 +1086,10 @@ out.parent.mkdir(parents=True, exist_ok=True)
 image.save(out, format="PNG")
 print(image.size[0], image.size[1])
 `
-  return execFile(python, ['-c', script], { signal, timeout: STEP_TIMEOUT_MS }).then(({ stdout }) => {
+  return execFile(python, ['-c', script], {
+    signal,
+    timeout: STEP_TIMEOUT_MS,
+  }).then(({ stdout }) => {
     const [width, height] = stdout.trim().split(/\s+/).map(Number)
     return { width: width || 0, height: height || 0 }
   })

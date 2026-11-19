@@ -28,6 +28,7 @@ export interface ImageAsset {
   };
   tags: string[];
   embedding: number[];
+  rating?: string;
   tagsModelVersion: string;
   embeddingModelVersion: string;
   reviewedAt: number;
@@ -50,6 +51,23 @@ export const STATUSES: ImageStatus[] = [
   "approved",
   "rejected",
 ];
+
+export const RATINGS = [
+  "general",
+  "sensitive",
+  "questionable",
+  "explicit",
+] as const;
+
+export type ImageRating = (typeof RATINGS)[number];
+
+export function ratingLabel(rating: string | undefined): string {
+  if (rating === "general") return "general · 普通";
+  if (rating === "sensitive") return "sensitive · 敏感";
+  if (rating === "questionable") return "questionable · 可疑";
+  if (rating === "explicit") return "explicit · 露骨";
+  return "未分级";
+}
 
 export function statusLabel(status: string): string {
   if (status === "collected") return "已采集";

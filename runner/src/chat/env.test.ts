@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { loadGateway, readGateway } from './env.ts'
+import {
+  loadGateway,
+  pixivSessionFromFile,
+  pixivSessionValue,
+  readGateway,
+} from './env.ts'
 
 test('a blank gateway file stays off, and models must be a list', () => {
   assert.equal(readGateway({}), null)
@@ -39,6 +44,21 @@ test('a blank gateway file stays off, and models must be a list', () => {
       visionModel: '',
     },
   )
+})
+
+test('pixivSessionValue reads a PHPSESSID and rejects other secrets', () => {
+  assert.equal(pixivSessionValue(''), null)
+  assert.equal(pixivSessionValue(' 123_abc '), '123_abc')
+  assert.equal(pixivSessionValue('PHPSESSID=123_abc; other=1'), '123_abc')
+  assert.equal(
+    pixivSessionFromFile(`export const PIXIV_PHPSESSID = '123_abc'\n`),
+    '123_abc',
+  )
+  assert.equal(
+    pixivSessionFromFile('export const AI_GATEWAY_KEY = "x"\n'),
+    null,
+  )
+  assert.throws(() => pixivSessionValue('not a cookie'), /PHPSESSID/)
 })
 
 test('loads env.ts from the repo root and ignores a missing file', async () => {

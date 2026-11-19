@@ -29,7 +29,13 @@ import {
   type FinalVersion,
 } from '../capture/asset.ts'
 import { removeBackground } from '../capture/nobg.ts'
-import { listCaptureJobs, resumeCaptureJobs, retryCaptureJob } from '../capture/jobs.ts'
+import {
+  listCaptureJobs,
+  resumeCaptureJobs,
+  retryCaptureJob,
+} from '../capture/jobs.ts'
+import { pixivSessionFromFile } from '../chat/env.ts'
+import { findRepoRoot } from '../config.ts'
 import { RunnerError } from '../errors.ts'
 import { relativePath } from '../path.ts'
 import type { Runner } from '../task/queue.ts'
@@ -53,7 +59,10 @@ function nearestOrderOf(raw: string | undefined): 'near' | 'far' {
 
 function nearestIdsOf(raw: string | undefined): string[] | undefined {
   if (raw === undefined || raw === '') return undefined
-  const ids = raw.split(',').map((id) => id.trim()).filter((id) => id !== '')
+  const ids = raw
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id !== '')
   if (ids.length === 0) throw new RunnerError('ids 不能为空')
   const seen = new Set<string>()
   for (const id of ids) {
@@ -64,7 +73,7 @@ function nearestIdsOf(raw: string | undefined): string[] | undefined {
   return ids
 }
 
-// 采集工作台：Pinterest 链接 → 下载原图 → 异步预处理 → 手工整理素材池。
+// 采集工作台：Pinterest / pixiv 链接 → 下载原图 → 异步预处理 → 手工整理素材池。
 // 目录即真相源（不进 SQLite，不再按 folder 分）：
 //   data/capture/raw/<id>.<ext>     原图（尽量提升到 i.pinimg originals 分辨率）
 //   data/capture/image/<id>.jpg     预处理产物（jpeg q88，长边 ≤3072）
@@ -97,7 +106,48 @@ const inflight = new Set<string>()
 
 // ---- 纯函数（测试覆盖） ----
 
-// 链接归一：i.pinimg.com 直链 → image，其余 pinterest/pin.it → page。剥 query 与 hash
+function isPinimgHost(host: string): boolean {
+  return /(^|\.)pinimg\.com$/.test(host)
+}
+
+function isPinterestHost(host: string): boolean {
+  return (
+    /(^|\.)pinterest\.[a-z.]+$/.test(host) ||
+    host === 'pin.it' ||
+    host.endsWith('.pin.it')
+  )
+}
+
+function isPximgHost(host: string): boolean {
+  return /(^|\.)pximg\.net$/.test(host)
+}
+
+function isPixivHost(host: string): boolean {
+  return /(^|\.)pixiv\.net$/.test(host)
+}
+
+function captureProviderOf(url: string): 'pinterest' | 'pixiv' {
+  const host = new URL(url).hostname.toLowerCase()
+  return isPixivHost(host) || isPximgHost(host) ? 'pixiv' : 'pinterest'
+}
+
+// 作品 id：/artworks/123、/en/artworks/123，或旧版 member_illust.php?illust_id=123
+export function pixivArtworkIdOf(input: string): string | null {
+  let parsed: URL
+  try {
+    parsed = new URL(input)
+  } catch {
+    return null
+  }
+  const fromPath = /\/artworks\/(\d+)/.exec(parsed.pathname)
+  if (fromPath?.[1]) return fromPath[1]
+  const illustId = parsed.searchParams.get('illust_id')
+  if (illustId && /^\d+$/.test(illustId)) return illustId
+  return null
+}
+
+// 链接归一：pinimg / pximg 直链 → image，作品页和 pin 页 → page。
+// pixiv 作品页收成 https://www.pixiv.net/artworks/<id>，剥掉语言前缀和跟踪参数。
 export function normalizeCaptureUrl(input: string): {
   kind: 'image' | 'page'
   url: string
@@ -113,14 +163,25 @@ export function normalizeCaptureUrl(input: string): {
     throw new RunnerError('invalid url')
   }
   const host = parsed.hostname.toLowerCase()
-  const pinimg = /(^|\.)pinimg\.com$/.test(host)
-  const pin = /(^|\.)pinterest\.[a-z.]+$/.test(host) || host === 'pin.it' || host.endsWith('.pin.it')
-  if (!pinimg && !pin) {
-    throw new RunnerError('只支持 pinterest.com / pin.it / i.pinimg.com 链接')
+  const pinimg = isPinimgHost(host)
+  const pin = isPinterestHost(host)
+  const pximg = isPximgHost(host)
+  const pixiv = isPixivHost(host)
+  if (!pinimg && !pin && !pximg && !pixiv) {
+    throw new RunnerError(
+      '只支持 pinterest.com / pin.it / i.pinimg.com / pixiv.net / i.pximg.net 链接',
+    )
+  }
+  if (pixiv) {
+    const id = pixivArtworkIdOf(parsed.toString())
+    if (!id) {
+      throw new RunnerError('pixiv 只支持作品页（/artworks/ID）或图片直链')
+    }
+    return { kind: 'page', url: `https://www.pixiv.net/artworks/${id}` }
   }
   parsed.hash = ''
   parsed.search = ''
-  return { kind: pinimg ? 'image' : 'page', url: parsed.toString() }
+  return { kind: pinimg || pximg ? 'image' : 'page', url: parsed.toString() }
 }
 
 // 已解析图片直链的校验（Chrome 插件等调用方直传 mediaUrl 时用）
@@ -143,9 +204,13 @@ export function normalizeMediaUrl(input: string): string {
 // pinimg 图片签名：尺寸段之后的完整尾段（c4/02/68/<hash32>.jpg），同一张图所有尺寸变体共享；
 // pximg（pixiv）签名 = 作品号+页号（12345_p0），原图/master/square 变体共享；其他返回 null
 export function imageSignatureOf(url: string): string | null {
-  const hit = /^https:\/\/i\.pinimg\.com\/[a-z0-9_]+\/([0-9a-f/]+\.[a-z0-9]+)$/i.exec(url)
+  const hit =
+    /^https:\/\/i\.pinimg\.com\/[a-z0-9_]+\/([0-9a-f/]+\.[a-z0-9]+)$/i.exec(url)
   if (hit) return hit[1] ?? null
-  const px = /i\.pximg\.net\/.+\/(\d+_p\d+)(?:_master1200|_square1200)?\.[a-z0-9]+$/i.exec(url)
+  const px =
+    /i\.pximg\.net\/.+\/(\d+_p\d+)(?:_(?:master|square|custom)1200)?\.[a-z0-9]+$/i.exec(
+      url,
+    )
   return px ? (px[1] ?? null) : null
 }
 
@@ -153,7 +218,9 @@ export function imageSignatureOf(url: string): string | null {
 export function refererFor(url: string): string {
   try {
     const host = new URL(url).hostname.toLowerCase()
-    return /(^|\.)pximg\.net$/.test(host) ? 'https://www.pixiv.net/' : 'https://www.pinterest.com/'
+    return isPximgHost(host)
+      ? 'https://www.pixiv.net/'
+      : 'https://www.pinterest.com/'
   } catch {
     return 'https://www.pinterest.com/'
   }
@@ -174,7 +241,9 @@ export function ogImageOf(html: string): string | null {
 
 // i.pinimg.com 缩略版本 → originals 版本；已是 originals 或非 pinimg 返回 null
 export function originalsOf(url: string): string | null {
-  const hit = /^(https:\/\/i\.pinimg\.com\/)(\d+x\d*|originals)\/(.+)$/i.exec(url)
+  const hit = /^(https:\/\/i\.pinimg\.com\/)(\d+x\d*|originals)\/(.+)$/i.exec(
+    url,
+  )
   if (!hit) return null
   if ((hit[2] ?? '').toLowerCase() === 'originals') return null
   return `${hit[1]}originals/${hit[3]}`
@@ -188,7 +257,9 @@ export function sizeSegmentOf(url: string): string | null {
 
 // 替换尺寸段；目标段与当前相同或非 pinimg 返回 null
 export function withSizeSegment(url: string, segment: string): string | null {
-  const hit = /^(https:\/\/i\.pinimg\.com\/)(\d+x\d*|originals)\/(.+)$/i.exec(url)
+  const hit = /^(https:\/\/i\.pinimg\.com\/)(\d+x\d*|originals)\/(.+)$/i.exec(
+    url,
+  )
   if (!hit) return null
   if ((hit[2] ?? '').toLowerCase() === segment.toLowerCase()) return null
   return `${hit[1]}${segment}/${hit[3]}`
@@ -238,9 +309,142 @@ export function oembedThumbnailOf(text: string): string | null {
   } catch {
     return null
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    return null
   const thumb = (parsed as Record<string, unknown>).thumbnail_url
   return typeof thumb === 'string' && thumb !== '' ? thumb : null
+}
+
+// master / square / custom 缩略图 → 原图候选。扩展名要探，原图常是 png 而缩略图是 jpg
+export function pximgOriginalCandidates(url: string): string[] {
+  const hit =
+    /^https:\/\/i\.pximg\.net\/(?:c\/[^/]+\/)?(?:img-master|custom-thumb)\/img\/(\d{4}\/\d{2}\/\d{2}\/\d{2}\/\d{2}\/\d{2}\/\d+_p\d+)_(?:master|square|custom)1200\.[a-z0-9]+$/i.exec(
+      url,
+    )
+  const stem = hit?.[1]
+  if (!stem) return []
+  return ['jpg', 'png', 'gif'].map(
+    (ext) => `https://i.pximg.net/img-original/img/${stem}.${ext}`,
+  )
+}
+
+function urlsOriginal(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const urls = (value as Record<string, unknown>).urls
+  if (!urls || typeof urls !== 'object' || Array.isArray(urls)) return null
+  const original = (urls as Record<string, unknown>).original
+  if (typeof original !== 'string' || original === '') return null
+  if (!/i\.pximg\.net\/img-original\//i.test(original)) return null
+  return original
+}
+
+// ajax /pages、作品详情，或页面里嵌的 img-original。社交卡片 og:image 不要
+export function pixivImageUrlsOf(text: string, artworkId?: string): string[] {
+  const fromJson = pixivJsonImageUrls(text)
+  if (fromJson.length > 0) return fromJson
+  if (artworkId) {
+    const fromHtml = pixivHtmlOriginals(text, artworkId)
+    if (fromHtml.length > 0) return fromHtml
+  }
+  const og = ogImageOf(text)
+  if (og && /i\.pximg\.net\/(?:img-original|img-master)\//i.test(og))
+    return [og]
+  return []
+}
+
+function pixivJsonImageUrls(text: string): string[] {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return []
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+  const record = parsed as Record<string, unknown>
+  if (record.error === true) return []
+  const body = record.body
+  if (Array.isArray(body)) {
+    const urls: string[] = []
+    for (const item of body) {
+      const original = urlsOriginal(item)
+      if (original) urls.push(original)
+    }
+    return urls
+  }
+  const direct = urlsOriginal(body)
+  if (direct) return [direct]
+  const illust = record.illust
+  if (!illust || typeof illust !== 'object' || Array.isArray(illust)) return []
+  const urls: string[] = []
+  for (const item of Object.values(illust)) {
+    const original = urlsOriginal(item)
+    if (original) urls.push(original)
+  }
+  return urls
+}
+
+// 页面源码里的原图。pixiv 会把斜杠写成 \/ 或 \u002F
+export function pixivHtmlOriginals(html: string, artworkId: string): string[] {
+  const id = artworkId.replace(/[^\d]/g, '')
+  if (id === '') return []
+  const decoded = html.replace(/\\u002f/gi, '/').replace(/\\\//g, '/')
+  const re = new RegExp(
+    `https://i\\.pximg\\.net/img-original/[^"'\\s<>]*${id}_p(\\d+)\\.(jpg|jpeg|png|gif)`,
+    'gi',
+  )
+  const found = new Map<number, string>()
+  for (const match of decoded.matchAll(re)) {
+    const index = Number(match[1])
+    const url = match[0]
+    if (!Number.isInteger(index) || !url || found.has(index)) continue
+    found.set(index, url)
+  }
+  return [...found.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([, url]) => url)
+}
+
+// R-18 等要登录的作品：/pages 是 error+空数组，详情里的 urls.original 是 null
+export function pixivLoginRequired(text: string): boolean {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return false
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    return false
+  const record = parsed as Record<string, unknown>
+  const body = record.body
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    const urls = (body as Record<string, unknown>).urls
+    if (urls && typeof urls === 'object' && !Array.isArray(urls)) {
+      if ((urls as Record<string, unknown>).original === null) return true
+    }
+  }
+  const message = typeof record.message === 'string' ? record.message : ''
+  return (
+    record.error === true &&
+    message === '' &&
+    Array.isArray(body) &&
+    body.length === 0
+  )
+}
+
+export function pixivAjaxMessageOf(text: string): string | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    return null
+  const record = parsed as Record<string, unknown>
+  if (record.error !== true) return null
+  return typeof record.message === 'string' && record.message !== ''
+    ? record.message
+    : 'pixiv 拒绝了这次请求'
 }
 
 // oEmbed 明确报错（如 "Url was not found"）时提取错误文本，区分死 pin 与其他故障
@@ -251,7 +455,8 @@ export function oembedErrorOf(text: string): string | null {
   } catch {
     return null
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed))
+    return null
   const error = (parsed as Record<string, unknown>).error
   return typeof error === 'string' && error !== '' ? error : null
 }
@@ -262,29 +467,77 @@ function curlMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+function outputText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Buffer.isBuffer(value)) return value.toString('utf8')
+  return ''
+}
+
 async function curlRun(args: string[], timeoutMs: number): Promise<string> {
   try {
     const { stdout } = await execFile('curl', args, {
       timeout: timeoutMs,
       maxBuffer: 32 * 1024 * 1024,
     })
-    return stdout
+    return outputText(stdout)
   } catch (err) {
     // --fail-with-body 下 HTTP 错误的响应体在 stdout，不能扔
-    const stdout = (err as { stdout?: unknown }).stdout
-    if (typeof stdout === 'string' && stdout !== '') return stdout
+    const stdout = outputText((err as { stdout?: unknown }).stdout)
+    if (stdout !== '') return stdout
     throw err
   }
 }
 
-// 抓文本（pin 页 HTML / oEmbed JSON）。--fail-with-body 保留 4xx/5xx 响应体，错误可读
-async function fetchPage(url: string): Promise<string> {
-  const base = ['-sS', '-L', '--fail-with-body', '--compressed', '--max-filesize', '16777216', '-A', UA]
+// 每次读取，改完 env.ts 不用重启。只认 PIXIV_PHPSESSID，不把文件里的其他密钥带出去。
+function pixivCookie(): string | undefined {
+  try {
+    const root = findRepoRoot([import.meta.dirname])
+    const path = join(root, 'env.ts')
+    if (!existsSync(path)) return undefined
+    const token = pixivSessionFromFile(readFileSync(path, 'utf8'))
+    return token ? `PHPSESSID=${token}` : undefined
+  } catch (err) {
+    if (err instanceof RunnerError) throw err
+    return undefined
+  }
+}
+
+function pixivRequestCookie(url: string): string | undefined {
+  try {
+    const host = new URL(url).hostname.toLowerCase()
+    if (!isPixivHost(host) && !isPximgHost(host)) return undefined
+  } catch {
+    return undefined
+  }
+  return pixivCookie()
+}
+
+// 抓文本（pin 页 HTML / oEmbed JSON / pixiv ajax）。--fail-with-body 保留 4xx/5xx 响应体
+async function fetchPage(
+  url: string,
+  referer?: string,
+  cookie?: string,
+): Promise<string> {
+  const base = [
+    '-sS',
+    '-L',
+    '--fail-with-body',
+    '--compressed',
+    '--max-filesize',
+    '16777216',
+    '-A',
+    UA,
+    ...(referer ? ['-e', referer] : []),
+    ...(cookie ? ['-b', cookie] : []),
+  ]
   const seconds = CURL_SECONDS
   const timeoutMs = (seconds + 10) * 1000
   let first = ''
   try {
-    return await curlRun([...base, '--max-time', String(seconds), url], timeoutMs)
+    return await curlRun(
+      [...base, '--max-time', String(seconds), url],
+      timeoutMs,
+    )
   } catch (err) {
     first = curlMessage(err)
   }
@@ -306,6 +559,7 @@ async function downloadTo(
   url: string,
   dest: string,
   referer?: string,
+  cookie?: string,
 ): Promise<void> {
   const base = [
     '-sS',
@@ -316,6 +570,7 @@ async function downloadTo(
     '-A',
     UA,
     ...(referer ? ['-e', referer] : []),
+    ...(cookie ? ['-b', cookie] : []),
     '-o',
     `${dest}.part`,
   ]
@@ -359,9 +614,14 @@ function metaPathOf(dir: string, id: string): string {
 }
 
 // meta 读写导出给 tag.ts 复用（同一 sidecar 格式，一处真相）
-export function readMeta(dir: string, id: string): Record<string, unknown> | null {
+export function readMeta(
+  dir: string,
+  id: string,
+): Record<string, unknown> | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(metaPathOf(dir, id), 'utf8'))
+    const parsed: unknown = JSON.parse(
+      readFileSync(metaPathOf(dir, id), 'utf8'),
+    )
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>
     }
@@ -380,11 +640,26 @@ export function writeMeta(
   writeFileSync(metaPathOf(dir, id), JSON.stringify(meta, null, 2))
 }
 
-// 页面/短链 → 图片 URL。og:image 优先，oEmbed 兜底（死 pin 会明确报 not found）
-async function resolveMediaUrl(input: string): Promise<string> {
+// 页面/短链 → 图片 URL。Pinterest 用 og:image，失败再走 oEmbed。
+// pixiv 作品页走 ajax /pages，一次拿齐每一页的 img-original。
+async function resolveMediaUrls(input: string): Promise<string[]> {
   const { kind, url } = normalizeCaptureUrl(input)
-  if (kind === 'image') return url
+  const host = new URL(url).hostname.toLowerCase()
+  if (kind === 'image') {
+    return [isPximgHost(host) ? await upgradePximg(url) : url]
+  }
+  if (isPixivHost(host)) return resolvePixivPage(url)
+  return [await resolvePinterestPage(url)]
+}
 
+async function resolveMediaUrl(input: string): Promise<string> {
+  const urls = await resolveMediaUrls(input)
+  const first = urls[0]
+  if (!first) throw new RunnerError('无法解析出图片', 422)
+  return first
+}
+
+async function resolvePinterestPage(url: string): Promise<string> {
   const problems: string[] = []
   try {
     const html = await fetchPage(url)
@@ -408,7 +683,9 @@ async function resolveMediaUrl(input: string): Promise<string> {
     }
     const thumbnail = oembedThumbnailOf(text)
     if (thumbnail) return thumbnail
-    problems.push(oembedError ? `oEmbed：${oembedError}` : 'oEmbed 无 thumbnail_url')
+    problems.push(
+      oembedError ? `oEmbed：${oembedError}` : 'oEmbed 无 thumbnail_url',
+    )
   } catch (err) {
     if (err instanceof RunnerError) throw err
     problems.push(`oEmbed 失败：${curlMessage(err)}`)
@@ -420,10 +697,128 @@ async function resolveMediaUrl(input: string): Promise<string> {
   )
 }
 
+function pixivLoginMessage(cookie: string | undefined): string {
+  return cookie
+    ? '登录态失效。重新登录 pixiv.net，把 Cookie 里的 PHPSESSID 更新到 env.ts 的 PIXIV_PHPSESSID'
+    : '这个作品要登录才能看。打开已登录的 pixiv.net，从 Cookie 复制 PHPSESSID，写到仓库根目录 env.ts 的 PIXIV_PHPSESSID，保存后再采集'
+}
+
+async function resolvePixivPage(url: string): Promise<string[]> {
+  const id = pixivArtworkIdOf(url)
+  if (!id)
+    throw new RunnerError('pixiv 只支持作品页（/artworks/ID）或图片直链', 422)
+  const referer = `https://www.pixiv.net/artworks/${id}`
+  const cookie = pixivCookie()
+  const problems: string[] = []
+  let loginWall = false
+  try {
+    const text = await fetchPage(
+      `https://www.pixiv.net/ajax/illust/${id}/pages`,
+      referer,
+      cookie,
+    )
+    const urls = pixivImageUrlsOf(text, id)
+    if (urls.length > 0) return urls
+    if (pixivLoginRequired(text)) loginWall = true
+    else problems.push(pixivAjaxMessageOf(text) ?? '作品接口没有原图地址')
+  } catch (err) {
+    problems.push(`作品接口失败：${curlMessage(err)}`)
+  }
+  try {
+    const text = await fetchPage(
+      `https://www.pixiv.net/ajax/illust/${id}`,
+      referer,
+      cookie,
+    )
+    const urls = pixivImageUrlsOf(text, id)
+    if (urls.length > 0) return urls
+    if (pixivLoginRequired(text)) loginWall = true
+  } catch (err) {
+    problems.push(`作品详情失败：${curlMessage(err)}`)
+  }
+  if (loginWall) throw new RunnerError(pixivLoginMessage(cookie), 422)
+  try {
+    const html = await fetchPage(referer, 'https://www.pixiv.net/', cookie)
+    const urls = pixivImageUrlsOf(html, id)
+    if (urls.length > 0) return urls
+    problems.push('页面里没有原图地址')
+  } catch (err) {
+    problems.push(`页面抓取失败：${curlMessage(err)}`)
+  }
+  throw new RunnerError(
+    `无法解析出图片（${problems.join('；')}）。作品可能已删除、设为私密，或需要登录`,
+    422,
+  )
+}
+
+// 缩略图直链升到同一页的 img-original。作品接口优先，失败再按扩展名试探
+async function upgradePximg(url: string): Promise<string> {
+  if (/\/img-original\//i.test(url)) return url
+  const signature = imageSignatureOf(url)
+  const id = /^(\d+)_p\d+$/.exec(signature ?? '')?.[1]
+  if (id) {
+    try {
+      const pages = await resolvePixivPage(
+        `https://www.pixiv.net/artworks/${id}`,
+      )
+      const match = signature
+        ? pages.find((item) => imageSignatureOf(item) === signature)
+        : undefined
+      if (match) return match
+    } catch {
+      // 作品页拿不到时，按原图路径猜扩展名
+    }
+  }
+  for (const candidate of pximgOriginalCandidates(url)) {
+    if (await remoteImageExists(candidate)) return candidate
+  }
+  return url
+}
+
+async function remoteImageExists(url: string): Promise<boolean> {
+  const cookie = pixivRequestCookie(url)
+  const base = [
+    '-sS',
+    '-o',
+    '/dev/null',
+    '-w',
+    '%{http_code}',
+    '-I',
+    '-L',
+    '-A',
+    UA,
+    '-e',
+    refererFor(url),
+    ...(cookie ? ['-b', cookie] : []),
+    '--max-time',
+    '20',
+  ]
+  const statusOf = async (args: string[]): Promise<number> => {
+    try {
+      const text = await curlRun(args, 30_000)
+      const code = Number(text.trim())
+      return Number.isInteger(code) ? code : 0
+    } catch {
+      return 0
+    }
+  }
+  const direct = await statusOf([...base, url])
+  if (direct === 200 || direct === 206) return true
+  if (direct === 404) return false
+  const proxied = await statusOf([...base, '--proxy', PROXY, url])
+  return proxied === 200 || proxied === 206
+}
+
 // 读尺寸；读不出来当超限处理（宁可重采样也不冒放大险）
 async function overMaxEdge(file: string): Promise<boolean> {
   try {
-    const { stdout } = await execFile('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', file])
+    const { stdout } = await execFile('sips', [
+      '-g',
+      'pixelWidth',
+      '-g',
+      'pixelHeight',
+      file,
+    ])
     const width = Number(/pixelWidth: (\d+)/.exec(stdout)?.[1]) || 0
     const height = Number(/pixelHeight: (\d+)/.exec(stdout)?.[1]) || 0
     return Math.max(width, height) > MAX_EDGE
@@ -449,11 +844,18 @@ async function processEntry(
     // 阶梯提升：originals 优先，失败退 1200x（og:image 常给 736x 甚至 236x）
     const current = sizeSegmentOf(mediaUrl)
     if (remote && current !== 'originals') {
-      const candidates = [originalsOf(mediaUrl), withSizeSegment(mediaUrl, '1200x')]
+      const candidates = [
+        originalsOf(mediaUrl),
+        withSizeSegment(mediaUrl, '1200x'),
+      ]
       for (const candidate of candidates) {
         if (!candidate) continue
         try {
-          await downloadTo(candidate, paths.rawAbs, 'https://www.pinterest.com/')
+          await downloadTo(
+            candidate,
+            paths.rawAbs,
+            'https://www.pinterest.com/',
+          )
           mediaUrl = candidate
           record = sizeSegmentOf(candidate) ?? record
           break
@@ -473,7 +875,7 @@ async function processEntry(
         'formatOptions',
         String(JPEG_QUALITY),
         // 只缩不放：raw 尺寸读出来后，超过长边上限才加 -Z
-        ...(await overMaxEdge(paths.rawAbs) ? ['-Z', String(MAX_EDGE)] : []),
+        ...((await overMaxEdge(paths.rawAbs)) ? ['-Z', String(MAX_EDGE)] : []),
         paths.rawAbs,
         '--out',
         paths.imageAbs,
@@ -483,7 +885,13 @@ async function processEntry(
     let width: number | null = null
     let height: number | null = null
     try {
-      const { stdout } = await execFile('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', paths.imageAbs])
+      const { stdout } = await execFile('sips', [
+        '-g',
+        'pixelWidth',
+        '-g',
+        'pixelHeight',
+        paths.imageAbs,
+      ])
       width = Number(/pixelWidth: (\d+)/.exec(stdout)?.[1]) || null
       height = Number(/pixelHeight: (\d+)/.exec(stdout)?.[1]) || null
     } catch {
@@ -509,7 +917,9 @@ async function processEntry(
   }
 }
 
-async function finalVersion(req: { text(): Promise<string> }): Promise<FinalVersion> {
+async function finalVersion(req: {
+  text(): Promise<string>
+}): Promise<FinalVersion> {
   const raw = await req.text()
   if (raw.trim() === '') return 'processed'
   let body: unknown
@@ -532,13 +942,25 @@ async function finalVersion(req: { text(): Promise<string> }): Promise<FinalVers
 // ---- 端点 ----
 
 export function mountCapture(app: Hono, runner: Runner): void {
-  // Pinterest 页面或短链 → 可下载的图片地址。前端匹配到 Pinterest 后才调用。
+  // Pinterest / pixiv 页面或短链 → 可下载的图片地址。前端匹配到对应站点后才调用。
+  // pixiv 作品页返回每一页的原图，imgUrl 是第一页。
   app.post('/capture/resolve', async (c) => {
     const body = await jsonObject(c.req)
     const provider = stringField(body, 'provider')
-    if (provider !== 'pinterest') throw new RunnerError('provider 目前只支持 pinterest')
-    const imgUrl = await resolveMediaUrl(stringField(body, 'url'))
-    return c.json({ imgUrl })
+    if (provider !== 'pinterest' && provider !== 'pixiv') {
+      throw new RunnerError('provider 目前只支持 pinterest / pixiv')
+    }
+    const input = stringField(body, 'url')
+    const normalized = normalizeCaptureUrl(input)
+    if (captureProviderOf(normalized.url) !== provider) {
+      throw new RunnerError(
+        provider === 'pixiv' ? '这个链接不是 pixiv' : '这个链接不是 pinterest',
+      )
+    }
+    const imgUrls = await resolveMediaUrls(input)
+    const imgUrl = imgUrls[0]
+    if (!imgUrl) throw new RunnerError('无法解析出图片', 422)
+    return c.json({ imgUrl, imgUrls })
   })
 
   // 下载或接收本地图片：先落到 temp，算出 hash 后移入 capture/raw/<hash>/。立即返回，预处理异步。
@@ -571,7 +993,12 @@ export function mountCapture(app: Hono, runner: Runner): void {
       const tempDir = join(runner.dataDir, 'capture', 'temp')
       mkdirSync(tempDir, { recursive: true })
       const tempAbs = join(tempDir, `${captureId(runner.now())}${ext}`)
-      await downloadTo(mediaUrl, tempAbs, refererFor(mediaUrl))
+      await downloadTo(
+        mediaUrl,
+        tempAbs,
+        refererFor(mediaUrl),
+        pixivRequestCookie(mediaUrl),
+      )
       bytes = readFileSync(tempAbs)
       rmSync(tempAbs, { force: true })
       imgUrl = mediaUrl
@@ -610,10 +1037,14 @@ export function mountCapture(app: Hono, runner: Runner): void {
 
   app.post('/capture/assets/groups', async (c) => {
     const body = await jsonObject(c.req)
-    if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== 'string')) {
+    if (
+      !Array.isArray(body.ids) ||
+      body.ids.some((id) => typeof id !== 'string')
+    ) {
       throw new RunnerError('ids 必须是图片 id 数组')
     }
-    if (typeof body.groups !== 'number') throw new RunnerError('groups 必须是正整数')
+    if (typeof body.groups !== 'number')
+      throw new RunnerError('groups 必须是正整数')
     return c.json(await groupAssets(runner, body.ids, body.groups))
   })
 
@@ -624,30 +1055,53 @@ export function mountCapture(app: Hono, runner: Runner): void {
       imgUrl?: string
       tags?: string[]
       embedding?: number[]
+      rating?: string
       note?: string | null
     } = {}
     if (body.sourceUrl !== undefined) {
-      if (typeof body.sourceUrl !== 'string') throw new RunnerError('sourceUrl 必须是字符串')
+      if (typeof body.sourceUrl !== 'string')
+        throw new RunnerError('sourceUrl 必须是字符串')
       patch.sourceUrl = body.sourceUrl
     }
     if (body.imgUrl !== undefined) {
-      if (typeof body.imgUrl !== 'string') throw new RunnerError('imgUrl 必须是字符串')
+      if (typeof body.imgUrl !== 'string')
+        throw new RunnerError('imgUrl 必须是字符串')
       patch.imgUrl = body.imgUrl
     }
     if (body.tags !== undefined) {
-      if (!Array.isArray(body.tags) || body.tags.some((tag) => typeof tag !== 'string')) {
+      if (
+        !Array.isArray(body.tags) ||
+        body.tags.some((tag) => typeof tag !== 'string')
+      ) {
         throw new RunnerError('tags 必须是 string[]')
       }
       patch.tags = body.tags
     }
     if (body.embedding !== undefined) {
-      if (!Array.isArray(body.embedding) || body.embedding.some((value) => typeof value !== 'number')) {
+      if (
+        !Array.isArray(body.embedding) ||
+        body.embedding.some((value) => typeof value !== 'number')
+      ) {
         throw new RunnerError('embedding 必须是 number[]')
       }
       patch.embedding = body.embedding
     }
+    if (body.rating !== undefined) {
+      if (
+        typeof body.rating !== 'string' ||
+        !['general', 'sensitive', 'questionable', 'explicit'].includes(
+          body.rating,
+        )
+      ) {
+        throw new RunnerError(
+          'rating 必须是 general、sensitive、questionable、explicit 之一',
+        )
+      }
+      patch.rating = body.rating
+    }
     if (body.note !== undefined) {
-      if (body.note !== null && typeof body.note !== 'string') throw new RunnerError('note 必须是字符串')
+      if (body.note !== null && typeof body.note !== 'string')
+        throw new RunnerError('note 必须是字符串')
       patch.note = body.note
     }
     return c.json(updateAsset(runner, c.req.param('id'), patch))
@@ -663,7 +1117,9 @@ export function mountCapture(app: Hono, runner: Runner): void {
   })
 
   app.post('/capture/assets/:id/approve', async (c) => {
-    return c.json(await approveAsset(runner, c.req.param('id'), await finalVersion(c.req)))
+    return c.json(
+      await approveAsset(runner, c.req.param('id'), await finalVersion(c.req)),
+    )
   })
 
   app.post('/capture/assets/:id/reject', (c) => {
@@ -680,7 +1136,9 @@ export function mountCapture(app: Hono, runner: Runner): void {
   })
 
   app.post('/capture/jobs/:id/retry', (c) => {
-    return c.json(retryCaptureJob(runner.db, c.req.param('id'), runner.now().getTime()))
+    return c.json(
+      retryCaptureJob(runner.db, c.req.param('id'), runner.now().getTime()),
+    )
   })
 
   resumeCaptureJobs(runner.db, runner.now().getTime())
@@ -705,14 +1163,19 @@ export function mountCapture(app: Hono, runner: Runner): void {
       for (const file of readdirSync(imageDir)) {
         if (!file.endsWith('.json')) continue
         const meta = readMeta(dir, file.slice(0, -5))
-        const existing = typeof meta?.mediaUrl === 'string' ? meta.mediaUrl : null
+        const existing =
+          typeof meta?.mediaUrl === 'string' ? meta.mediaUrl : null
         if (!existing) continue
         const same = signature
           ? imageSignatureOf(existing) === signature
           : existing === mediaUrl
         if (same) {
           return c.json(
-            { duplicate: true, id: meta?.id ?? file.slice(0, -5), status: 'duplicate' },
+            {
+              duplicate: true,
+              id: meta?.id ?? file.slice(0, -5),
+              status: 'duplicate',
+            },
             200,
           )
         }
@@ -721,7 +1184,12 @@ export function mountCapture(app: Hono, runner: Runner): void {
 
     const id = captureId(runner.now())
     const rawAbs = join(dir, 'raw', `${id}${extOf(mediaUrl)}`)
-    await downloadTo(mediaUrl, rawAbs, refererFor(mediaUrl))
+    await downloadTo(
+      mediaUrl,
+      rawAbs,
+      refererFor(mediaUrl),
+      pixivRequestCookie(mediaUrl),
+    )
     if (statSync(rawAbs).size < MIN_IMAGE_BYTES) {
       rmSync(rawAbs, { force: true })
       throw new RunnerError('下载的内容不是有效图片', 502)
@@ -734,7 +1202,11 @@ export function mountCapture(app: Hono, runner: Runner): void {
       record: /\/originals\//i.test(mediaUrl) ? 'originals' : 'og',
       createdAt: runner.now().toISOString(),
     })
-    void processEntry(id, mediaUrl, { dir, rawAbs, imageAbs: join(dir, 'image', `${id}.jpg`) })
+    void processEntry(id, mediaUrl, {
+      dir,
+      rawAbs,
+      imageAbs: join(dir, 'image', `${id}.jpg`),
+    })
     return c.json({ id, status: 'processing' }, 201)
   })
 
@@ -804,7 +1276,9 @@ export function mountCapture(app: Hono, runner: Runner): void {
         error = '预处理被中断（runner 重启）；raw 原图仍在，可手工处理'
       }
       const rawFile = rawById.get(id) ?? null
-      const imageFile = existsSync(join(imageDir, `${id}.jpg`)) ? `${id}.jpg` : null
+      const imageFile = existsSync(join(imageDir, `${id}.jpg`))
+        ? `${id}.jpg`
+        : null
       items.push({
         id,
         status,
@@ -833,7 +1307,8 @@ export function mountCapture(app: Hono, runner: Runner): void {
     let filename: string
     if (parts.length === 3) {
       const [kind, hash, name] = parts as [string, string, string]
-      if (kind !== 'raw' && kind !== 'assets') throw new RunnerError('kind must be raw or assets')
+      if (kind !== 'raw' && kind !== 'assets')
+        throw new RunnerError('kind must be raw or assets')
       if (!HASH_RE.test(hash)) throw new RunnerError('invalid hash')
       filename = name
       abs = join(captureRoot(runner.dataDir), kind, hash, name)

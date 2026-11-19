@@ -1,13 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+import type { Dataset } from "@/components/datasets";
 import { Dialog } from "@/components/dialog";
 import {
+  RATINGS,
+  ratingLabel,
   sizeText,
   statusLabel,
   type FinalVersion,
   type ImageAsset,
+  type ImageRating,
   type SlideKey,
 } from "@/components/image-assets";
 import { isStyleVector, StyleRadar } from "@/components/style-radar";
@@ -32,24 +37,38 @@ export function ImageDetail({
   loaded,
   selected,
   preview = false,
+  browse = false,
+  nearest = true,
+  galleryIds = [],
   approveVersion = "processed",
   erasing = false,
   cutoutBusy = false,
+  hotkeys = false,
   onSelect,
   onReload,
   onChanged,
   onPickTag,
+  datasets,
 }: {
   loaded: boolean;
   selected: ImageAsset | null;
   preview?: boolean;
+  browse?: boolean;
+  nearest?: boolean;
+  galleryIds?: string[];
   approveVersion?: FinalVersion;
   erasing?: boolean;
   cutoutBusy?: boolean;
+  hotkeys?: boolean;
   onSelect: (id: string) => void;
   onReload: () => Promise<void>;
   onChanged?: () => void;
   onPickTag?: (tag: string) => void;
+  datasets?: {
+    items: Dataset[];
+    focusId: string | null;
+    onToggle: (datasetId: string, assetId: string, member: boolean) => void;
+  };
 }) {
   const [slide, setSlide] = useState<SlideKey>("image");
   const [editing, setEditing] = useState<EditField | null>(null);
@@ -57,6 +76,7 @@ export function ImageDetail({
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [zoom, setZoom] = useState(false);
   const [nearestOpen, setNearestOpen] = useState(false);
   const [nearestLoading, setNearestLoading] = useState(false);
   const [nearestError, setNearestError] = useState<string | null>(null);
@@ -65,6 +85,12 @@ export function ImageDetail({
   const [nearestOrder, setNearestOrder] = useState<NearestOrder>("near");
   const nearestRequest = useRef(0);
   const selectedId = selected?.id ?? null;
+  const datasetItems = datasets?.items;
+  const membership = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const item of datasetItems ?? []) map.set(item.id, new Set(item.assetIds));
+    return map;
+  }, [datasetItems]);
 
   useEffect(() => {
     nearestRequest.current += 1;
@@ -75,6 +101,7 @@ export function ImageDetail({
     setEditing(null);
     setConfirmDelete(false);
     setSlide("image");
+    if (!selectedId) setZoom(false);
   }, [selectedId]);
 
   function beginEdit(field: EditField, value: string) {
@@ -114,6 +141,22 @@ export function ImageDetail({
         body: JSON.stringify(patch),
       });
       setEditing(null);
+      await onReload();
+    } catch (err) {
+      fail(messageOf(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveRating(item: ImageAsset, rating: ImageRating) {
+    if (saving || item.rating === rating) return;
+    setSaving(true);
+    try {
+      await api(`capture/assets/${item.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ rating }),
+      });
       await onReload();
     } catch (err) {
       fail(messageOf(err));
@@ -190,11 +233,15 @@ export function ImageDetail({
     }
   }
 
+  const reviewing = useRef(false);
+
   async function review(
     item: ImageAsset,
     action: "approve" | "reject",
     version?: FinalVersion,
   ) {
+    if (reviewing.current) return;
+    reviewing.current = true;
     try {
       await api(`capture/assets/${item.id}/${action}`, {
         method: "POST",
@@ -207,6 +254,8 @@ export function ImageDetail({
       await onReload();
     } catch (err) {
       fail(messageOf(err));
+    } finally {
+      reviewing.current = false;
     }
   }
 
@@ -238,8 +287,89 @@ export function ImageDetail({
     null;
   const version = preview ? versionOf(currentSlide?.key) : approveVersion;
 
+  const hotkeyState = useRef({
+    selected,
+    version,
+    erasing,
+    cutoutBusy,
+    deleting,
+    confirmDelete,
+    nearestOpen,
+    zoom,
+  });
+  hotkeyState.current = {
+    selected,
+    version,
+    erasing,
+    cutoutBusy,
+    deleting,
+    confirmDelete,
+    nearestOpen,
+    zoom,
+  };
+  const hotkeyActions = useRef({ saveRating, review });
+  hotkeyActions.current = { saveRating, review };
+
   useEffect(() => {
-    if (!preview) return;
+    if (!hotkeys) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        target.closest('input, textarea, select, [contenteditable="true"]')
+      ) {
+        return;
+      }
+      const state = hotkeyState.current;
+      const item = state.selected;
+      if (!item || state.erasing || state.confirmDelete || state.nearestOpen || state.zoom) {
+        return;
+      }
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        const index = RATINGS.indexOf((item.rating ?? "") as ImageRating);
+        const nextIndex =
+          event.key === "ArrowRight" ? (index < 0 ? 0 : index + 1) : index - 1;
+        const next = RATINGS[nextIndex];
+        if (!next || next === item.rating) return;
+        event.preventDefault();
+        void hotkeyActions.current.saveRating(item, next);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        if (item.status === "processed" && !state.cutoutBusy) {
+          void hotkeyActions.current.review(item, "approve", state.version);
+        }
+        return;
+      }
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        if (item.status === "processed") {
+          void hotkeyActions.current.review(item, "reject");
+        }
+        return;
+      }
+      if (event.key === "/") {
+        event.preventDefault();
+        if (!state.deleting) setConfirmDelete(true);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [hotkeys]);
+
+  const browseIndex = selected ? galleryIds.indexOf(selected.id) : -1;
+
+  function stepGallery(delta: number) {
+    if (browseIndex < 0) return;
+    const nextId = galleryIds[browseIndex + delta];
+    if (!nextId) return;
+    onSelect(nextId);
+  }
+
+  useEffect(() => {
+    if (!preview || zoom) return;
     function onKey(event: KeyboardEvent) {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
       const target = event.target;
@@ -266,21 +396,47 @@ export function ImageDetail({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [preview, selected, slide]);
+  }, [preview, zoom, selected, slide]);
+
+  useEffect(() => {
+    if (!browse || !zoom) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        target.closest('input, textarea, [contenteditable="true"]')
+      ) {
+        return;
+      }
+      if (browseIndex < 0) return;
+      const nextId =
+        event.key === "ArrowLeft"
+          ? galleryIds[browseIndex - 1]
+          : galleryIds[browseIndex + 1];
+      if (!nextId) return;
+      event.preventDefault();
+      onSelect(nextId);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [browse, zoom, browseIndex, galleryIds, onSelect]);
 
   return (
     <section className={preview ? "panel capture-info image-detail" : "panel capture-info"}>
       {selected ? (
         <div className="image-detail-corner">
-          <button
-            type="button"
-            className="quiet"
-            disabled={deleting || erasing || !hasVector(selected.embedding)}
-            title={hasVector(selected.embedding) ? "最接近的图" : "还没有向量"}
-            onClick={() => void openNearest(selected)}
-          >
-            接近
-          </button>
+          {nearest ? (
+            <button
+              type="button"
+              className="quiet"
+              disabled={deleting || erasing || !hasVector(selected.embedding)}
+              title={hasVector(selected.embedding) ? "最接近的图" : "还没有向量"}
+              onClick={() => void openNearest(selected)}
+            >
+              接近
+            </button>
+          ) : null}
           <button
             type="button"
             className="quiet"
@@ -302,7 +458,16 @@ export function ImageDetail({
               : "capture-hero image-detail-hero"
           }
         >
-          {currentSlide ? (
+          {currentSlide && browse ? (
+            <button
+              type="button"
+              className="image-detail-open"
+              aria-label="查看大图"
+              onClick={() => setZoom(true)}
+            >
+              <img src={fileHref(currentSlide.href)} alt={selected.id} />
+            </button>
+          ) : currentSlide ? (
             <img src={fileHref(currentSlide.href)} alt={selected.id} />
           ) : (
             <span className="capture-missing">
@@ -318,6 +483,15 @@ export function ImageDetail({
           <p className="muted">从左侧图库选择一张图片。</p>
         ) : (
           <>
+            {datasets ? (
+              <DatasetMembership
+                items={datasets.items}
+                focusId={datasets.focusId}
+                assetId={selected.id}
+                membership={membership}
+                onToggle={datasets.onToggle}
+              />
+            ) : null}
             {selected.status === "processed" ? (
               <div className="row capture-actions">
                 <button
@@ -386,6 +560,26 @@ export function ImageDetail({
               )}
             </div>
             <dl className="capture-meta">
+              <dt>分级</dt>
+              <dd>
+                <div className="capture-filters" role="group" aria-label="调整分级">
+                  {RATINGS.map((rating) => {
+                    const on = selected.rating === rating;
+                    return (
+                      <button
+                        key={rating}
+                        type="button"
+                        className={on ? "active" : ""}
+                        aria-pressed={on}
+                        disabled={saving}
+                        onClick={() => void saveRating(selected, rating)}
+                      >
+                        {ratingLabel(rating)}
+                      </button>
+                    );
+                  })}
+                </div>
+              </dd>
               <dt>标签</dt>
               <dd>
                 {onPickTag && editing !== "tags" ? (
@@ -471,6 +665,52 @@ export function ImageDetail({
             {formatTime(selected.createdAt)}
           </time>
         </div>
+      ) : null}
+      {browse && zoom && selected ? (
+        <Dialog
+          open
+          className="image-lightbox"
+          title={
+            browseIndex >= 0
+              ? `大图 · ${browseIndex + 1} / ${galleryIds.length}`
+              : "大图"
+          }
+          onClose={() => setZoom(false)}
+        >
+          <div
+            className={
+              currentSlide?.key === "nobg"
+                ? "image-lightbox-stage alpha"
+                : "image-lightbox-stage"
+            }
+          >
+            <button
+              type="button"
+              className="quiet icon image-lightbox-nav prev"
+              aria-label="上一张"
+              title="上一张"
+              disabled={browseIndex <= 0}
+              onClick={() => stepGallery(-1)}
+            >
+              <ChevronLeft size={22} />
+            </button>
+            {currentSlide ? (
+              <img src={fileHref(currentSlide.href)} alt={selected.id} />
+            ) : (
+              <span className="capture-missing">无图</span>
+            )}
+            <button
+              type="button"
+              className="quiet icon image-lightbox-nav next"
+              aria-label="下一张"
+              title="下一张"
+              disabled={browseIndex < 0 || browseIndex >= galleryIds.length - 1}
+              onClick={() => stepGallery(1)}
+            >
+              <ChevronRight size={22} />
+            </button>
+          </div>
+        </Dialog>
       ) : null}
       <Dialog
         open={nearestOpen}
@@ -574,6 +814,59 @@ export function ImageDetail({
         </div>
       </Dialog>
     </section>
+  );
+}
+
+function DatasetMembership({
+  items,
+  focusId,
+  assetId,
+  membership,
+  onToggle,
+}: {
+  items: Dataset[];
+  focusId: string | null;
+  assetId: string;
+  membership: Map<string, Set<string>>;
+  onToggle: (datasetId: string, assetId: string, member: boolean) => void;
+}) {
+  const ordered =
+    focusId === null
+      ? items
+      : [...items].sort((left, right) => {
+          if (left.id === focusId) return -1;
+          if (right.id === focusId) return 1;
+          return 0;
+        });
+  return (
+    <div className="dataset-membership">
+      <div className="style-radar-head">
+        <span>数据集</span>
+      </div>
+      {items.length === 0 ? (
+        <p className="muted">还没有数据集。在左侧新建一个。</p>
+      ) : (
+        <div className="capture-filters" role="group" aria-label="加入或移出数据集">
+          {ordered.map((item) => {
+            const on = membership.get(item.id)?.has(assetId) ?? false;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                className={
+                  (on ? "active" : "") + (item.id === focusId ? " dataset-focus" : "")
+                }
+                aria-pressed={on}
+                title={on ? `从「${item.name}」移出` : `加入「${item.name}」`}
+                onClick={() => onToggle(item.id, assetId, on)}
+              >
+                {item.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

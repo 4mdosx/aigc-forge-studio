@@ -2,8 +2,8 @@
 """直接调用 critic 的 tag / embed，不经 HTTP。
 
 用法（仓库根目录）：
-    .venv/bin/python tools/critic.py tag <图片路径> [--json]
-    .venv/bin/python tools/critic.py embed <图片路径> [--ref <参考图>] [--json]
+    .venv/bin/python scripts_and_tools/critic.py tag <图片路径> [--json]
+    .venv/bin/python scripts_and_tools/critic.py embed <图片路径> [--ref <参考图>] [--json]
 """
 
 from __future__ import annotations
@@ -66,7 +66,12 @@ def _print_tag(result: dict, as_json: bool) -> None:
         print(json.dumps(result, ensure_ascii=False))
         return
     print(f"image: {result['image']}")
-    print(f"model: {result['model']}  rating: {result['rating']}")
+    head = result.get("rating_model") or ""
+    head_bit = f"  head: {head}" if head else ""
+    print(f"model: {result['model']}  rating: {result['rating']}{head_bit}")
+    hits = result.get("rating_hits") or []
+    if hits:
+        print(f"  floor: {result.get('rating_tags')}  ({', '.join(hits)})")
     for name in result["tags"]:
         print(f"  {name}")
 

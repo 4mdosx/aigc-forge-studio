@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS image_assets (
   embedding_json TEXT NOT NULL DEFAULT '[]',
   tags_model_version TEXT NOT NULL DEFAULT '',
   embedding_model_version TEXT NOT NULL DEFAULT '',
+  rating TEXT NOT NULL DEFAULT '',
   reviewed_at INTEGER NOT NULL DEFAULT 0,
   note TEXT,
   created_at INTEGER NOT NULL,
@@ -215,6 +216,24 @@ CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS datasets (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dataset_assets (
+  dataset_id TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  added_at INTEGER NOT NULL,
+  PRIMARY KEY (dataset_id, asset_id),
+  FOREIGN KEY (dataset_id) REFERENCES datasets(id) ON DELETE CASCADE,
+  FOREIGN KEY (asset_id) REFERENCES image_assets(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS dataset_assets_by_asset ON dataset_assets (asset_id);
 `
 
 export interface WorkRow {
@@ -298,6 +317,7 @@ function migrate(db: DatabaseSync): void {
   addColumn(db, 'chats', 'system_text', 'TEXT')
   rebuildDiceFields(db)
   seedDiceFields(db)
+  addColumn(db, 'image_assets', 'rating', "TEXT NOT NULL DEFAULT ''")
   addColumn(db, 'image_assets', 'thumb_path', 'TEXT')
   addColumn(db, 'image_assets', 'nobg_path', 'TEXT')
   addColumn(db, 'image_assets', 'nobg_width', 'INTEGER')
@@ -309,17 +329,28 @@ function migrate(db: DatabaseSync): void {
 // v2（candidates/count）→ v3：旧候选词整体转为 common 层，数据不丢。
 function rebuildDiceFields(db: DatabaseSync): void {
   const tables = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dice_fields'")
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dice_fields'",
+    )
     .all()
   if (tables.length === 0) return
   const columns = (
-    db.prepare('PRAGMA table_info(dice_fields)').all() as Array<{ name: string }>
+    db.prepare('PRAGMA table_info(dice_fields)').all() as Array<{
+      name: string
+    }>
   ).map((c) => c.name)
   if (columns.includes('tiers')) return
   const rows = columns.includes('candidates')
     ? (db
-        .prepare('SELECT name, candidates, count, position FROM dice_fields ORDER BY position, id')
-        .all() as Array<{ name: string; candidates: string; count: number; position: number }>)
+        .prepare(
+          'SELECT name, candidates, count, position FROM dice_fields ORDER BY position, id',
+        )
+        .all() as Array<{
+        name: string
+        candidates: string
+        count: number
+        position: number
+      }>)
     : []
   db.exec('DROP TABLE dice_fields')
   db.exec(`CREATE TABLE dice_fields (
@@ -328,7 +359,9 @@ function rebuildDiceFields(db: DatabaseSync): void {
     tiers TEXT NOT NULL DEFAULT '{}',
     position INTEGER NOT NULL DEFAULT 0
   )`)
-  const insert = db.prepare('INSERT INTO dice_fields (name, tiers, position) VALUES (?, ?, ?)')
+  const insert = db.prepare(
+    'INSERT INTO dice_fields (name, tiers, position) VALUES (?, ?, ?)',
+  )
   for (const row of rows) {
     insert.run(
       row.name,
@@ -340,11 +373,13 @@ function rebuildDiceFields(db: DatabaseSync): void {
 
 // dice 掷骰工作台：空表时填入 creative-intent patch 字段默认集（与 web 侧骨架一致）
 function seedDiceFields(db: DatabaseSync): void {
-  const row = db
-    .prepare('SELECT COUNT(*) AS n FROM dice_fields')
-    .get() as { n: number }
+  const row = db.prepare('SELECT COUNT(*) AS n FROM dice_fields').get() as {
+    n: number
+  }
   if (row.n > 0) return
-  const insert = db.prepare('INSERT INTO dice_fields (name, tiers, position) VALUES (?, ?, ?)')
+  const insert = db.prepare(
+    'INSERT INTO dice_fields (name, tiers, position) VALUES (?, ?, ?)',
+  )
   for (const [index, field] of DEFAULT_DICE_FIELDS.entries()) {
     insert.run(
       field.name,
@@ -359,7 +394,11 @@ export const DEFAULT_DICE_FIELDS: Array<{
   values: string
   count: number
 }> = [
-  { name: 'subject.type', values: '1girl, solo, 1boy, 2girls, janedoe', count: 1 },
+  {
+    name: 'subject.type',
+    values: '1girl, solo, 1boy, 2girls, janedoe',
+    count: 1,
+  },
   {
     name: 'subject.description',
     values:
@@ -392,17 +431,20 @@ export const DEFAULT_DICE_FIELDS: Array<{
   },
   {
     name: 'composition.shot',
-    values: 'full body, upper body, cowboy shot, portrait, bust, wide shot, close-up',
+    values:
+      'full body, upper body, cowboy shot, portrait, bust, wide shot, close-up',
     count: 1,
   },
   {
     name: 'composition.view',
-    values: 'from side, from above, from below, from behind, dynamic angle, dutch angle, front view',
+    values:
+      'from side, from above, from below, from behind, dynamic angle, dutch angle, front view',
     count: 1,
   },
   {
     name: 'composition.framing',
-    values: 'cowboy shot, portrait, centered framing, rule of thirds, symmetric framing',
+    values:
+      'cowboy shot, portrait, centered framing, rule of thirds, symmetric framing',
     count: 1,
   },
   {
@@ -419,7 +461,8 @@ export const DEFAULT_DICE_FIELDS: Array<{
   },
   {
     name: 'style.rendering',
-    values: 'masterpiece, best quality, very aesthetic, absurdres, highres, detailed background',
+    values:
+      'masterpiece, best quality, very aesthetic, absurdres, highres, detailed background',
     count: 3,
   },
   {

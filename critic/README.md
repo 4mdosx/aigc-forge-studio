@@ -1,6 +1,6 @@
 # critic
 
-本地 HTTP 服务：WD14 打标 + 风格向量 + 图片向量缓存。`preprocess`、`tag`、`embed`、`image_vector` 是本目录的模块，由 HTTP 直接调用；`tools/critic.py` 调用打标和风格向量。共用仓库根目录 `.venv`。
+本地 HTTP 服务：WD14 打标 + 风格向量 + 图片向量缓存。`preprocess`、`tag`、`embed`、`image_vector` 是本目录的模块，由 HTTP 直接调用；`scripts_and_tools/critic.py` 调用打标和风格向量。共用仓库根目录 `.venv`。
 
 ## 安装
 
@@ -32,11 +32,11 @@ python3.12 -m venv .venv
 不走 HTTP、直接拿本地路径时：
 
 ```bash
-.venv/bin/python tools/critic.py tag data/character/takao/ref/AL_kv_full__高雄立绘.jpg
-.venv/bin/python tools/critic.py embed data/character/takao/ref/AL_kv_full__高雄立绘.jpg --json
+.venv/bin/python scripts_and_tools/critic.py tag data/character/takao/ref/AL_kv_full__高雄立绘.jpg
+.venv/bin/python scripts_and_tools/critic.py embed data/character/takao/ref/AL_kv_full__高雄立绘.jpg --json
 ```
 
-`tag` 返回 tags 和 rating，`embed` 返回 7 维 `styleVec`。`--ref` 再附上 L2 和 cosine。`--json` 打印模块返回的数据。
+`tag` 返回 tags，以及 Danbooru 四档 rating（`general` / `sensitive` / `questionable` / `explicit`）。档位取标签敏感度下限和模型 rating 里更高的一档。`embed` 返回 7 维 `styleVec`。`--ref` 再附上 L2 和 cosine。`--json` 打印模块返回的数据。
 
 ## 接口
 

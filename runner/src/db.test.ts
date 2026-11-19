@@ -173,3 +173,33 @@ test('moves workflow adapters onto work, workflow, and version', () => {
   assert.equal(task.adapter_json, '{"inputs":{}}')
   db.close()
 })
+
+test('adds image rating on a database created before the column', () => {
+  const path = join(mkdtempSync(join(tmpdir(), 'aigc-db-')), 'runner.sqlite')
+  const setup = new DatabaseSync(path)
+  setup.exec(`
+    CREATE TABLE image_assets (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+  `)
+  setup.close()
+  const db = openDatabase(path)
+  const columns = (
+    db.prepare('PRAGMA table_info(image_assets)').all() as Array<{
+      name: string
+    }>
+  ).map((column) => column.name)
+  assert.equal(columns.includes('rating'), true)
+  db.prepare(
+    `INSERT INTO image_assets (id, status, created_at) VALUES ('a', 'collected', 1)`,
+  ).run()
+  const row = db
+    .prepare('SELECT rating FROM image_assets WHERE id = ?')
+    .get('a') as {
+    rating: string
+  }
+  assert.equal(row.rating, '')
+  db.close()
+})

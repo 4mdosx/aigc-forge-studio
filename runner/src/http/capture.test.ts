@@ -13,6 +13,11 @@ import {
   originalsOf,
   sizeSegmentOf,
   imageSignatureOf,
+  pixivAjaxMessageOf,
+  pixivArtworkIdOf,
+  pixivImageUrlsOf,
+  pixivLoginRequired,
+  pximgOriginalCandidates,
   refererFor,
   withSizeSegment,
 } from './capture.ts'
@@ -30,7 +35,9 @@ test('normalizeCaptureUrl keeps pinimg as image and strips query/hash', () => {
   assert.equal(page.kind, 'page')
   assert.equal(page.url, 'https://www.pinterest.com/pin/12345/')
 
-  const pinimgSub = normalizeCaptureUrl('https://i.pinimg.com/originals/x/y/z.png')
+  const pinimgSub = normalizeCaptureUrl(
+    'https://i.pinimg.com/originals/x/y/z.png',
+  )
   assert.equal(pinimgSub.kind, 'image')
 
   const short = normalizeCaptureUrl('pin.it/abc123')
@@ -40,8 +47,44 @@ test('normalizeCaptureUrl keeps pinimg as image and strips query/hash', () => {
   const noScheme = normalizeCaptureUrl('pinterest.com/pin/42')
   assert.equal(noScheme.kind, 'page')
 
-  assert.throws(() => normalizeCaptureUrl('https://example.com/a.jpg'), /只支持/)
+  assert.throws(
+    () => normalizeCaptureUrl('https://example.com/a.jpg'),
+    /只支持/,
+  )
   assert.throws(() => normalizeCaptureUrl(''), /url is required/)
+})
+
+test('normalizeCaptureUrl accepts pixiv artwork pages and pximg files', () => {
+  const artwork = normalizeCaptureUrl(
+    'https://www.pixiv.net/en/artworks/150951019?utm=1#p3',
+  )
+  assert.equal(artwork.kind, 'page')
+  assert.equal(artwork.url, 'https://www.pixiv.net/artworks/150951019')
+
+  const legacy = normalizeCaptureUrl(
+    'https://www.pixiv.net/member_illust.php?mode=medium&illust_id=42',
+  )
+  assert.equal(legacy.kind, 'page')
+  assert.equal(legacy.url, 'https://www.pixiv.net/artworks/42')
+  assert.equal(pixivArtworkIdOf(legacy.url), '42')
+
+  const bare = normalizeCaptureUrl('pixiv.net/artworks/7')
+  assert.equal(bare.kind, 'page')
+  assert.equal(bare.url, 'https://www.pixiv.net/artworks/7')
+
+  const image = normalizeCaptureUrl(
+    'https://i.pximg.net/img-master/img/2026/01/02/03/04/05/12345_p0_master1200.jpg?x=1#top',
+  )
+  assert.equal(image.kind, 'image')
+  assert.equal(
+    image.url,
+    'https://i.pximg.net/img-master/img/2026/01/02/03/04/05/12345_p0_master1200.jpg',
+  )
+
+  assert.throws(
+    () => normalizeCaptureUrl('https://www.pixiv.net/users/1'),
+    /作品页/,
+  )
 })
 
 test('ogImageOf reads both attribute orders and decodes entities', () => {
@@ -50,10 +93,7 @@ test('ogImageOf reads both attribute orders and decodes entities', () => {
     <meta property="og:image" content="https://i.pinimg.com/560x/a/b/c.jpg&amp;w=1">
     <meta property="og:title" content="pin">
   </head></html>`
-  assert.equal(
-    ogImageOf(html),
-    'https://i.pinimg.com/560x/a/b/c.jpg&w=1',
-  )
+  assert.equal(ogImageOf(html), 'https://i.pinimg.com/560x/a/b/c.jpg&w=1')
 
   const swapped = `<meta content="https://i.pinimg.com/236x/x/y/z.jpg" property="og:image:secure_url">`
   assert.equal(ogImageOf(swapped), 'https://i.pinimg.com/236x/x/y/z.jpg')
@@ -70,7 +110,10 @@ test('originalsOf upgrades sized variants and refuses originals', () => {
     originalsOf('https://i.pinimg.com/236x/ab/cd/1234.jpg'),
     'https://i.pinimg.com/originals/ab/cd/1234.jpg',
   )
-  assert.equal(originalsOf('https://i.pinimg.com/originals/ab/cd/1234.jpg'), null)
+  assert.equal(
+    originalsOf('https://i.pinimg.com/originals/ab/cd/1234.jpg'),
+    null,
+  )
   assert.equal(originalsOf('https://example.com/560x/a.jpg'), null)
 })
 
@@ -99,7 +142,10 @@ test('oembed response parsing separates thumbnail from error', () => {
     title: 'pin',
     thumbnail_url: 'https://i.pinimg.com/236x/ab/cd/1234.jpg',
   })
-  assert.equal(oembedThumbnailOf(good), 'https://i.pinimg.com/236x/ab/cd/1234.jpg')
+  assert.equal(
+    oembedThumbnailOf(good),
+    'https://i.pinimg.com/236x/ab/cd/1234.jpg',
+  )
   assert.equal(oembedErrorOf(good), null)
 
   const dead = JSON.stringify({ error: 'Url was not found: https://...' })
@@ -126,46 +172,175 @@ test('normalizeMediaUrl validates and strips hash', () => {
 })
 
 test('size segment read and replace support the upgrade ladder', () => {
-  assert.equal(sizeSegmentOf('https://i.pinimg.com/736x/ab/cd/1234.jpg'), '736x')
-  assert.equal(sizeSegmentOf('https://i.pinimg.com/originals/ab/cd/1234.jpg'), 'originals')
+  assert.equal(
+    sizeSegmentOf('https://i.pinimg.com/736x/ab/cd/1234.jpg'),
+    '736x',
+  )
+  assert.equal(
+    sizeSegmentOf('https://i.pinimg.com/originals/ab/cd/1234.jpg'),
+    'originals',
+  )
   assert.equal(sizeSegmentOf('https://example.com/a.jpg'), null)
 
   assert.equal(
     withSizeSegment('https://i.pinimg.com/736x/ab/cd/1234.jpg', '1200x'),
     'https://i.pinimg.com/1200x/ab/cd/1234.jpg',
   )
-  assert.equal(withSizeSegment('https://i.pinimg.com/1200x/ab/cd/1234.jpg', '1200x'), null)
+  assert.equal(
+    withSizeSegment('https://i.pinimg.com/1200x/ab/cd/1234.jpg', '1200x'),
+    null,
+  )
   assert.equal(withSizeSegment('https://example.com/a.jpg', '1200x'), null)
 })
 
 test('imageSignatureOf extracts pinimg tail hash shared by size variants', () => {
-  const a = imageSignatureOf('https://i.pinimg.com/236x/c4/02/68/c402682918f746e90a97e88e24c08c9d.jpg')
-  const b = imageSignatureOf('https://i.pinimg.com/originals/c4/02/68/c402682918f746e90a97e88e24c08c9d.jpg')
+  const a = imageSignatureOf(
+    'https://i.pinimg.com/236x/c4/02/68/c402682918f746e90a97e88e24c08c9d.jpg',
+  )
+  const b = imageSignatureOf(
+    'https://i.pinimg.com/originals/c4/02/68/c402682918f746e90a97e88e24c08c9d.jpg',
+  )
   assert.equal(a, 'c4/02/68/c402682918f746e90a97e88e24c08c9d.jpg')
   assert.equal(a, b)
   assert.equal(
-    imageSignatureOf('https://i.pinimg.com/736x/3e/71/1b/3e711b280907dbc46ecb959a3b75eef0.jpg'),
+    imageSignatureOf(
+      'https://i.pinimg.com/736x/3e/71/1b/3e711b280907dbc46ecb959a3b75eef0.jpg',
+    ),
     '3e/71/1b/3e711b280907dbc46ecb959a3b75eef0.jpg',
   )
-  assert.equal(imageSignatureOf('https://example.com/a/b/deadbeefdeadbeef.jpg'), null)
+  assert.equal(
+    imageSignatureOf('https://example.com/a/b/deadbeefdeadbeef.jpg'),
+    null,
+  )
   assert.equal(imageSignatureOf('https://i.pinimg.com/736x/no-hash.jpg'), null)
 })
 
 test('imageSignatureOf maps pximg variants to artwork id + page index', () => {
-  const master =
-    imageSignatureOf('https://i.pximg.net/c/250x250_80_a2/img-master/img/2026/01/02/03/04/05/12345_p0_master1200.jpg')
+  const master = imageSignatureOf(
+    'https://i.pximg.net/c/250x250_80_a2/img-master/img/2026/01/02/03/04/05/12345_p0_master1200.jpg',
+  )
   assert.equal(master, '12345_p0')
-  const square = imageSignatureOf('https://i.pximg.net/img/12345_p0_square1200.jpg')
+  const square = imageSignatureOf(
+    'https://i.pximg.net/img/12345_p0_square1200.jpg',
+  )
   assert.equal(square, '12345_p0')
-  const original =
-    imageSignatureOf('https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p0.png')
+  const original = imageSignatureOf(
+    'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p0.png',
+  )
   assert.equal(original, '12345_p0')
   assert.equal(master, square)
   assert.equal(master, original)
+  assert.equal(
+    imageSignatureOf(
+      'https://i.pximg.net/c/600x1200_90/custom-thumb/img/2026/01/02/03/04/05/12345_p0_custom1200.jpg',
+    ),
+    '12345_p0',
+  )
+})
+
+test('pximgOriginalCandidates keeps the date path and tries image extensions', () => {
+  assert.deepEqual(
+    pximgOriginalCandidates(
+      'https://i.pximg.net/c/250x250_80_a2/img-master/img/2026/01/02/03/04/05/12345_p0_master1200.jpg',
+    ),
+    [
+      'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p0.jpg',
+      'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p0.png',
+      'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p0.gif',
+    ],
+  )
+  assert.deepEqual(
+    pximgOriginalCandidates(
+      'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p0.png',
+    ),
+    [],
+  )
+})
+
+test('pixivImageUrlsOf reads ajax pages and escaped html originals', () => {
+  const ajax = JSON.stringify({
+    error: false,
+    body: [
+      {
+        urls: {
+          original:
+            'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p0.png',
+        },
+      },
+      {
+        urls: {
+          original:
+            'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p1.jpg',
+        },
+      },
+    ],
+  })
+  assert.deepEqual(pixivImageUrlsOf(ajax, '12345'), [
+    'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p0.png',
+    'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p1.jpg',
+  ])
+
+  const detail = JSON.stringify({
+    error: false,
+    body: {
+      urls: {
+        original:
+          'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/9_p0.jpg',
+      },
+    },
+  })
+  assert.deepEqual(pixivImageUrlsOf(detail), [
+    'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/9_p0.jpg',
+  ])
+
+  const html =
+    '<meta property="og:image" content="https://embed.pixiv.net/decorate.php?illust_id=12345">' +
+    '<script>https:\\/\\/i.pximg.net\\/img-original\\/img\\/2026\\/01\\/02\\/03\\/04\\/05\\/12345_p0.png</script>'
+  assert.deepEqual(pixivImageUrlsOf(html, '12345'), [
+    'https://i.pximg.net/img-original/img/2026/01/02/03/04/05/12345_p0.png',
+  ])
+  assert.deepEqual(
+    pixivImageUrlsOf(
+      '<meta property="og:image" content="https://embed.pixiv.net/decorate.php?illust_id=1">',
+      '1',
+    ),
+    [],
+  )
+  assert.equal(
+    pixivAjaxMessageOf(
+      JSON.stringify({
+        error: true,
+        message: '該当作品は削除されたか、存在しない作品IDです。',
+      }),
+    ),
+    '該当作品は削除されたか、存在しない作品IDです。',
+  )
+  assert.equal(pixivAjaxMessageOf(ajax), null)
+  assert.equal(pixivLoginRequired(ajax), false)
+  assert.equal(
+    pixivLoginRequired('{"error":true,"message":"","body":[]}'),
+    true,
+  )
+  assert.equal(
+    pixivLoginRequired(
+      '{"error":false,"body":{"illustId":"1","urls":{"original":null}}}',
+    ),
+    true,
+  )
 })
 
 test('refererFor picks pixiv referer for pximg hosts', () => {
-  assert.equal(refererFor('https://i.pximg.net/img-original/img/2026/01/01/x/12345_p0.jpg'), 'https://www.pixiv.net/')
-  assert.equal(refererFor('https://i.pinimg.com/736x/3e/71/1b/3e711b280907dbc46ecb959a3b75eef0.jpg'), 'https://www.pinterest.com/')
+  assert.equal(
+    refererFor(
+      'https://i.pximg.net/img-original/img/2026/01/01/x/12345_p0.jpg',
+    ),
+    'https://www.pixiv.net/',
+  )
+  assert.equal(
+    refererFor(
+      'https://i.pinimg.com/736x/3e/71/1b/3e711b280907dbc46ecb959a3b75eef0.jpg',
+    ),
+    'https://www.pinterest.com/',
+  )
   assert.equal(refererFor('not a url'), 'https://www.pinterest.com/')
 })

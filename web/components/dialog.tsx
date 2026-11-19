@@ -7,11 +7,13 @@ export function Dialog({
   open,
   title,
   onClose,
+  className,
   children,
 }: {
   open: boolean
   title: string
   onClose: () => void
+  className?: string
   children: ReactNode
 }) {
   const ref = useRef<HTMLDialogElement>(null)
@@ -24,6 +26,7 @@ export function Dialog({
   return (
     <dialog
       ref={ref}
+      className={className}
       onClose={onClose}
       onClick={(event) => {
         if (event.target === ref.current) onClose()
