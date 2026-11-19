@@ -6,8 +6,10 @@ import { promisify } from 'node:util'
 
 import type { DatabaseSync } from 'node:sqlite'
 
+import { transaction } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import type { Runner } from '../task/queue.ts'
+import { enqueueCaptureJob, type CaptureStep } from './jobs.ts'
 
 const execFile = promisify(execFileCb)
 
@@ -70,13 +72,7 @@ type AssetRow = {
 }
 
 const EMBEDDING_MODEL = 'style-embedder-v4'
-
-export function resumeCollected(runner: Runner): void {
-  const rows = runner.db
-    .prepare(`SELECT id FROM image_assets WHERE status = 'collected'`)
-    .all() as { id: string }[]
-  for (const row of rows) void processAsset(runner, row.id)
-}
+const STEP_TIMEOUT_MS = 180_000
 
 export function listAssets(db: DatabaseSync): ImageAsset[] {
   const rows = db
@@ -104,7 +100,12 @@ export async function ingestBytes(
   if (bytes.length < 1000) throw new RunnerError('文件太小，不是有效图片')
   const hash = createHash('sha256').update(bytes).digest('hex')
   const existing = assetByHash(runner.db, hash)
-  if (existing) return { asset: existing, duplicate: true }
+  if (existing) {
+    if (existing.status === 'collected') {
+      enqueueCaptureJob(runner.db, existing.id, runner.now().getTime())
+    }
+    return { asset: existing, duplicate: true }
+  }
 
   const tempDir = join(runner.dataDir, 'capture', 'temp')
   mkdirSync(tempDir, { recursive: true })
@@ -120,87 +121,133 @@ export async function ingestBytes(
   const { width, height } = await pixelSize(originalAbs)
   const now = runner.now().getTime()
   const id = assetId(runner.now())
-  runner.db
-    .prepare(
-      `INSERT INTO image_assets (
-        id, status, source_type, source_url, img_url, parent_image_id,
-        original_path, original_width, original_height, hash,
-        tags_json, embedding_json, tags_model_version, embedding_model_version,
-        reviewed_at, created_at, updated_at
-      ) VALUES (?, 'collected', ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '', '', 0, ?, ?)`,
-    )
-    .run(
-      id,
-      source.type,
-      source.sourceUrl,
-      source.imgUrl,
-      source.parentImageId ?? null,
-      originalRel,
-      width,
-      height,
-      hash,
-      now,
-      now,
-    )
+  transaction(runner.db, () => {
+    runner.db
+      .prepare(
+        `INSERT INTO image_assets (
+          id, status, source_type, source_url, img_url, parent_image_id,
+          original_path, original_width, original_height, hash,
+          tags_json, embedding_json, tags_model_version, embedding_model_version,
+          reviewed_at, created_at, updated_at
+        ) VALUES (?, 'collected', ?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '', '', 0, ?, ?)`,
+      )
+      .run(
+        id,
+        source.type,
+        source.sourceUrl,
+        source.imgUrl,
+        source.parentImageId ?? null,
+        originalRel,
+        width,
+        height,
+        hash,
+        now,
+        now,
+      )
+    enqueueCaptureJob(runner.db, id, now)
+  })
   const asset = assetById(runner.db, id)
   if (!asset) throw new RunnerError('采集入库失败', 500)
   return { asset, duplicate: false }
 }
 
-export async function processAsset(runner: Runner, id: string): Promise<void> {
+export async function runCaptureStep(
+  runner: Runner,
+  id: string,
+  step: CaptureStep,
+  signal?: AbortSignal,
+): Promise<'tag' | 'embed' | 'done'> {
+  const ac = signal ?? AbortSignal.timeout(STEP_TIMEOUT_MS)
+  if (ac.aborted) throw abortError(ac)
   const asset = assetById(runner.db, id)
-  if (!asset || asset.status === 'approved' || asset.status === 'rejected') return
+  if (!asset) throw new Error(`image not found: ${id}`)
+  if (asset.status === 'approved' || asset.status === 'rejected' || asset.status === 'processed') {
+    return 'done'
+  }
+  if (step === 'prepare') {
+    await writePrepared(runner, asset, ac)
+    return 'tag'
+  }
+  if (step === 'tag') {
+    const current = asset.processed ? asset : await writePrepared(runner, asset, ac)
+    await writeTags(runner, current, ac)
+    return 'embed'
+  }
+  if (step === 'embed') {
+    const current = asset.processed ? asset : await writePrepared(runner, asset, ac)
+    await writeEmbedding(runner, current, ac)
+    return 'done'
+  }
+  throw new Error(`unknown step: ${step}`)
+}
+
+async function writePrepared(runner: Runner, asset: ImageAsset, signal: AbortSignal): Promise<ImageAsset> {
   const hash = asset.original.hash
   const rootKind = asset.original.path.startsWith('capture/assets/') ? 'assets' : 'raw'
   const processedRel = join('capture', rootKind, hash, 'processed.png')
   const processedAbs = join(runner.dataDir, processedRel)
   const originalAbs = join(runner.dataDir, asset.original.path)
   const base = criticBaseURL(runner.dataDir)
-  try {
-    const prepared = await prepareImage(runner.dataDir, base, originalAbs, processedAbs)
-    const preparedAt = runner.now().getTime()
-    runner.db
-      .prepare(
-        `UPDATE image_assets SET
-          processed_path = ?, processed_width = ?, processed_height = ?, updated_at = ?
-        WHERE id = ?`,
-      )
-      .run(processedRel, prepared.width, prepared.height, preparedAt, id)
-    const tagged = await criticJson<{ tags?: string[]; model?: string }>(base, '/tag', {
-      path: processedAbs,
-    })
-    const embedded = await criticJson<{ styleVec?: number[] }>(base, '/embed', {
-      path: processedAbs,
-    })
-    const tags = Array.isArray(tagged.tags) ? tagged.tags.filter((tag) => typeof tag === 'string') : []
-    const embedding = Array.isArray(embedded.styleVec)
-      ? embedded.styleVec.filter((value) => typeof value === 'number')
-      : []
-    const now = runner.now().getTime()
-    runner.db
-      .prepare(
-        `UPDATE image_assets SET
-          status = CASE WHEN status IN ('approved', 'rejected') THEN status ELSE 'processed' END,
-          processed_path = ?, processed_width = ?, processed_height = ?,
-          tags_json = ?, embedding_json = ?,
-          tags_model_version = ?, embedding_model_version = ?,
-          updated_at = ?
-        WHERE id = ?`,
-      )
-      .run(
-        processedRel,
-        prepared.width,
-        prepared.height,
-        JSON.stringify(tags),
-        JSON.stringify(embedding),
-        tagged.model ?? '',
-        EMBEDDING_MODEL,
-        now,
-        id,
-      )
-  } catch (err) {
-    console.error(`[capture] process ${id}: ${err instanceof Error ? err.message : String(err)}`)
-  }
+  const prepared = await prepareImage(runner.dataDir, base, originalAbs, processedAbs, signal)
+  const preparedAt = runner.now().getTime()
+  runner.db
+    .prepare(
+      `UPDATE image_assets SET
+        processed_path = ?, processed_width = ?, processed_height = ?, updated_at = ?
+      WHERE id = ?`,
+    )
+    .run(processedRel, prepared.width, prepared.height, preparedAt, asset.id)
+  const next = assetById(runner.db, asset.id)
+  if (!next) throw new Error(`image not found: ${asset.id}`)
+  return next
+}
+
+async function writeTags(runner: Runner, asset: ImageAsset, signal: AbortSignal): Promise<void> {
+  const processedAbs = processedAbsOf(runner, asset)
+  const base = criticBaseURL(runner.dataDir)
+  const tagged = await criticJson<{ tags?: string[]; model?: string }>(
+    base,
+    '/tag',
+    { path: processedAbs },
+    signal,
+  )
+  const tags = Array.isArray(tagged.tags) ? tagged.tags.filter((tag) => typeof tag === 'string') : []
+  runner.db
+    .prepare(
+      `UPDATE image_assets SET tags_json = ?, tags_model_version = ?, updated_at = ? WHERE id = ?`,
+    )
+    .run(JSON.stringify(tags), tagged.model ?? '', runner.now().getTime(), asset.id)
+}
+
+async function writeEmbedding(runner: Runner, asset: ImageAsset, signal: AbortSignal): Promise<void> {
+  const processedAbs = processedAbsOf(runner, asset)
+  const base = criticBaseURL(runner.dataDir)
+  const embedded = await criticJson<{ styleVec?: number[] }>(
+    base,
+    '/embed',
+    { path: processedAbs },
+    signal,
+  )
+  const embedding = Array.isArray(embedded.styleVec)
+    ? embedded.styleVec.filter((value) => typeof value === 'number')
+    : []
+  runner.db
+    .prepare(
+      `UPDATE image_assets SET
+        status = CASE WHEN status IN ('approved', 'rejected') THEN status ELSE 'processed' END,
+        embedding_json = ?, embedding_model_version = ?, updated_at = ?
+      WHERE id = ?`,
+    )
+    .run(JSON.stringify(embedding), EMBEDDING_MODEL, runner.now().getTime(), asset.id)
+}
+
+function processedAbsOf(runner: Runner, asset: ImageAsset): string {
+  if (!asset.processed) throw new Error(`processed image missing: ${asset.id}`)
+  return join(runner.dataDir, asset.processed.path)
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : new Error('capture job timed out')
 }
 
 export function updateAsset(
@@ -244,6 +291,7 @@ export function approveAsset(runner: Runner, id: string): ImageAsset {
 export function rejectAsset(runner: Runner, id: string): ImageAsset {
   const current = assetById(runner.db, id)
   if (!current) throw new RunnerError('image not found', 404)
+  if (current.status !== 'processed') throw new RunnerError('只有处理完的图片可以拒绝', 409)
   const now = runner.now().getTime()
   runner.db
     .prepare(`UPDATE image_assets SET status = 'rejected', reviewed_at = ?, updated_at = ? WHERE id = ?`)
@@ -256,6 +304,7 @@ export function rejectAsset(runner: Runner, id: string): ImageAsset {
 function moveReviewed(runner: Runner, id: string, status: 'approved'): ImageAsset {
   const current = assetById(runner.db, id)
   if (!current) throw new RunnerError('image not found', 404)
+  if (current.status !== 'processed') throw new RunnerError('只有处理完的图片可以通过', 409)
   const hash = current.original.hash
   const from = join(runner.dataDir, 'capture', 'raw', hash)
   const to = join(runner.dataDir, 'capture', 'assets', hash)
@@ -382,19 +431,23 @@ async function prepareImage(
   base: string,
   originalAbs: string,
   processedAbs: string,
+  signal: AbortSignal,
 ): Promise<{ width: number; height: number }> {
   try {
-    return await criticJson<{ width: number; height: number }>(base, '/prepare', {
-      path: originalAbs,
-      out: processedAbs,
-    })
+    return await criticJson<{ width: number; height: number }>(
+      base,
+      '/prepare',
+      { path: originalAbs, out: processedAbs },
+      signal,
+    )
   } catch (err) {
+    if (signal.aborted) throw err
     const message = err instanceof Error ? err.message : String(err)
     if (!/404|not found|unexpected token|<!doctype/i.test(message) && !message.includes('prepare')) {
       // 服务在，但预处理本身失败
       if (!/fetch failed|ECONNREFUSED|ENOTFOUND/i.test(message)) throw err
     }
-    return prepareWithPython(dataDir, originalAbs, processedAbs)
+    return prepareWithPython(dataDir, originalAbs, processedAbs, signal)
   }
 }
 
@@ -402,6 +455,7 @@ function prepareWithPython(
   dataDir: string,
   originalAbs: string,
   processedAbs: string,
+  signal: AbortSignal,
 ): Promise<{ width: number; height: number }> {
   const root = dirname(dataDir)
   const python = join(root, '.venv', 'bin', 'python')
@@ -416,17 +470,23 @@ out.parent.mkdir(parents=True, exist_ok=True)
 image.save(out, format="PNG")
 print(image.size[0], image.size[1])
 `
-  return execFile(python, ['-c', script]).then(({ stdout }) => {
+  return execFile(python, ['-c', script], { signal, timeout: STEP_TIMEOUT_MS }).then(({ stdout }) => {
     const [width, height] = stdout.trim().split(/\s+/).map(Number)
     return { width: width || 0, height: height || 0 }
   })
 }
 
-async function criticJson<T>(base: string, path: string, body: Record<string, unknown>): Promise<T> {
+async function criticJson<T>(
+  base: string,
+  path: string,
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<T> {
   const res = await fetch(`${base}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   })
   const payload = (await res.json()) as { ok?: boolean; error?: string }
   if (!res.ok || payload.ok === false) {

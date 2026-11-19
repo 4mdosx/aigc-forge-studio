@@ -20,11 +20,10 @@ import {
   assetById,
   ingestBytes,
   listAssets,
-  processAsset,
   rejectAsset,
-  resumeCollected,
   updateAsset,
 } from '../capture/asset.ts'
+import { listCaptureJobs, resumeCaptureJobs, retryCaptureJob } from '../capture/jobs.ts'
 import { RunnerError } from '../errors.ts'
 import { relativePath } from '../path.ts'
 import type { Runner } from '../task/queue.ts'
@@ -530,7 +529,6 @@ export function mountCapture(app: Hono, runner: Runner): void {
       sourceUrl,
       imgUrl,
     })
-    if (!duplicate || asset.status === 'collected') void processAsset(runner, asset.id)
     return c.json({ ...asset, duplicate }, duplicate ? 200 : 201)
   })
 
@@ -589,7 +587,15 @@ export function mountCapture(app: Hono, runner: Runner): void {
     return c.json(rejectAsset(runner, c.req.param('id')))
   })
 
-  resumeCollected(runner)
+  app.get('/capture/jobs', (c) => {
+    return c.json(listCaptureJobs(runner.db))
+  })
+
+  app.post('/capture/jobs/:id/retry', (c) => {
+    return c.json(retryCaptureJob(runner.db, c.req.param('id'), runner.now().getTime()))
+  })
+
+  resumeCaptureJobs(runner.db, runner.now().getTime())
 
   // 提交 Pinterest 链接：同步完成 og:image 保底下载（原图落到 capture/raw），预处理异步
   app.post('/capture/pins', async (c) => {

@@ -1,5 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import { runCaptureStep } from '../capture/asset.ts'
+import { drainCaptureJobs } from '../capture/jobs.ts'
 import {
   assertSuccess,
   type ComfyClient,
@@ -36,6 +38,9 @@ export function resume(runner: Runner): void {
 export async function tick(runner: Runner): Promise<void> {
   await settleComfy(runner)
   await claimComfy(runner)
+  await drainCaptureJobs(runner, (assetId, step, signal) =>
+    runCaptureStep(runner, assetId, step, signal),
+  )
 }
 
 async function settleComfy(runner: Runner): Promise<void> {

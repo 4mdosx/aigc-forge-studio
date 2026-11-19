@@ -186,6 +186,26 @@ CREATE TABLE IF NOT EXISTS image_assets (
 );
 
 CREATE INDEX IF NOT EXISTS image_assets_by_status ON image_assets (status, created_at);
+
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  step TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 5,
+  next_run_at INTEGER NOT NULL,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER,
+  UNIQUE (kind, asset_id),
+  CHECK (status IN ('pending', 'running', 'failed', 'done')),
+  CHECK (step IN ('prepare', 'tag', 'embed'))
+);
+
+CREATE INDEX IF NOT EXISTS jobs_by_ready ON jobs (status, next_run_at, created_at);
 `
 
 export interface WorkRow {
