@@ -74,6 +74,60 @@ test('nearest sends usable vectors and returns critic order with thumbs', async 
   }
 })
 
+test('nearest limits the vector table to the requested ids', async () => {
+  const { runner, db } = harness()
+  insert(db, 'a', [1, 0], 'a')
+  insert(db, 'b', [0.9, 0.1], 'b')
+  insert(db, 'c', [0, 1], 'c')
+  const calls: Array<{ path: string; body: { vectors?: Record<string, number[]> } }> = []
+  const original = globalThis.fetch
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input)
+    const body = JSON.parse(String(init?.body)) as { vectors?: Record<string, number[]> }
+    calls.push({ path: new URL(url).pathname, body })
+    if (url.endsWith('/nearest')) {
+      return Response.json({ ok: true, id: 'a', neighbors: [{ id: 'b', cosine: 0.99, l2: 0.1 }] })
+    }
+    return Response.json({ ok: true, count: 2, dim: 2 })
+  }) as typeof fetch
+  try {
+    const app = createApp(runner)
+    const res = await app.request('/capture/assets/a/nearest?k=5&order=far&ids=b')
+    assert.equal(res.status, 200)
+    assert.deepEqual(Object.keys(calls[0]?.body.vectors ?? {}).sort(), ['a', 'b'])
+    const duplicate = await app.request('/capture/assets/a/nearest?ids=b,b')
+    assert.equal(duplicate.status, 400)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('groups divides usable images into nearly equal groups', async () => {
+  const { runner, db } = harness()
+  insert(db, 'a', [1, 0], 'a')
+  insert(db, 'b', [0.2, 1], 'b')
+  insert(db, 'c', [0.8, 0.2], 'c')
+  insert(db, 'zero', [0, 0], 'd')
+  const app = createApp(runner)
+  const res = await app.request('/capture/assets/groups', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ids: ['a', 'b', 'c', 'zero'], groups: 2 }),
+  })
+  assert.equal(res.status, 200)
+  const body = (await res.json()) as { groups: Array<{ ids: string[] }>; skipped: string[] }
+  assert.deepEqual(body.skipped, ['zero'])
+  assert.deepEqual(body.groups.map((group) => group.ids.length), [2, 1])
+  assert.deepEqual(body.groups.flatMap((group) => group.ids).sort(), ['a', 'b', 'c'])
+
+  const tooMany = await app.request('/capture/assets/groups', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ids: ['a', 'b'], groups: 4 }),
+  })
+  assert.equal(tooMany.status, 400)
+})
+
 test('nearest rejects a missing image and an image without a vector', async () => {
   const { runner, db } = harness()
   insert(db, 'empty', [], 'e')

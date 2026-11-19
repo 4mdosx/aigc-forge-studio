@@ -1,9 +1,12 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 
 import { Dialog } from '@/components/dialog'
+import { ImageDetail } from '@/components/image-detail'
+import { ImageGallery } from '@/components/image-gallery'
+import { useImageAssets } from '@/components/image-assets'
 import { RollsPanel } from '@/components/rolls-panel'
 import { api } from '@/lib/api'
 import { fail, messageOf, notify } from '@/lib/notify'
@@ -30,7 +33,7 @@ export function LibraryBoard() {
   const [filePath, setFilePath] = useState('')
   const [busy, setBusy] = useState(false)
   const [view, setView] = useState<'list' | 'grid'>('list')
-  const [tab, setTab] = useState<'inspiration' | 'input' | 'output' | 'workflow'>('inspiration')
+  const [tab, setTab] = useState<'gallery' | 'inspiration' | 'input' | 'output' | 'workflow'>('gallery')
 
   async function load() {
     const [library, inputFiles, outputFiles] = await Promise.all([
@@ -125,11 +128,12 @@ export function LibraryBoard() {
   }
 
   return (
-    <>
+    <div className="library-frame">
       <div className="column-head">
         <div className="tabs" role="tablist">
           {(
             [
+              ['gallery', '图库'],
               ['inspiration', '灵感'],
               ['input', 'Input'],
               ['output', 'Output'],
@@ -148,7 +152,7 @@ export function LibraryBoard() {
             </button>
           ))}
         </div>
-        {tab === 'workflow' || tab === 'inspiration' ? null : (
+        {tab === 'workflow' || tab === 'inspiration' || tab === 'gallery' ? null : (
           <button
             type="button"
             className="quiet"
@@ -159,6 +163,7 @@ export function LibraryBoard() {
         )}
       </div>
       {tab === 'inspiration' ? <RollsPanel /> : null}
+      {tab === 'gallery' ? <AssetLibrary /> : null}
       {tab === 'input' ? (
       <section className="panel">
         <form onSubmit={(event) => void upload(event)}>
@@ -309,7 +314,37 @@ export function LibraryBoard() {
           </button>
         </div>
       </Dialog>
-    </>
+    </div>
+  )
+}
+
+function AssetLibrary() {
+  const images = useImageAssets()
+  const tagNonce = useRef(0)
+  const [tagSeed, setTagSeed] = useState<{ tag: string; nonce: number } | null>(null)
+  function pickTag(tag: string) {
+    tagNonce.current += 1
+    setTagSeed({ tag, nonce: tagNonce.current })
+  }
+  return (
+    <div className="library-split">
+      <ImageGallery
+        query
+        items={images.items}
+        loaded={images.loaded}
+        selectedId={images.selected?.id ?? null}
+        onSelect={images.select}
+        tagSeed={tagSeed}
+      />
+      <ImageDetail
+        preview
+        loaded={images.loaded}
+        selected={images.selected}
+        onSelect={images.select}
+        onReload={images.loadItems}
+        onPickTag={pickTag}
+      />
+    </div>
   )
 }
 

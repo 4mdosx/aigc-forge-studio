@@ -1,7 +1,7 @@
 """图片向量缓存。
 
 runner 一次传入全部图片的 id → 向量，记在本进程里。
-之后可按 cosine 查最近邻，或把指定的图片分成 m 组。
+之后可按 cosine 查最近邻，或把指定的图片尽量均分成 m 组。
 """
 
 from __future__ import annotations
@@ -78,7 +78,11 @@ def nearest(image_id: str, k: int = 10, *, order: str = "near") -> dict:
 
 
 def split(ids: list, groups: int) -> dict:
-    """把指定的图片按 cosine 分成恰好 groups 组。"""
+    """把指定的图片尽量均分成 groups 组。
+
+    先按 cosine 排成一条，风格接近的挨在一起，再切成 groups 段。
+    每段数量相差不超过 1。
+    """
     selected = _id_list(ids)
     if isinstance(groups, bool) or not isinstance(groups, int):
         raise ValueError("groups 必须是正整数")
@@ -89,8 +93,8 @@ def split(ids: list, groups: int) -> dict:
         if missing or _matrix is None:
             raise ValueError(_missing(missing or selected))
         rows = _matrix[[_pos[image_id] for image_id in selected]]
-    labels = _labels(rows, groups)
-    packed = _pack(selected, labels)
+    chunks = _even_chunks(rows, groups)
+    packed = [{"ids": [selected[index] for index in chunk]} for chunk in chunks]
     if len(packed) != groups:
         raise RuntimeError(f"分组结果是 {len(packed)} 组，期望 {groups} 组")
     return {"groups": packed}
@@ -162,26 +166,31 @@ def _fit(matrix: np.ndarray):
     return fitted
 
 
-def _labels(rows: np.ndarray, groups: int) -> np.ndarray:
+def _even_chunks(rows: np.ndarray, groups: int) -> list[list[int]]:
     count = int(rows.shape[0])
     if groups == 1:
-        return np.zeros(count, dtype=int)
+        return [list(range(count))]
     if groups == count:
-        return np.arange(count, dtype=int)
-    model = _symbol("sklearn.cluster", "AgglomerativeClustering")
-    return model(n_clusters=groups, metric="cosine", linkage="average").fit_predict(rows)
+        return [[index] for index in range(count)]
+    order = _leaf_order(rows)
+    base, extra = divmod(count, groups)
+    chunks: list[list[int]] = []
+    start = 0
+    for group in range(groups):
+        size = base + (1 if group < extra else 0)
+        chunks.append(order[start : start + size])
+        start += size
+    return chunks
 
 
-def _pack(ids: list[str], labels: np.ndarray) -> list[dict]:
-    order: list[int] = []
-    buckets: dict[int, list[str]] = {}
-    for image_id, label in zip(ids, labels.tolist()):
-        label = int(label)
-        if label not in buckets:
-            buckets[label] = []
-            order.append(label)
-        buckets[label].append(image_id)
-    return [{"ids": buckets[label]} for label in order]
+def _leaf_order(rows: np.ndarray) -> list[int]:
+    """按平均 cosine 距离排出叶子顺序，风格接近的下标挨在一起。"""
+    try:
+        from scipy.cluster.hierarchy import leaves_list, linkage
+    except ImportError as exc:
+        raise RuntimeError(_SKLEARN) from exc
+    linked = linkage(rows, method="average", metric="cosine")
+    return [int(index) for index in leaves_list(linked)]
 
 
 def _symbol(module: str, name: str):

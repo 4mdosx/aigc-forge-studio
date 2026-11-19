@@ -1,4 +1,4 @@
-import { execFile as execFileCb } from 'node:child_process'
+import { execFile as execFileCb, spawn } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -8,8 +8,10 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { PNG } from 'pngjs'
 
+import { findRepoRoot } from '../config.ts'
 import { transaction } from '../db.ts'
 import { RunnerError } from '../errors.ts'
+import { writeWd14TagTable } from '../tag/table.ts'
 import type { Runner } from '../task/queue.ts'
 import { enqueueCaptureJob, type CaptureStep } from './jobs.ts'
 
@@ -122,13 +124,18 @@ export async function nearestAssets(
   id: string,
   k = 10,
   order: NearestOrder = 'near',
+  only?: readonly string[],
 ): Promise<{ id: string; neighbors: NearestNeighbor[] }> {
   if (!Number.isInteger(k) || k < 1) throw new RunnerError('k 必须是正整数')
   if (order !== 'near' && order !== 'far') throw new RunnerError('order 必须是 near 或 far')
+  const allowed = only ? new Set(idListOf(only)) : null
   const assets = listAssets(runner.db)
   const target = assets.find((asset) => asset.id === id)
   if (!target) throw new RunnerError('image not found', 404)
-  const vectors = vectorsFor(assets, target)
+  const pool = allowed
+    ? assets.filter((asset) => asset.id === id || allowed.has(asset.id))
+    : assets
+  const vectors = vectorsFor(pool, target)
   if (!vectors) throw new RunnerError('这张图还没有向量')
   const base = criticBaseURL(runner.dataDir)
   let result: { neighbors?: Array<{ id?: unknown; cosine?: unknown; l2?: unknown }> }
@@ -160,6 +167,131 @@ export async function nearestAssets(
   }
   neighbors.sort((left, right) => compareNeighbors(left, right, order))
   return { id, neighbors: neighbors.slice(0, k) }
+}
+
+export type AssetGroups = {
+  groups: Array<{ ids: string[] }>
+  skipped: string[]
+}
+
+export async function groupAssets(
+  runner: Runner,
+  ids: readonly string[],
+  groups: number,
+): Promise<AssetGroups> {
+  const selected = idListOf(ids)
+  if (!Number.isInteger(groups) || groups < 1) throw new RunnerError('groups 必须是正整数')
+  const assets = listAssets(runner.db)
+  const byId = new Map(assets.map((asset) => [asset.id, asset]))
+  const missing = selected.filter((id) => !byId.has(id))
+  if (missing.length > 0) {
+    throw new RunnerError(`image not found: ${missing.slice(0, 8).join(', ')}`, 404)
+  }
+  const vectors: Record<string, number[]> = {}
+  const skipped: string[] = []
+  let dim: number | null = null
+  for (const id of selected) {
+    const vector = usableVector(byId.get(id)?.embedding ?? [])
+    if (!vector || (dim !== null && vector.length !== dim)) {
+      skipped.push(id)
+      continue
+    }
+    dim ??= vector.length
+    vectors[id] = vector
+  }
+  const usable = Object.keys(vectors)
+  if (usable.length === 0) throw new RunnerError('这些图片还没有向量')
+  if (groups > usable.length) {
+    throw new RunnerError(`可分组的图片有 ${usable.length} 张，groups 必须在 1 到 ${usable.length} 之间`)
+  }
+  const packed = await splitVectors(runner.dataDir, vectors, usable, groups)
+  return { groups: packed, skipped }
+}
+
+async function splitVectors(
+  dataDir: string,
+  vectors: Record<string, number[]>,
+  ids: string[],
+  groups: number,
+): Promise<Array<{ ids: string[] }>> {
+  const root = findRepoRoot([dirname(dataDir), import.meta.dirname])
+  const python = join(root, '.venv', 'bin', 'python')
+  const script = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(root)})
+from critic.image_vector import load, split
+payload = json.load(sys.stdin)
+load(payload["vectors"])
+json.dump(split(payload["ids"], int(payload["groups"])), sys.stdout)
+`
+  let stdout = ''
+  try {
+    stdout = await runPython(python, script, JSON.stringify({ vectors, ids, groups }))
+  } catch (err) {
+    if (err instanceof RunnerError) throw err
+    const message = err instanceof Error ? err.message : String(err)
+    throw new RunnerError(message, 502)
+  }
+  let parsed: { groups?: Array<{ ids?: unknown }> }
+  try {
+    parsed = JSON.parse(stdout) as { groups?: Array<{ ids?: unknown }> }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new RunnerError(message, 502)
+  }
+  const packed: Array<{ ids: string[] }> = []
+  const seen = new Set<string>()
+  for (const group of parsed.groups ?? []) {
+    if (!group || !Array.isArray(group.ids)) continue
+    const groupIds = group.ids.filter((id): id is string => typeof id === 'string' && id in vectors && !seen.has(id))
+    for (const id of groupIds) seen.add(id)
+    if (groupIds.length > 0) packed.push({ ids: groupIds })
+  }
+  if (packed.length !== groups || seen.size !== ids.length) {
+    throw new RunnerError(`分组结果是 ${packed.length} 组，期望 ${groups} 组`, 502)
+  }
+  return packed
+}
+
+function runPython(python: string, script: string, input: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(python, ['-c', script], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const stdout: Buffer[] = []
+    const stderr: Buffer[] = []
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      reject(new Error('分组超时'))
+    }, STEP_TIMEOUT_MS)
+    child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk))
+    child.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk))
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      reject(err)
+    })
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code !== 0) {
+        reject(new Error(Buffer.concat(stderr).toString().trim() || `python 退出 ${code}`))
+        return
+      }
+      resolve(Buffer.concat(stdout).toString())
+    })
+    child.stdin?.end(input)
+  })
+}
+
+export function idListOf(ids: readonly string[]): string[] {
+  if (ids.length === 0) throw new RunnerError('ids 不能为空')
+  if (ids.length > 2000) throw new RunnerError('ids 过多')
+  const seen = new Set<string>()
+  const selected: string[] = []
+  for (const id of ids) {
+    if (typeof id !== 'string' || id === '') throw new RunnerError('ids 里的图片 id 必须是非空字符串')
+    if (seen.has(id)) throw new RunnerError(`ids 有重复: ${id}`)
+    seen.add(id)
+    selected.push(id)
+  }
+  return selected
 }
 
 function compareNeighbors(left: NearestNeighbor, right: NearestNeighbor, order: NearestOrder): number {
@@ -307,6 +439,7 @@ async function writeTags(runner: Runner, asset: ImageAsset, signal: AbortSignal)
       `UPDATE image_assets SET tags_json = ?, tags_model_version = ?, updated_at = ? WHERE id = ?`,
     )
     .run(JSON.stringify(tags), tagged.model ?? '', runner.now().getTime(), asset.id)
+  writeWd14TagTable(runner.db, runner.dataDir)
 }
 
 async function writeEmbedding(runner: Runner, asset: ImageAsset, signal: AbortSignal): Promise<void> {
@@ -371,6 +504,7 @@ export function updateAsset(
     )
   const next = assetById(runner.db, id)
   if (!next) throw new RunnerError('image not found', 404)
+  if (patch.tags !== undefined) writeWd14TagTable(runner.db, runner.dataDir)
   return next
 }
 
@@ -419,6 +553,7 @@ export function deleteAsset(runner: Runner, id: string): void {
     runner.db.prepare('DELETE FROM jobs WHERE asset_id = ?').run(id)
     runner.db.prepare('DELETE FROM image_assets WHERE id = ?').run(id)
   })
+  writeWd14TagTable(runner.db, runner.dataDir)
 }
 
 export function rejectAsset(runner: Runner, id: string): ImageAsset {

@@ -11,6 +11,7 @@ import { findRepoRoot, loadConfig } from './config.ts'
 import { openDatabase } from './db.ts'
 import { RunnerError } from './errors.ts'
 import { createApp } from './http/app.ts'
+import { writeWd14TagTable } from './tag/table.ts'
 import { resume, tick, type Runner } from './task/queue.ts'
 
 async function main(): Promise<void> {
@@ -38,6 +39,7 @@ async function main(): Promise<void> {
     now: () => new Date(),
     randomSeed: () => Math.floor(Math.random() * 2 ** 32),
   }
+  writeWd14TagTable(runner.db, runner.dataDir)
   resume(runner)
   const app = createApp(runner)
   const host = values.host ?? config.runner.host

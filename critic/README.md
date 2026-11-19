@@ -56,7 +56,7 @@ python3.12 -m venv .venv
   - `near` 按 cosine 从近到远，`far` 从远到近。不含自己。每条含 `l2` 和 `cosine`
 - `POST /image-vector/groups` — 把指定的 n 张图片分成 m 组
   - `ids`（必填）缓存中的图片 id；`groups`（必填）组数，范围是 1 到 `ids` 的长度
-  - 按 cosine 分成恰好 m 个非空组。组的顺序按 `ids` 里先出现的那张图
+  - 先按 cosine 把图片排成一条，再尽量均分成 m 组。每组数量相差不超过 1
 
 图片向量这一路用 scikit-learn，不需要额外的模型文件。`requirements.txt` 里已经带上。
 

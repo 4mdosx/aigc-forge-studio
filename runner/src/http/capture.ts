@@ -21,6 +21,7 @@ import {
   deleteAsset,
   ingestBytes,
   listAssets,
+  groupAssets,
   nearestAssets,
   rejectAsset,
   replaceNobg,
@@ -48,6 +49,19 @@ function nearestOrderOf(raw: string | undefined): 'near' | 'far' {
   if (raw === undefined || raw === '' || raw === 'near') return 'near'
   if (raw === 'far') return 'far'
   throw new RunnerError('order 必须是 near 或 far')
+}
+
+function nearestIdsOf(raw: string | undefined): string[] | undefined {
+  if (raw === undefined || raw === '') return undefined
+  const ids = raw.split(',').map((id) => id.trim()).filter((id) => id !== '')
+  if (ids.length === 0) throw new RunnerError('ids 不能为空')
+  const seen = new Set<string>()
+  for (const id of ids) {
+    if (seen.has(id)) throw new RunnerError(`ids 有重复: ${id}`)
+    seen.add(id)
+  }
+  if (ids.length > 2000) throw new RunnerError('ids 过多')
+  return ids
 }
 
 // 采集工作台：Pinterest 链接 → 下载原图 → 异步预处理 → 手工整理素材池。
@@ -589,8 +603,18 @@ export function mountCapture(app: Hono, runner: Runner): void {
         c.req.param('id'),
         nearestCountOf(c.req.query('k')),
         nearestOrderOf(c.req.query('order')),
+        nearestIdsOf(c.req.query('ids')),
       ),
     )
+  })
+
+  app.post('/capture/assets/groups', async (c) => {
+    const body = await jsonObject(c.req)
+    if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== 'string')) {
+      throw new RunnerError('ids 必须是图片 id 数组')
+    }
+    if (typeof body.groups !== 'number') throw new RunnerError('groups 必须是正整数')
+    return c.json(await groupAssets(runner, body.ids, body.groups))
   })
 
   app.put('/capture/assets/:id', async (c) => {

@@ -14,7 +14,8 @@ import {
 import { jsonObject } from './request.ts'
 
 // POST /tag/recommend
-// 词表：data/wd14-tags.json ，形状 { "文件名": "tag1,tag2,tag," }。
+// 词表：data/wd14-tags.json ，形状 { "image_assets.id": "tag1,tag2,tag," }。
+// 图片集合由 image_assets 整表重写，不扫目录。
 // 请求只收一组 tag，可选 weights（正数抬近邻，负数压近邻）。返回 10 个推荐词。
 
 const cache = new Map<string, { mtimeMs: number; index: CooccurIndex }>()

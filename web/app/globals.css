@@ -149,7 +149,8 @@ button:disabled {
 }
 
 .shell:has(.board),
-.shell:has(.capture-split) {
+.shell:has(.capture-split),
+.shell:has(.library-split) {
   max-width: none;
   height: calc(100vh - 5.5rem);
   display: flex;
@@ -1281,6 +1282,66 @@ button.task-pick.current {
   overflow: hidden;
 }
 
+.shell:has(.library-split) .library-frame {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.library-frame > .column-head {
+  flex: none;
+}
+
+.library-split {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(168px, 240px) minmax(0, 1.4fr) minmax(260px, 0.85fr);
+  gap: 1rem;
+}
+
+.library-split > .capture-gallery {
+  grid-column: 1 / 3;
+}
+
+.library-split > .panel {
+  margin: 0;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.capture-info {
+  position: relative;
+}
+
+.image-detail-corner {
+  position: absolute;
+  z-index: 3;
+  top: 0.72rem;
+  right: 1rem;
+  display: flex;
+  gap: 0.4rem;
+}
+
+.image-detail .image-detail-hero {
+  flex: 1 1 auto;
+  min-height: 180px;
+}
+
+.image-detail .capture-info-body {
+  flex: 0 1 auto;
+  max-height: 46%;
+}
+
+.image-detail .capture-info-foot .capture-size {
+  margin-left: 0;
+  margin-right: auto;
+}
+
 .capture-stage .capture-drop {
   flex: 1;
   min-height: 0;
@@ -1436,6 +1497,109 @@ button.task-pick.current {
   background: #0c5c49;
   border-color: #0c5c49;
   color: #f7f3ea;
+}
+
+.gallery-query {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.55rem;
+}
+
+.gallery-query-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.gallery-query-row > span {
+  color: #746c63;
+  font-size: 0.68rem;
+}
+
+.gallery-query-row > .capture-filters {
+  margin-bottom: 0;
+}
+
+.gallery-query-row > button {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+}
+
+.gallery-query input {
+  box-sizing: border-box;
+  height: 1.55rem;
+  padding: 0 0.4rem;
+  font-size: 0.72rem;
+  border: 1px solid #c9beae;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: #241f1a;
+}
+
+.gallery-query input[type="number"] {
+  width: 3.4rem;
+}
+
+.gallery-query input[type="search"] {
+  width: 7.5rem;
+  flex: 1 1 7.5rem;
+}
+
+.gallery-query-error {
+  margin: 0;
+  color: #a04030;
+  font-size: 0.72rem;
+}
+
+.gallery-query-note {
+  margin: 0;
+  font-size: 0.72rem;
+}
+
+.capture-tag-picks {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+
+.capture-tag-picks .capture-filters {
+  margin-bottom: 0;
+}
+
+button.capture-tag-edit {
+  padding: 0.1rem 0.35rem;
+  background: transparent;
+  color: #746c63;
+  border: 0;
+  font-size: 0.75rem;
+}
+
+button.capture-tag-edit:hover:not(:disabled) {
+  background: transparent;
+  color: #0c5c49;
+}
+
+.capture-gallery-body.gallery-grouped {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.gallery-group {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  gap: 0.45rem;
+}
+
+.gallery-group h3 {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #5c564e;
+  font-size: 0.78rem;
+  font-weight: 600;
 }
 
 .capture-stage-foot {
@@ -1943,15 +2107,22 @@ button.capture-pick.active {
 }
 
 @media (max-width: 960px) {
-  .shell:has(.capture-split) {
+  .shell:has(.capture-split),
+  .shell:has(.library-split) {
     height: auto;
   }
 
-  .capture-split {
+  .capture-split,
+  .library-split {
     grid-template-columns: 1fr;
   }
 
-  .capture-gallery-body {
+  .library-split > .capture-gallery {
+    grid-column: auto;
+  }
+
+  .capture-gallery-body,
+  .library-split .capture-gallery-body {
     max-height: 28vh;
   }
 

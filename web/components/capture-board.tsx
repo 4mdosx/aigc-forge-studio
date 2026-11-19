@@ -1,69 +1,20 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type DragEvent,
-  type FormEvent,
-} from "react";
+import { useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
 
-import { Dialog } from "@/components/dialog";
+import { ImageDetail } from "@/components/image-detail";
+import { ImageGallery } from "@/components/image-gallery";
+import {
+  sizeText,
+  useImageAssets,
+  type FinalVersion,
+  type ImageAsset,
+  type SlideKey,
+} from "@/components/image-assets";
 import { NobgEraser } from "@/components/nobg-eraser";
-import { isStyleVector, StyleRadar } from "@/components/style-radar";
 import { api, fileHref } from "@/lib/api";
 import { fail, messageOf, notify } from "@/lib/notify";
 
-type ImageStatus = "collected" | "processed" | "approved" | "rejected";
-
-interface ImageAsset {
-  id: string;
-  status: ImageStatus;
-  source: {
-    type: "manual" | "crawler";
-    sourceUrl: string;
-    imgUrl: string;
-  };
-  original: {
-    path: string;
-    width: number;
-    height: number;
-    hash: string;
-  };
-  processed?: {
-    path: string;
-    width: number;
-    height: number;
-  };
-  tags: string[];
-  embedding: number[];
-  tagsModelVersion: string;
-  embeddingModelVersion: string;
-  reviewedAt: number;
-  note?: string;
-  createdAt: number;
-  updatedAt: number;
-  originalUrl: string;
-  processedUrl: string | null;
-  nobgUrl: string | null;
-  thumbUrl: string | null;
-  duplicate?: boolean;
-}
-
-type NearestOrder = "near" | "far";
-
-interface NearestImage {
-  id: string;
-  cosine: number;
-  l2: number;
-  thumbUrl: string | null;
-  processedUrl: string | null;
-  originalUrl: string;
-  updatedAt: number;
-}
-
-type SlideKey = "raw" | "image" | "nobg";
 type DownloadState = "queued" | "active" | "done" | "failed";
 
 type DownloadTask = {
@@ -79,42 +30,20 @@ type CutoutTask = {
   label: string;
   state: DownloadState;
 };
-type FinalVersion = "raw" | "processed" | "nobg";
-
-type EditField = "sourceUrl" | "imgUrl" | "tags" | "embedding";
-
-const STATUSES: ImageStatus[] = [
-  "collected",
-  "processed",
-  "approved",
-  "rejected",
-];
 
 export function CaptureBoard() {
-  const [items, setItems] = useState<ImageAsset[]>([]);
-  const [loaded, setLoaded] = useState(false);
+  const images = useImageAssets();
+  const items = images.items;
+  const loaded = images.loaded;
+  const selected = images.selected;
+  const loadItems = images.loadItems;
+  const itemsRef = images.itemsRef;
+  const selectedRef = images.selectedRef;
   const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [slide, setSlide] = useState<SlideKey>("image");
   const [erasing, setErasing] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [editing, setEditing] = useState<EditField | null>(null);
-  const [statusFilter, setStatusFilter] = useState<ImageStatus[]>([]);
-  const [draft, setDraft] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [nearestOpen, setNearestOpen] = useState(false);
-  const [nearestLoading, setNearestLoading] = useState(false);
-  const [nearestError, setNearestError] = useState<string | null>(null);
-  const [neighbors, setNeighbors] = useState<NearestImage[] | null>(null);
-  const [nearestCount, setNearestCount] = useState("10");
-  const [nearestOrder, setNearestOrder] = useState<NearestOrder>("near");
-  const nearestRequest = useRef(0);
-  const knownIds = useRef<Set<string> | null>(null);
-  const selectedRef = useRef(selectedId);
-  const itemsRef = useRef<ImageAsset[]>([]);
   const downloadsRef = useRef<DownloadTask[]>([]);
   const downloadSeq = useRef(0);
   const pumping = useRef(false);
@@ -130,177 +59,6 @@ export function CaptureBoard() {
   const cutoutSkipped = useRef(0);
   const hideCutouts = useRef<number | null>(null);
   const [cutouts, setCutouts] = useState<CutoutTask[]>([]);
-  const [galleryBody, setGalleryBody] = useState<HTMLDivElement | null>(null);
-  selectedRef.current = selectedId;
-  itemsRef.current = items;
-
-  const loadItems = useCallback(async () => {
-    try {
-      const body = await api<{ items: ImageAsset[] }>("capture/assets");
-      const previous = knownIds.current;
-      const arrived = previous
-        ? body.items.filter((item) => !previous.has(item.id))
-        : [];
-      knownIds.current = new Set(body.items.map((item) => item.id));
-      itemsRef.current = body.items;
-      setItems(body.items);
-      if (arrived[0]) setEditing(null);
-      setSelectedId((cur) => {
-        if (arrived[0]) return arrived[0].id;
-        if (cur && body.items.some((item) => item.id === cur)) return cur;
-        return body.items[0]?.id ?? null;
-      });
-      setLoaded(true);
-    } catch (err) {
-      fail(messageOf(err));
-    } finally {
-      setLoaded(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadItems();
-  }, [loadItems]);
-
-  // 有预处理中条目时 2.5s 轮询，全部落定即停
-  useEffect(() => {
-    if (!items.some((item) => item.status === "collected")) return;
-    const timer = setInterval(() => void loadItems(), 2500);
-    return () => clearInterval(timer);
-  }, [items, loadItems]);
-
-  function beginEdit(field: EditField, value: string) {
-    setEditing(field);
-    setDraft(value);
-  }
-
-  async function saveEdit(item: ImageAsset) {
-    if (!editing || saving) return;
-    const patch: {
-      sourceUrl?: string;
-      imgUrl?: string;
-      tags?: string[];
-      embedding?: number[];
-    } = {};
-    if (editing === "sourceUrl") patch.sourceUrl = draft.trim();
-    if (editing === "imgUrl") patch.imgUrl = draft.trim();
-    if (editing === "tags") {
-      patch.tags = draft
-        .split(/[,;\n]/)
-        .map((tag) => tag.trim())
-        .filter((tag) => tag !== "");
-    }
-    if (editing === "embedding") {
-      const parts = draft.split(/[,;\s]+/).filter((part) => part !== "");
-      const embedding = parts.map(Number);
-      if (embedding.some((value) => !Number.isFinite(value))) {
-        fail("embedding 需要一组数字");
-        return;
-      }
-      patch.embedding = embedding;
-    }
-    setSaving(true);
-    try {
-      await api(`capture/assets/${item.id}`, {
-        method: "PUT",
-        body: JSON.stringify(patch),
-      });
-      setEditing(null);
-      await loadItems();
-    } catch (err) {
-      fail(messageOf(err));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  function closeNearest() {
-    nearestRequest.current += 1;
-    setNearestOpen(false);
-  }
-
-  function openNearest(item: ImageAsset) {
-    setNearestCount("10");
-    setNearestOrder("near");
-    void loadNearest(item, 10, "near");
-  }
-
-  function searchNearest(item: ImageAsset, order: NearestOrder) {
-    const count = nearestLimit(nearestCount);
-    if (count === null) {
-      setNearestError("数量必须是正整数");
-      return;
-    }
-    setNearestOrder(order);
-    void loadNearest(item, count, order);
-  }
-
-  async function loadNearest(item: ImageAsset, count: number, order: NearestOrder) {
-    const ticket = nearestRequest.current + 1;
-    nearestRequest.current = ticket;
-    setConfirmDelete(false);
-    setNearestOpen(true);
-    setNearestLoading(true);
-    setNearestError(null);
-    setNeighbors(null);
-    try {
-      const body = await api<{ neighbors: NearestImage[] }>(
-        `capture/assets/${item.id}/nearest?k=${count}&order=${order}`,
-      );
-      if (ticket !== nearestRequest.current) return;
-      setNeighbors(body.neighbors);
-    } catch (err) {
-      if (ticket !== nearestRequest.current) return;
-      setNearestError(messageOf(err));
-    } finally {
-      if (ticket === nearestRequest.current) setNearestLoading(false);
-    }
-  }
-
-  function chooseNeighbor(id: string) {
-    setEditing(null);
-    setErasing(false);
-    setConfirmDelete(false);
-    setSelectedId(id);
-    closeNearest();
-  }
-
-  async function removeAsset(item: ImageAsset) {
-    if (deleting) return;
-    setDeleting(true);
-    try {
-      await api(`capture/assets/${item.id}`, { method: "DELETE" });
-      setConfirmDelete(false);
-      setErasing(false);
-      setEditing(null);
-      notify("已删除");
-      await loadItems();
-    } catch (err) {
-      fail(messageOf(err));
-    } finally {
-      setDeleting(false);
-    }
-  }
-
-  async function review(
-    item: ImageAsset,
-    action: "approve" | "reject",
-    version?: FinalVersion,
-  ) {
-    try {
-      await api(`capture/assets/${item.id}/${action}`, {
-        method: "POST",
-        body:
-          action === "approve"
-            ? JSON.stringify({ version: version ?? "processed" })
-            : undefined,
-      });
-      notify(action === "approve" ? "已通过，当前版本写入资产" : "已拒绝");
-      await loadItems();
-    } catch (err) {
-      fail(messageOf(err));
-    }
-  }
 
   function publishCutouts() {
     setCutouts(cutoutsRef.current.map((task) => ({ ...task })));
@@ -683,26 +441,6 @@ export function CaptureBoard() {
     return () => window.removeEventListener("paste", onPaste);
   }, []);
 
-  const doneCount = items.filter(
-    (item) => item.status === "processed" || item.status === "approved",
-  ).length;
-  const processingCount = items.filter(
-    (item) => item.status === "collected",
-  ).length;
-  const visible =
-    statusFilter.length === 0
-      ? items
-      : items.filter((item) => statusFilter.includes(item.status));
-  const selected = items.find((item) => item.id === selectedId) ?? null;
-
-  function toggleStatus(status: ImageStatus) {
-    setStatusFilter((cur) =>
-      cur.includes(status)
-        ? cur.filter((item) => item !== status)
-        : [...cur, status],
-    );
-  }
-
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
@@ -757,62 +495,15 @@ export function CaptureBoard() {
   return (
     <>
       <div className="capture-split">
-        <section className="panel capture-gallery">
-          <div className="column-head">
-            <h2>图库</h2>
-            <span className="muted">
-              完成 {doneCount}
-              {processingCount > 0 ? ` · 处理中 ${processingCount}` : ""}
-            </span>
-          </div>
-          <div className="capture-filters" role="group" aria-label="按状态筛选">
-            {STATUSES.map((status) => {
-              const on = statusFilter.includes(status);
-              return (
-                <button
-                  key={status}
-                  type="button"
-                  className={on ? "active" : ""}
-                  aria-pressed={on}
-                  onClick={() => toggleStatus(status)}
-                >
-                  {statusLabel(status)}
-                </button>
-              );
-            })}
-          </div>
-          <div className="capture-gallery-body" ref={setGalleryBody}>
-            {!loaded ? (
-              <p className="muted">加载中…</p>
-            ) : items.length === 0 ? (
-              <p className="muted">还没有图片。</p>
-            ) : visible.length === 0 ? (
-              <p className="muted">没有符合筛选的图片。</p>
-            ) : (
-              visible.map((item) => {
-                const thumb = item.thumbUrl
-                  ? `${item.thumbUrl}?v=${item.updatedAt}`
-                  : (item.processedUrl ?? item.originalUrl);
-                return (
-                  <GalleryTile
-                    key={item.id}
-                    active={item.id === selected?.id}
-                    label={item.source.sourceUrl || item.source.imgUrl || item.id}
-                    root={galleryBody}
-                    src={thumb ? fileHref(thumb) : null}
-                    status={item.status}
-                    onSelect={() => {
-                      setEditing(null);
-                      setErasing(false);
-                      setConfirmDelete(false);
-                      setSelectedId(item.id);
-                    }}
-                  />
-                );
-              })
-            )}
-          </div>
-        </section>
+        <ImageGallery
+          items={items}
+          loaded={loaded}
+          selectedId={selected?.id ?? null}
+          onSelect={(id) => {
+            setErasing(false);
+            images.select(id);
+          }}
+        />
 
         <section className="panel capture-stage">
           <div className="column-head">
@@ -956,189 +647,27 @@ export function CaptureBoard() {
           </form>
         </section>
 
-        <section className="panel capture-info">
-          <div className="column-head">
-            <h2>图像</h2>
-          </div>
-          <div className="capture-info-body">
-            {!loaded ? (
-              <p className="muted">加载中…</p>
-            ) : !selected ? (
-              <p className="muted">从左侧图库选择一张图片。</p>
-            ) : (
-              <>
-                <div className="row capture-actions">
-                  {selected.status === "processed" ? (
-                    <>
-                      <button
-                        type="button"
-                        className="quiet"
-                        disabled={
-                          selected.status !== "processed" ||
-                          cutouts.some(
-                            (task) =>
-                              task.assetId === selected.id &&
-                              (task.state === "queued" || task.state === "active"),
-                          ) ||
-                          erasing
-                        }
-                        onClick={() =>
-                          void review(
-                            selected,
-                            "approve",
-                            versionOf(currentSlide?.key),
-                          )
-                        }
-                      >
-                        通过
-                      </button>
-                      <button
-                        type="button"
-                        className="quiet"
-                        disabled={selected.status !== "processed"}
-                        onClick={() => void review(selected, "reject")}
-                      >
-                        拒绝
-                      </button>
-                    </>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="quiet"
-                    disabled={deleting || erasing || !hasVector(selected.embedding)}
-                    title={hasVector(selected.embedding) ? "最接近的图" : "还没有向量"}
-                    onClick={() => void openNearest(selected)}
-                  >
-                    接近
-                  </button>
-                  <button
-                    type="button"
-                    className="quiet"
-                    disabled={deleting || erasing}
-                    onClick={() => setConfirmDelete(true)}
-                  >
-                    删除
-                  </button>
-                </div>
-                <div className="style-radar-block">
-                  <div className="style-radar-head">
-                    <span>向量</span>
-                    {editing !== "embedding" &&
-                    isStyleVector(selected.embedding) ? (
-                      <button
-                        type="button"
-                        className="style-radar-edit"
-                        onClick={() =>
-                          beginEdit(
-                            "embedding",
-                            selected.embedding.join(", "),
-                          )
-                        }
-                      >
-                        编辑
-                      </button>
-                    ) : null}
-                  </div>
-                  {editing === "embedding" ? (
-                    <Editable
-                      active
-                      draft={draft}
-                      saving={saving}
-                      multiline
-                      text={embeddingPreview(selected.embedding)}
-                      hint={selected.embeddingModelVersion}
-                      onDraft={setDraft}
-                      onOpen={() =>
-                        beginEdit("embedding", selected.embedding.join(", "))
-                      }
-                      onCancel={() => setEditing(null)}
-                      onSave={() => void saveEdit(selected)}
-                    />
-                  ) : isStyleVector(selected.embedding) ? (
-                    <>
-                      <StyleRadar values={selected.embedding} />
-                      {selected.embeddingModelVersion ? (
-                        <p className="style-radar-version">
-                          {selected.embeddingModelVersion}
-                        </p>
-                      ) : null}
-                    </>
-                  ) : (
-                    <Editable
-                      active={false}
-                      draft={draft}
-                      saving={saving}
-                      multiline
-                      text={embeddingPreview(selected.embedding)}
-                      hint={selected.embeddingModelVersion}
-                      onDraft={setDraft}
-                      onOpen={() =>
-                        beginEdit("embedding", selected.embedding.join(", "))
-                      }
-                      onCancel={() => setEditing(null)}
-                      onSave={() => void saveEdit(selected)}
-                    />
-                  )}
-                </div>
-                <dl className="capture-meta">
-                  <dt>标签</dt>
-                  <dd>
-                    <Editable
-                      active={editing === "tags"}
-                      draft={draft}
-                      saving={saving}
-                      multiline
-                      text={selected.tags.join(", ")}
-                      hint={selected.tagsModelVersion}
-                      onDraft={setDraft}
-                      onOpen={() => beginEdit("tags", selected.tags.join(", "))}
-                      onCancel={() => setEditing(null)}
-                      onSave={() => void saveEdit(selected)}
-                    />
-                  </dd>
-                  <dt>源地址</dt>
-                  <dd>
-                    <Editable
-                      active={editing === "sourceUrl"}
-                      draft={draft}
-                      saving={saving}
-                      text={selected.source.sourceUrl}
-                      onDraft={setDraft}
-                      onOpen={() =>
-                        beginEdit("sourceUrl", selected.source.sourceUrl)
-                      }
-                      onCancel={() => setEditing(null)}
-                      onSave={() => void saveEdit(selected)}
-                    />
-                  </dd>
-                  <dt>图像地址</dt>
-                  <dd>
-                    <Editable
-                      active={editing === "imgUrl"}
-                      draft={draft}
-                      saving={saving}
-                      text={selected.source.imgUrl}
-                      onDraft={setDraft}
-                      onOpen={() => beginEdit("imgUrl", selected.source.imgUrl)}
-                      onCancel={() => setEditing(null)}
-                      onSave={() => void saveEdit(selected)}
-                    />
-                  </dd>
-                </dl>
-              </>
-            )}
-          </div>
-          {selected ? (
-            <div className="capture-info-foot">
-              <span className={`capture-badge ${selected.status}`}>
-                {statusLabel(selected.status)}
-              </span>
-              <time dateTime={new Date(selected.createdAt).toISOString()}>
-                {formatTime(selected.createdAt)}
-              </time>
-            </div>
-          ) : null}
-        </section>
+        <ImageDetail
+          loaded={loaded}
+          selected={selected}
+          approveVersion={versionOf(currentSlide?.key)}
+          erasing={erasing}
+          cutoutBusy={
+            selected
+              ? cutouts.some(
+                  (task) =>
+                    task.assetId === selected.id &&
+                    (task.state === "queued" || task.state === "active"),
+                )
+              : false
+          }
+          onSelect={(id) => {
+            setErasing(false);
+            images.select(id);
+          }}
+          onReload={loadItems}
+          onChanged={() => setErasing(false)}
+        />
       </div>
       {downloads.length > 0 ? (
         <div className="capture-downloads">
@@ -1182,182 +711,7 @@ export function CaptureBoard() {
           <p className="muted capture-download-label">{cutoutLabel(cutouts)}</p>
         </div>
       ) : null}
-      <Dialog
-        open={nearestOpen}
-        title={nearestOrder === "far" ? "最远" : "最近"}
-        onClose={closeNearest}
-      >
-        <form
-          className="nearest-query"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const submitter = (event.nativeEvent as SubmitEvent).submitter;
-            const order =
-              submitter instanceof HTMLButtonElement && submitter.value === "far"
-                ? "far"
-                : "near";
-            if (selected) searchNearest(selected, order);
-          }}
-        >
-          <label className="nearest-count">
-            数量
-            <input
-              type="number"
-              min={1}
-              step={1}
-              inputMode="numeric"
-              value={nearestCount}
-              onChange={(event) => setNearestCount(event.target.value)}
-            />
-          </label>
-          <button
-            type="submit"
-            value="near"
-            className={nearestOrder === "near" ? "quiet active" : "quiet"}
-            disabled={nearestLoading || !selected}
-          >
-            最近
-          </button>
-          <button
-            type="submit"
-            value="far"
-            className={nearestOrder === "far" ? "quiet active" : "quiet"}
-            disabled={nearestLoading || !selected}
-          >
-            最远
-          </button>
-        </form>
-        {nearestLoading ? <p className="muted">查找中…</p> : null}
-        {nearestError ? <p>{nearestError}</p> : null}
-        {neighbors && neighbors.length === 0 ? (
-          <p className="muted">没有其它带向量的图片。</p>
-        ) : null}
-        {neighbors && neighbors.length > 0 ? (
-          <div className="nearest-grid">
-            {neighbors.map((item) => {
-              const thumb = item.thumbUrl
-                ? `${item.thumbUrl}?v=${item.updatedAt}`
-                : null;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  className="nearest-tile"
-                  onClick={() => chooseNeighbor(item.id)}
-                >
-                  {thumb ? (
-                    <img src={fileHref(thumb)} alt="" />
-                  ) : (
-                    <span className="nearest-missing">无图</span>
-                  )}
-                  <span className="nearest-score">{item.cosine.toFixed(3)}</span>
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
-      </Dialog>
-      <Dialog
-        open={confirmDelete && selected !== null}
-        title="删除图像"
-        onClose={() => {
-          if (!deleting) setConfirmDelete(false);
-        }}
-      >
-        <p>图像文件和这条记录都会删掉，不能恢复。</p>
-        <div className="row">
-          <button
-            type="button"
-            className="quiet"
-            disabled={deleting}
-            onClick={() => setConfirmDelete(false)}
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            disabled={deleting || !selected}
-            onClick={() => {
-              if (selected) void removeAsset(selected);
-            }}
-          >
-            {deleting ? "删除中…" : "删除"}
-          </button>
-        </div>
-      </Dialog>
     </>
-  );
-}
-
-function Editable({
-  active,
-  draft,
-  saving,
-  text,
-  hint,
-  multiline,
-  onDraft,
-  onOpen,
-  onCancel,
-  onSave,
-}: {
-  active: boolean;
-  draft: string;
-  saving: boolean;
-  text: string;
-  hint?: string;
-  multiline?: boolean;
-  onDraft: (value: string) => void;
-  onOpen: () => void;
-  onCancel: () => void;
-  onSave: () => void;
-}) {
-  if (!active) {
-    return (
-      <button type="button" className="capture-field" onClick={onOpen}>
-        <span>{text === "" ? "空" : text}</span>
-        {hint ? <span className="capture-field-hint">{hint}</span> : null}
-      </button>
-    );
-  }
-  const fieldProps = {
-    autoFocus: true,
-    value: draft,
-    disabled: saving,
-    onChange: (event: { target: { value: string } }) =>
-      onDraft(event.target.value),
-    onKeyDown: (event: {
-      key: string;
-      metaKey: boolean;
-      ctrlKey: boolean;
-      preventDefault: () => void;
-    }) => {
-      if (event.key === "Escape") onCancel();
-      if (
-        event.key === "Enter" &&
-        (!multiline || event.metaKey || event.ctrlKey)
-      ) {
-        event.preventDefault();
-        onSave();
-      }
-    },
-  };
-  return (
-    <span className="capture-field-edit">
-      {multiline ? (
-        <textarea rows={4} {...fieldProps} />
-      ) : (
-        <input {...fieldProps} />
-      )}
-      <span className="row">
-        <button type="button" disabled={saving} onClick={onSave}>
-          {saving ? "保存中…" : "保存"}
-        </button>
-        <button type="button" className="quiet" onClick={onCancel}>
-          取消
-        </button>
-      </span>
-    </span>
   );
 }
 
@@ -1365,102 +719,6 @@ function versionOf(key: SlideKey | undefined): FinalVersion {
   if (key === "raw") return "raw";
   if (key === "nobg") return "nobg";
   return "processed";
-}
-
-function statusLabel(status: string): string {
-  if (status === "collected") return "已采集";
-  if (status === "processed") return "已处理";
-  if (status === "approved") return "已通过";
-  if (status === "rejected") return "已拒绝";
-  return status;
-}
-
-function sizeText(item: ImageAsset): string {
-  const original =
-    item.original.width && item.original.height
-      ? `${item.original.width}×${item.original.height}`
-      : "";
-  const processed =
-    item.processed && item.processed.width && item.processed.height
-      ? `${item.processed.width}×${item.processed.height}`
-      : "";
-  if (original && processed) return `${original} → ${processed}`;
-  return original || processed || "—";
-}
-
-function nearestLimit(raw: string): number | null {
-  if (!/^[1-9]\d*$/.test(raw.trim())) return null;
-  const count = Number(raw);
-  return Number.isSafeInteger(count) ? count : null;
-}
-
-function hasVector(values: number[]): boolean {
-  return (
-    values.length > 0 &&
-    values.every((value) => Number.isFinite(value)) &&
-    values.some((value) => value !== 0)
-  );
-}
-
-function embeddingPreview(values: number[]): string {
-  if (values.length === 0) return "";
-  const head = values.slice(0, 4).map((value) => value.toFixed(3));
-  return values.length > 4 ? `${head.join(", ")} …` : head.join(", ");
-}
-
-function formatTime(ms: number): string {
-  if (!ms) return "—";
-  const date = new Date(ms);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function GalleryTile({
-  active,
-  label,
-  root,
-  src,
-  status,
-  onSelect,
-}: {
-  active: boolean;
-  label: string;
-  root: HTMLElement | null;
-  src: string | null;
-  status: ImageStatus;
-  onSelect: () => void;
-}) {
-  const ref = useRef<HTMLButtonElement>(null);
-  const [near, setNear] = useState(false);
-  useEffect(() => {
-    const node = ref.current;
-    if (!node) return;
-    if (!root) return;
-    const observer = new IntersectionObserver(
-      ([entry]) => setNear(entry.isIntersecting),
-      { root, rootMargin: "280px 0px" },
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [root]);
-  return (
-    <button
-      ref={ref}
-      type="button"
-      className={active ? "capture-tile active" : "capture-tile"}
-      aria-label={label}
-      onClick={onSelect}
-    >
-      {src && near ? (
-        <img src={src} alt="" decoding="async" />
-      ) : src ? (
-        <span className="capture-tile-pending" />
-      ) : (
-        <span className="capture-tile-missing">{statusLabel(status)}</span>
-      )}
-      <span className={`capture-badge ${status}`}>{statusLabel(status)}</span>
-    </button>
-  );
 }
 
 function cutoutLabelFor(tasks: CutoutTask[], assetId: string): string {
