@@ -155,7 +155,9 @@ class Wd14Tagger:
         model_file = model_dir / "model.onnx"
         tags_file = model_dir / "selected_tags.csv"
         if not model_file.is_file() or not tags_file.is_file():
-            raise FileNotFoundError(f"模型文件缺失: {model_dir}")
+            raise FileNotFoundError(
+                f"模型文件缺失: {model_dir}\n先运行 .venv/bin/python critic/install.py"
+            )
         self._session = ort.InferenceSession(str(model_file), providers=["CPUExecutionProvider"])
         self._input_name = self._session.get_inputs()[0].name
         self._entries = _parse_tags_csv(tags_file)

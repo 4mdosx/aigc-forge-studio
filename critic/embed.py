@@ -102,15 +102,9 @@ def _predictor(device: str | None, dtype: str | None):
 
 
 def _load(device: str | None, dtype: str | None):
-    missing = [
-        str(path)
-        for path in (DINO_DIR / "config.json", DINO_DIR / "model.safetensors", HEAD_FILE)
-        if not path.exists()
-    ]
-    if missing:
-        raise FileNotFoundError(
-            "缺少模型文件：\n  " + "\n  ".join(missing) + "\n先运行 tools/fetch_style_model.sh"
-        )
+    from critic.models import require
+
+    require()
 
     import torch
     import torch.nn as nn

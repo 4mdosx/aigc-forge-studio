@@ -10,9 +10,12 @@
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -U pip
 .venv/bin/python -m pip install -r critic/requirements.txt
+.venv/bin/python critic/install.py
 ```
 
-`.venv` 已在 `.gitignore` 里，不会进版本库。
+`install.py` 把打标和风格向量的权重下载到 `data/models/`。已经在的文件会跳过。国内可加 `HF_ENDPOINT=https://hf-mirror.com`，需要代理时设 `HTTPS_PROXY` 或 `CRITIC_PROXY`。
+
+`.venv` 已在 `.gitignore` 里，不会进版本库。模型在 `data/` 下，同样不进版本库。
 
 ## 启动
 
@@ -23,6 +26,8 @@ python3.12 -m venv .venv
 ```
 
 也可以 `node cli.js`，先选 dev 或 deploy，再勾选 critic，回车确认后启动。
+
+启动时会检查「依赖」一节列出的模型文件。缺文件就退出，不监听端口。
 
 不走 HTTP、直接拿本地路径时：
 
@@ -58,6 +63,14 @@ curl -s http://127.0.0.1:8791/embed \
 
 ## 依赖
 
-模型权重沿用 `data/models/wd14/` 与 `data/models/style-embedder/`；风格向量权重缺失时见
-上层 tools 仓库的 `../tools/fetch_style_model.sh`。WD14 模型沿用 runner 的缓存，未内置下载。
-仅处理 SFW 素材。
+启动时检查这些文件，缺任何一个都会退出：
+
+- `data/models/wd14/wd-eva02-large-tagger-v3/model.onnx`
+- `data/models/wd14/wd-eva02-large-tagger-v3/selected_tags.csv`
+- `data/models/style-embedder/dinov3-vith16plus/config.json`
+- `data/models/style-embedder/dinov3-vith16plus/preprocessor_config.json`
+- `data/models/style-embedder/dinov3-vith16plus/model.safetensors`
+- `data/models/style-embedder/dinov3-vith16plus/LICENSE.md`
+- `data/models/style-embedder/Style_Embedder_v4.safetensors`
+
+WD14 来自 `SmilingWolf/wd-eva02-large-tagger-v3`。风格向量的骨干是未设访问门槛的 DINOv3 镜像 `bschooled/dinov3-vith16plus-pretrain-lvd1689m`，头是 `Fgdfgfthgr/Anime_Images_Style_Embedder` 的 `Style Embedder v4.safetensors`。

@@ -12,7 +12,7 @@
 运行（仓库根目录的 .venv）：
     .venv/bin/python critic/server.py --port 8791
 
-仅处理本地路径图片；SFW only。
+仅处理本地路径图片。
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from critic import embed as embedder
+from critic import models
 from critic import tag as tagger
 
 app = Flask(__name__)
@@ -50,9 +51,12 @@ def _body() -> dict:
 
 @app.get("/health")
 def health():
+    gaps = [str(path.relative_to(ROOT)) for path in models.missing()]
     return jsonify(
         {
             "ok": True,
+            "models_ready": not gaps,
+            "models_missing": gaps,
             "taggers_loaded": tagger.loaded_models(),
             "embedder_loaded": embedder.loaded(),
             "embed_device": embedder.device(),
@@ -153,6 +157,8 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8791)
     args = parser.parse_args()
+    if models.report_missing() != 0:
+        return 1
     app.run(host=args.host, port=args.port, threaded=True)
     return 0
 
