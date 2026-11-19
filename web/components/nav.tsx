@@ -11,6 +11,7 @@ export function Nav() {
   const jobs = path.startsWith('/jobs')
   const dice = path.startsWith('/dice')
   const library = path.startsWith('/library') || path.startsWith('/workflows')
+  const settings = path.startsWith('/settings')
   return (
     <nav>
       <Link className={work ? 'active' : ''} href="/">
@@ -30,6 +31,9 @@ export function Nav() {
       </Link>
       <Link className={library ? 'active' : ''} href="/library">
         Library
+      </Link>
+      <Link className={settings ? 'active' : ''} href="/settings">
+        设置
       </Link>
     </nav>
   )

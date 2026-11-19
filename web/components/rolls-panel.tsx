@@ -285,7 +285,7 @@ function RollDetail({
       <div className="dice-roll-detail-body">
         <div className="dice-roll-detail-block">
           <div className="dice-roll-detail-label">
-            <span className="muted">生成 · baseline_v1 · 每次随机 seed</span>
+            <span className="muted">生成 · 按设置里的工作流 · 每次随机 seed</span>
             <button
               type="button"
               className="dice-hero-roll"

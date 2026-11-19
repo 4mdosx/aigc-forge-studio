@@ -5,6 +5,7 @@ import { join } from 'node:path'
 
 import { RunnerError } from '../errors.ts'
 import { DEFAULT_DICE_FIELDS, transaction } from '../db.ts'
+import { joinPrompt, readRollConfig } from '../rollConfig.ts'
 import { createTask, storedPaths } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
 import { jsonObject } from './request.ts'
@@ -344,7 +345,7 @@ export function mountDice(app: Hono, runner: Runner): void {
     return c.json({ deleted: result.changes })
   })
 
-  // 灵感 → baseline_v1 出图：pose 图推 ComfyUI input 后建任务，记录挂到 roll 上
+  // 灵感出图：pose 图推 ComfyUI input 后建任务。workflow / step / 固定 prompt 来自 config.roll_config
   app.post('/dice/rolls/:id/generate', async (c) => {
     const rollId = c.req.param('id')
     const roll = runner.db
@@ -397,16 +398,17 @@ export function mountDice(app: Hono, runner: Runner): void {
 
     const gen = variant.gen as number[]
     const seed = runner.randomSeed()
+    const rollConfig = readRollConfig(runner.db)
     const task = createTask(
       runner.db,
       {
         task: `dice-roll-${rollId.slice(0, 8)}`,
         workName: 'baseline',
-        workflowName: 'baseline_v1',
-        version: 'g3317g3t',
+        workflowName: rollConfig.workflowName,
+        ...(rollConfig.version ? { version: rollConfig.version } : {}),
         payload: {
-          positive: roll.prompt,
-          negative: roll.negative ?? '',
+          positive: joinPrompt(rollConfig.workflowPositive, roll.prompt),
+          negative: joinPrompt(rollConfig.workflowNegative, roll.negative ?? ''),
           pose_image: `${sub}/bone.png`,
           depth_image: `${sub}/depth.png`,
           width: gen[0],
@@ -416,7 +418,7 @@ export function mountDice(app: Hono, runner: Runner): void {
           denoise: 1.0,
           skeleton_strength: 1.0,
           depth_strength: 0.5,
-          step: '1200',
+          step: rollConfig.step,
           lora_strength: 1.0,
         },
       },

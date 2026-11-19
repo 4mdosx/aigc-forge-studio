@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import { RunnerError } from '../errors.ts'
 import type { Runner } from '../task/queue.ts'
 import { mountCapture } from './capture.ts'
+import { mountConfig } from './config.ts'
 import { mountDice } from './dice.ts'
 import { mountChats } from './chats.ts'
 import { mountData } from './data.ts'
@@ -34,6 +35,7 @@ export function createApp(runner: Runner): Hono {
   mountPosePending(app, runner)
   mountCapture(app, runner)
   mountDice(app, runner)
+  mountConfig(app, runner)
   mountTag(app, runner)
   mountRecommend(app, runner)
   mountTrain(app, runner)

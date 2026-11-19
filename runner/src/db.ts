@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { RunnerError } from './errors.ts'
+import { seedRollConfig } from './rollConfig.ts'
 
 const VERSION_LETTERS = 'abcdefghijklmnopqrstuvwxyz'
 const VERSION_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
@@ -210,6 +211,10 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS jobs_by_ready ON jobs (status, next_run_at, created_at);
+CREATE TABLE IF NOT EXISTS config (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `
 
 export interface WorkRow {
@@ -297,6 +302,7 @@ function migrate(db: DatabaseSync): void {
   addColumn(db, 'image_assets', 'nobg_path', 'TEXT')
   addColumn(db, 'image_assets', 'nobg_width', 'INTEGER')
   addColumn(db, 'image_assets', 'nobg_height', 'INTEGER')
+  seedRollConfig(db)
 }
 
 // dice_fields 曾用保留字 values 作列名，后升 candidates；v3 = tiers JSON 列。
