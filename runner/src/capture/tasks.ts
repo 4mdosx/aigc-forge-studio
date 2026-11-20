@@ -147,8 +147,8 @@ function knownKeys(db: DatabaseSync, exceptId?: string): Set<string> {
   }
   const tasks = db
     .prepare(
-      `SELECT id, dedupe_key, img_url FROM capture_tasks
-       WHERE status IN ('pending', 'running', 'done')`,
+      `SELECT id, dedupe_key, img_url FROM jobs
+       WHERE kind IN ('download', 'nobg') AND status IN ('pending', 'running', 'done')`,
     )
     .all() as Array<{ id: string; dedupe_key: string; img_url: string }>
   for (const row of tasks) {
@@ -192,7 +192,7 @@ export function enqueueDownload(
   if (duplicateOf(key, known)) return { task: null, duplicate: true }
   const label = mediaUrl || url
   db.prepare(
-    `INSERT INTO capture_tasks (
+    `INSERT INTO jobs (
       id, kind, status, url, img_url, dedupe_key, asset_id, live_id, label,
       next_run_at, created_at
     ) VALUES (?, 'download', 'pending', ?, ?, ?, NULL, ?, ?, ?, ?)`,
@@ -228,7 +228,7 @@ export function enqueueNobg(
   const sameHashIds = new Set(sameHash.map((row) => row.id))
   const queued = db
     .prepare(
-      `SELECT asset_id FROM capture_tasks
+      `SELECT asset_id FROM jobs
        WHERE kind = 'nobg' AND status IN ('pending', 'running', 'done')`,
     )
     .all() as Array<{ asset_id: string | null }>
@@ -241,7 +241,7 @@ export function enqueueNobg(
   }
   const label = asset.source.sourceUrl || asset.source.imgUrl || assetId
   db.prepare(
-    `INSERT INTO capture_tasks (
+    `INSERT INTO jobs (
       id, kind, status, url, img_url, dedupe_key, asset_id, live_id, label,
       next_run_at, created_at
     ) VALUES (?, 'nobg', 'pending', '', '', ?, ?, NULL, ?, ?, ?)`,
@@ -250,22 +250,22 @@ export function enqueueNobg(
 }
 
 function lastId(db: DatabaseSync): string {
-  const row = db.prepare('SELECT id FROM capture_tasks ORDER BY rowid DESC LIMIT 1').get() as
-    | { id: string }
-    | undefined
+  const row = db
+    .prepare(`SELECT id FROM jobs WHERE kind IN ('download', 'nobg') ORDER BY rowid DESC LIMIT 1`)
+    .get() as { id: string } | undefined
   if (!row) throw new RunnerError('capture task insert failed', 500)
   return row.id
 }
 
 export function resumeCaptureTasks(db: DatabaseSync, now: number): void {
   db.prepare(
-    `UPDATE capture_tasks SET
+    `UPDATE jobs SET
       status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
       next_run_at = ?,
       started_at = NULL,
       finished_at = CASE WHEN attempts >= max_attempts THEN ? ELSE finished_at END,
       error = CASE WHEN error IS NULL OR error = '' THEN 'interrupted' ELSE error END
-     WHERE status = 'running'`,
+     WHERE kind IN ('download', 'nobg') AND status = 'running'`,
   ).run(now, now)
 }
 
@@ -277,7 +277,8 @@ export function listCaptureTasks(db: DatabaseSync): {
     KINDS.map((kind) => [kind, Object.fromEntries(STATUSES.map((status) => [status, 0]))]),
   ) as Record<CaptureTaskKind, Record<CaptureTaskStatus, number>>
   const grouped = db
-    .prepare('SELECT kind, status, COUNT(*) AS n FROM capture_tasks GROUP BY kind, status')
+    .prepare(`SELECT kind, status, COUNT(*) AS n FROM jobs
+               WHERE kind IN ('download', 'nobg') GROUP BY kind, status`)
     .all() as Array<{ kind: string; status: string; n: number }>
   for (const row of grouped) {
     if (!(row.kind in counts) || !(row.status in counts.download)) continue
@@ -285,7 +286,8 @@ export function listCaptureTasks(db: DatabaseSync): {
   }
   const open = db
     .prepare(
-      `SELECT * FROM capture_tasks WHERE status IN ('pending', 'running', 'failed')
+      `SELECT * FROM jobs
+       WHERE kind IN ('download', 'nobg') AND status IN ('pending', 'running', 'failed')
        ORDER BY CASE status WHEN 'running' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END,
                 next_run_at, created_at`,
     )
@@ -294,7 +296,7 @@ export function listCaptureTasks(db: DatabaseSync): {
   for (const kind of KINDS) {
     const rows = db
       .prepare(
-        `SELECT * FROM capture_tasks
+        `SELECT * FROM jobs
          WHERE kind = ? AND status IN ('done', 'skipped')
          ORDER BY finished_at DESC LIMIT 20`,
       )
@@ -316,10 +318,10 @@ export function retryCaptureTask(
   if (!current) throw new RunnerError('task not found', 404)
   if (current.status !== 'failed') throw new RunnerError('只有失败的任务可以重试', 409)
   db.prepare(
-    `UPDATE capture_tasks SET
+    `UPDATE jobs SET
       status = 'pending', attempts = 0, error = NULL, next_run_at = ?,
       started_at = NULL, finished_at = NULL
-     WHERE id = ? AND status = 'failed'`,
+     WHERE id = ? AND kind IN ('download', 'nobg') AND status = 'failed'`,
   ).run(now, id)
   const next = taskById(db, id)
   if (!next) throw new RunnerError('task not found', 404)
@@ -440,13 +442,14 @@ function reclaimExpired(runner: Runner): void {
   const now = runner.now().getTime()
   runner.db
     .prepare(
-      `UPDATE capture_tasks SET
+      `UPDATE jobs SET
         status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
         next_run_at = ?,
         started_at = NULL,
         finished_at = CASE WHEN attempts >= max_attempts THEN ? ELSE finished_at END,
         error = CASE WHEN error IS NULL OR error = '' THEN 'interrupted' ELSE error END
-       WHERE status = 'running' AND started_at IS NOT NULL AND started_at <= ?`,
+       WHERE kind IN ('download', 'nobg')
+         AND status = 'running' AND started_at IS NOT NULL AND started_at <= ?`,
     )
     .run(now, now, now - LEASE_MS)
 }
@@ -455,7 +458,7 @@ function claimNext(runner: Runner, kind: CaptureTaskKind): CaptureTask | null {
   const now = runner.now().getTime()
   const row = runner.db
     .prepare(
-      `SELECT id FROM capture_tasks
+      `SELECT id FROM jobs
        WHERE kind = ? AND status = 'pending' AND next_run_at <= ?
        ORDER BY next_run_at, created_at LIMIT 1`,
     )
@@ -463,11 +466,11 @@ function claimNext(runner: Runner, kind: CaptureTaskKind): CaptureTask | null {
   if (!row) return null
   const claimed = runner.db
     .prepare(
-      `UPDATE capture_tasks
+      `UPDATE jobs
        SET status = 'running', started_at = ?, attempts = attempts + 1, error = NULL
-       WHERE id = ? AND status = 'pending'`,
+       WHERE id = ? AND kind = ? AND status = 'pending'`,
     )
-    .run(now, row.id)
+    .run(now, row.id, kind)
   if (claimed.changes !== 1) return null
   return taskById(runner.db, row.id)
 }
@@ -481,9 +484,9 @@ function finish(
   const now = runner.now().getTime()
   runner.db
     .prepare(
-      `UPDATE capture_tasks SET
+      `UPDATE jobs SET
         status = ?, result = ?, error = NULL, finished_at = ?, started_at = NULL
-       WHERE id = ? AND status = 'running'`,
+       WHERE id = ? AND kind IN ('download', 'nobg') AND status = 'running'`,
     )
     .run(status, result, now, id)
   const task = taskById(runner.db, id)
@@ -498,18 +501,18 @@ function settleFailure(runner: Runner, id: string, message: string): void {
   if (task.attempts >= task.maxAttempts) {
     runner.db
       .prepare(
-        `UPDATE capture_tasks SET
+        `UPDATE jobs SET
           status = 'failed', error = ?, finished_at = ?, started_at = NULL
-         WHERE id = ? AND status = 'running'`,
+         WHERE id = ? AND kind IN ('download', 'nobg') AND status = 'running'`,
       )
       .run(message, now, id)
   } else {
     const delay = BACKOFF_MS[Math.min(task.attempts - 1, BACKOFF_MS.length - 1)] ?? BACKOFF_MS[0]
     runner.db
       .prepare(
-        `UPDATE capture_tasks SET
+        `UPDATE jobs SET
           status = 'pending', error = ?, next_run_at = ?, started_at = NULL
-         WHERE id = ? AND status = 'running'`,
+         WHERE id = ? AND kind IN ('download', 'nobg') AND status = 'running'`,
       )
       .run(message, now + delay, id)
     return
@@ -519,7 +522,7 @@ function settleFailure(runner: Runner, id: string, message: string): void {
 }
 
 function taskById(db: DatabaseSync, id: string): CaptureTask | null {
-  const row = db.prepare('SELECT * FROM capture_tasks WHERE id = ?').get(id) as
+  const row = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as
     | TaskRow
     | undefined
   return row ? taskOf(row) : null

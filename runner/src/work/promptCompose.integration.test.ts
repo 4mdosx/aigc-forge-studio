@@ -192,7 +192,7 @@ test('POST /tasks 组装 rawPositive 并经 /trace 溯源', async () => {
   assert.ok(created.id, `task create failed: ${JSON.stringify(created)}`)
 
   const task = runner.db
-    .prepare(`SELECT input_json FROM tasks WHERE id = ?`)
+    .prepare(`SELECT input_json FROM jobs WHERE kind = 'generate' AND id = ?`)
     .get(created.id) as { input_json: string }
   const input = JSON.parse(task.input_json) as Record<string, unknown>
   // 方言段(前置质量词) + 素材段(剥 high score) + 目的锚
@@ -206,7 +206,7 @@ test('POST /tasks 组装 rawPositive 并经 /trace 溯源', async () => {
 
   // /trace：给任务写个 output_path 再反查
   runner.db
-    .prepare(`UPDATE tasks SET output_path = ? WHERE id = ?`)
+    .prepare(`UPDATE jobs SET output_path = ? WHERE kind = 'generate' AND id = ?`)
     .run('output/2026-01-01/compose-it/out_00001_.png', created.id)
   const traced = await json(
     await app.request('/trace?path=output/2026-01-01/compose-it/out_00001_.png'),

@@ -527,7 +527,7 @@ export function mountDice(app: Hono, runner: Runner): void {
         `SELECT t.id, t.task_id, tk.status, tk.output_path, tk.process_json, tk.error, tk.input_json,
                 tk.created_at AS task_created_at, t.created_at
          FROM dice_roll_tasks t
-         JOIN tasks tk ON tk.id = t.task_id
+         JOIN jobs tk ON tk.id = t.task_id AND tk.kind = 'generate'
          WHERE t.roll_id = ?
          ORDER BY t.created_at DESC, t.rowid DESC`,
       )

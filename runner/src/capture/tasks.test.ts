@@ -87,11 +87,11 @@ test('list, resume and retry keep task state in sqlite', () => {
   assert.ok(task)
   assert.equal(listCaptureTasks(db).counts.download.pending, 1)
   db.prepare(
-    `UPDATE capture_tasks SET status = 'running', started_at = 0, attempts = 1 WHERE id = ?`,
+    `UPDATE jobs SET status = 'running', started_at = 0, attempts = 1 WHERE id = ?`,
   ).run(task.id)
   resumeCaptureTasks(db, 2_000)
   assert.equal(listCaptureTasks(db).counts.download.pending, 1)
-  db.prepare(`UPDATE capture_tasks SET status = 'failed', error = 'boom' WHERE id = ?`).run(
+  db.prepare(`UPDATE jobs SET status = 'failed', error = 'boom' WHERE id = ?`).run(
     task.id,
   )
   assert.equal(retryCaptureTask(db, task.id, 3_000).status, 'pending')

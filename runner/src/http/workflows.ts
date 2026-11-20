@@ -2,9 +2,9 @@ import type { Hono } from 'hono'
 
 import {
   isVersionId,
+  listTaskRows,
   revisionById,
   workflowByName,
-  type TaskRow,
   type WorkflowRow,
 } from '../db.ts'
 import { RunnerError } from '../errors.ts'
@@ -261,11 +261,11 @@ export function mountWorkflows(app: Hono, runner: Runner): void {
 
   app.get('/revisions/:id/tasks', (c) => {
     revisionById(runner.db, c.req.param('id'))
-    const rows = runner.db
-      .prepare(
-        'SELECT * FROM tasks WHERE head_revision_id = ? ORDER BY created_at',
-      )
-      .all(c.req.param('id')) as unknown as TaskRow[]
+    const rows = listTaskRows(
+      runner.db,
+      'head_revision_id = ? ORDER BY created_at',
+      c.req.param('id'),
+    )
     return c.json({ tasks: rows.map((row) => taskJson(runner.db, row)) })
   })
 }

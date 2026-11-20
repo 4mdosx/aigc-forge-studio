@@ -84,7 +84,7 @@ test('a chat keeps turns and does not create a task', async () => {
   assert.deepEqual(listed.models, ['writer', 'editor'])
   assert.equal(listed.templates, undefined)
   const tasks = runner.db
-    .prepare('SELECT COUNT(*) AS count FROM tasks')
+    .prepare(`SELECT COUNT(*) AS count FROM jobs WHERE kind = 'generate'`)
     .get() as {
     count: number
   }

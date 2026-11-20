@@ -56,13 +56,13 @@ test('removes llm tasks and the executor column from an existing database', () =
 
   const db = openDatabase(path)
   const names = (
-    db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>
+    db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>
   ).map((column) => column.name)
   assert.equal(names.includes('executor'), false)
   assert.equal(names.includes('output_text'), false)
   const rows = db
     .prepare(
-      'SELECT id, parent_task_id, output_path FROM tasks ORDER BY created_at',
+      `SELECT id, parent_task_id, output_path FROM jobs WHERE kind = 'generate' ORDER BY created_at`,
     )
     .all() as Array<{
     id: string
@@ -168,7 +168,7 @@ test('moves workflow adapters onto work, workflow, and version', () => {
     [revision.version]: { inputs: {} },
   })
   const task = db
-    .prepare('SELECT adapter_json FROM tasks WHERE id = ?')
+    .prepare(`SELECT adapter_json FROM jobs WHERE kind = 'generate' AND id = ?`)
     .get('task-1') as { adapter_json: string }
   assert.equal(task.adapter_json, '{"inputs":{}}')
   db.close()

@@ -1,6 +1,6 @@
 import type { Hono } from 'hono'
 
-import { taskById, type TaskRow } from '../db.ts'
+import { JOB_KIND, listTaskRows, taskById } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import { createTask } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
@@ -15,11 +15,10 @@ import { storedPaths } from '../task/records.ts'
 
 export function mountTasks(app: Hono, runner: Runner): void {
   app.get('/tasks', (c) => {
-    const rows = runner.db
-      .prepare(
-        `SELECT * FROM tasks WHERE status IN ('pending', 'running') ORDER BY created_at, rowid`,
-      )
-      .all() as unknown as TaskRow[]
+    const rows = listTaskRows(
+      runner.db,
+      `status IN ('pending', 'running') ORDER BY created_at, rowid`,
+    )
     return c.json({ tasks: rows.map((row) => taskJson(runner.db, row)) })
   })
 
@@ -56,9 +55,10 @@ export function mountTasks(app: Hono, runner: Runner): void {
   app.get('/trace', (c) => {
     const path = c.req.query('path')
     if (!path) throw new RunnerError('path query is required')
-    const rows = runner.db
-      .prepare(`SELECT * FROM tasks WHERE output_path IS NOT NULL ORDER BY created_at DESC, rowid DESC`)
-      .all() as unknown as TaskRow[]
+    const rows = listTaskRows(
+      runner.db,
+      `output_path IS NOT NULL ORDER BY created_at DESC, rowid DESC`,
+    )
     for (const row of rows) {
       const outputs = storedPaths(row).filter((p) => p.startsWith('output/'))
       if (!outputs.includes(path)) continue
@@ -84,13 +84,14 @@ export function mountTasks(app: Hono, runner: Runner): void {
 
   app.post('/tasks/:id/cancel', async (c) => {
     const task = taskById(runner.db, c.req.param('id'))
-    const now = runner.now().toISOString()
+    const now = runner.now().getTime()
     if (task.status === 'pending') {
       const updated = runner.db
         .prepare(
-          `UPDATE tasks SET status = 'cancelled', completed_at = ? WHERE id = ? AND status = 'pending'`,
+          `UPDATE jobs SET status = 'cancelled', finished_at = ?
+           WHERE id = ? AND kind = ? AND status = 'pending'`,
         )
-        .run(now, task.id)
+        .run(now, task.id, JOB_KIND.generate)
       if (updated.changes !== 1)
         throw new RunnerError('task is no longer pending')
       return c.json(taskJson(runner.db, taskById(runner.db, task.id)))
@@ -104,9 +105,10 @@ export function mountTasks(app: Hono, runner: Runner): void {
     }
     runner.db
       .prepare(
-        `UPDATE tasks SET status = 'cancelled', completed_at = ? WHERE id = ? AND status = 'running'`,
+        `UPDATE jobs SET status = 'cancelled', finished_at = ?
+         WHERE id = ? AND kind = ? AND status = 'running'`,
       )
-      .run(now, task.id)
+      .run(now, task.id, JOB_KIND.generate)
     return c.json(taskJson(runner.db, taskById(runner.db, task.id)))
   })
 }

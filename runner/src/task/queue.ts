@@ -10,7 +10,7 @@ import {
   type HistoryEntry,
 } from '../comfy/client.ts'
 import type { ChatClient } from '../chat/client.ts'
-import { taskById, type TaskRow } from '../db.ts'
+import { JOB_KIND, listTaskRows, taskById, type TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import type { Prompt } from '../workflow/graph.ts'
 import { expandPath, preparedPrompt, resultPaths, taskAdapterJson } from './records.ts'
@@ -31,11 +31,11 @@ export interface Runner {
 export function resume(runner: Runner): void {
   runner.db
     .prepare(
-      `UPDATE tasks
+      `UPDATE jobs
        SET status = 'pending', started_at = NULL, comfy_base_url = NULL
-       WHERE status = 'running' AND prompt_id IS NULL`,
+       WHERE kind = ? AND status = 'running' AND prompt_id IS NULL`,
     )
-    .run()
+    .run(JOB_KIND.generate)
 }
 
 export async function tick(runner: Runner): Promise<void> {
@@ -49,18 +49,16 @@ export async function tick(runner: Runner): Promise<void> {
 }
 
 async function settleComfy(runner: Runner): Promise<void> {
-  const running = runner.db
-    .prepare(`SELECT * FROM tasks WHERE status = 'running'`)
-    .all() as unknown as TaskRow[]
+  const running = listTaskRows(runner.db, `status = 'running'`)
   for (const task of running) {
     if (!task.prompt_id || !task.comfy_base_url || !task.started_at) {
       runner.db
         .prepare(
-          `UPDATE tasks
+          `UPDATE jobs
            SET status = 'pending', started_at = NULL, comfy_base_url = NULL, prompt_id = NULL
-           WHERE id = ? AND status = 'running'`,
+           WHERE id = ? AND kind = ? AND status = 'running'`,
         )
-        .run(task.id)
+        .run(task.id, JOB_KIND.generate)
       continue
     }
     if (expired(task.started_at, runner.timeoutMs, runner.now())) {
@@ -107,33 +105,27 @@ async function claimComfy(runner: Runner): Promise<void> {
     (
       runner.db
         .prepare(
-          `SELECT comfy_base_url FROM tasks
-           WHERE status = 'running' AND comfy_base_url IS NOT NULL`,
+          `SELECT comfy_base_url FROM jobs
+           WHERE kind = ? AND status = 'running' AND comfy_base_url IS NOT NULL`,
         )
-        .all() as unknown as Array<{ comfy_base_url: string }>
+        .all(JOB_KIND.generate) as unknown as Array<{ comfy_base_url: string }>
     ).map((row) => row.comfy_base_url),
   )
-  const pending = runner.db
-    .prepare(
-      `SELECT * FROM tasks
-       WHERE status = 'pending'
-       ORDER BY created_at, rowid`,
-    )
-    .all() as unknown as TaskRow[]
+  const pending = listTaskRows(runner.db, `status = 'pending' ORDER BY created_at, rowid`)
   let index = 0
   for (const client of runner.clients) {
     if (busy.has(client.baseURL)) continue
     const task = pending[index]
     index += 1
     if (!task) return
-    const started = runner.now().toISOString()
+    const started = runner.now().getTime()
     const claimed = runner.db
       .prepare(
-        `UPDATE tasks
+        `UPDATE jobs
          SET status = 'running', started_at = ?, comfy_base_url = ?
-         WHERE id = ? AND status = 'pending'`,
+         WHERE id = ? AND kind = ? AND status = 'pending'`,
       )
-      .run(started, client.baseURL, task.id)
+      .run(started, client.baseURL, task.id, JOB_KIND.generate)
     if (claimed.changes !== 1) continue
     try {
       const prompt = preparedPrompt(
@@ -144,9 +136,9 @@ async function claimComfy(runner: Runner): Promise<void> {
       const promptId = await client.submitPrompt(prompt)
       runner.db
         .prepare(
-          `UPDATE tasks SET prompt_id = ? WHERE id = ? AND status = 'running'`,
+          `UPDATE jobs SET prompt_id = ? WHERE id = ? AND kind = ? AND status = 'running'`,
         )
-        .run(promptId, task.id)
+        .run(promptId, task.id, JOB_KIND.generate)
     } catch (err) {
       const retry =
         err instanceof RunnerError && err.message.startsWith('cannot reach')
@@ -155,11 +147,11 @@ async function claimComfy(runner: Runner): Promise<void> {
       } else {
         runner.db
           .prepare(
-            `UPDATE tasks
+            `UPDATE jobs
              SET status = 'pending', started_at = NULL, comfy_base_url = NULL, prompt_id = NULL
-             WHERE id = ? AND status = 'running'`,
+             WHERE id = ? AND kind = ? AND status = 'running'`,
           )
-          .run(task.id)
+          .run(task.id, JOB_KIND.generate)
       }
     }
   }
@@ -177,18 +169,19 @@ function finish(
 ): void {
   runner.db
     .prepare(
-      `UPDATE tasks
+      `UPDATE jobs
        SET status = ?, error = ?, output_path = COALESCE(?, output_path),
-           process_json = COALESCE(?, process_json), completed_at = ?
-       WHERE id = ? AND status = 'running'`,
+           process_json = COALESCE(?, process_json), finished_at = ?
+       WHERE id = ? AND kind = ? AND status = 'running'`,
     )
     .run(
       status,
       extra.error ?? null,
       extra.outputPath ?? null,
       extra.processJson ?? null,
-      runner.now().toISOString(),
+      runner.now().getTime(),
       id,
+      JOB_KIND.generate,
     )
 }
 

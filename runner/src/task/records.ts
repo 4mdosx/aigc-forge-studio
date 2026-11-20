@@ -8,6 +8,7 @@ import {
 } from '../comfy/client.ts'
 import {
   branchOf,
+  JOB_KIND,
   revisionById,
   taskById,
   workflowByName,
@@ -79,12 +80,13 @@ export function createTask(
   const applied = applyAdapter(api, adapter, payload, randomSeed)
   const id = randomUUID()
   db.prepare(
-    `INSERT INTO tasks
-      (id, workflow_name, workflow_id, work_id, comfy_path, adapter_json, api_json,
-       head_revision_id, parent_task_id, task, input_json, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+    `INSERT INTO jobs
+      (id, kind, workflow_name, workflow_id, work_id, comfy_path, adapter_json, api_json,
+       head_revision_id, parent_task_id, task, input_json, status, created_at, next_run_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0)`,
   ).run(
     id,
+    JOB_KIND.generate,
     workflow.name,
     workflow.id,
     work.id,
@@ -95,7 +97,7 @@ export function createTask(
     input.parentTaskId ?? null,
     task,
     JSON.stringify(applied.input),
-    now.toISOString(),
+    now.getTime(),
   )
   return taskById(db, id)
 }

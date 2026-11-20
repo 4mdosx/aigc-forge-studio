@@ -35,6 +35,54 @@ const taskColumns = `
   FOREIGN KEY (parent_task_id) REFERENCES tasks(id)
 `
 
+// 统一任务池：生成、素材预处理、下载、去背共用一张表，kind 区分。
+// 时间戳一律 INTEGER 毫秒；生成任务对外序列化时转回 ISO，API 形状不变。
+const jobColumns = `
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  workflow_name TEXT,
+  workflow_id TEXT,
+  work_id TEXT,
+  comfy_path TEXT,
+  adapter_json TEXT,
+  api_json TEXT,
+  head_revision_id TEXT,
+  parent_task_id TEXT,
+  task TEXT,
+  input_json TEXT,
+  prompt_id TEXT,
+  comfy_base_url TEXT,
+  output_path TEXT,
+  process_json TEXT,
+  asset_id TEXT,
+  step TEXT,
+  dedupe_key TEXT,
+  url TEXT NOT NULL DEFAULT '',
+  img_url TEXT NOT NULL DEFAULT '',
+  live_id TEXT,
+  label TEXT NOT NULL DEFAULT '',
+  result TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 5,
+  next_run_at INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER,
+  CHECK (kind IN ('generate', 'capture.process', 'download', 'nobg')),
+  CHECK (status IN (
+    'pending', 'running', 'completed', 'failed', 'timeout', 'cancelled', 'done', 'skipped'
+  ))
+`
+
+export const JOB_KIND = {
+  generate: 'generate',
+  process: 'capture.process',
+  download: 'download',
+  nobg: 'nobg',
+} as const
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS works (
   id TEXT PRIMARY KEY,
@@ -196,25 +244,10 @@ CREATE TABLE IF NOT EXISTS image_assets (
 
 CREATE INDEX IF NOT EXISTS image_assets_by_status ON image_assets (status, created_at);
 
-CREATE TABLE IF NOT EXISTS jobs (
-  id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,
-  asset_id TEXT NOT NULL,
-  status TEXT NOT NULL,
-  step TEXT NOT NULL,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  max_attempts INTEGER NOT NULL DEFAULT 5,
-  next_run_at INTEGER NOT NULL,
-  error TEXT,
-  created_at INTEGER NOT NULL,
-  started_at INTEGER,
-  finished_at INTEGER,
-  UNIQUE (kind, asset_id),
-  CHECK (status IN ('pending', 'running', 'failed', 'done')),
-  CHECK (step IN ('prepare', 'tag', 'embed'))
-);
+-- 通用任务池。tasks / capture_tasks 是历史表，仅 migrate 阶段读取后并入 jobs。
+CREATE TABLE IF NOT EXISTS jobs (${jobColumns});
 
-CREATE INDEX IF NOT EXISTS jobs_by_ready ON jobs (status, next_run_at, created_at);
+-- jobs 的索引在 unifyJobTables 之后创建：旧库的 jobs 表此时还没有新列。
 
 -- 采集页的两个前台队列：下载链接和移除背景。浏览器只发起和查看，进度在此表。
 CREATE TABLE IF NOT EXISTS capture_tasks (
@@ -356,6 +389,182 @@ function migrate(db: DatabaseSync): void {
   addColumn(db, 'image_assets', 'nobg_height', 'INTEGER')
   seedRollConfig(db)
   seedSafetyMode(db)
+  unifyJobTables(db)
+}
+
+// 三张任务表归一到 jobs。放在所有历史迁移之后：那些迁移仍以 tasks 为输入。
+// 生成任务的 ISO 时间戳在这里换算成毫秒，序列化层再按 kind 转回外部形状。
+function unifyJobTables(db: DatabaseSync): void {
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+    .all() as Array<{ name: string }>
+  const has = (name: string) => tables.some((row) => row.name === name)
+  const jobsColumns = db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>
+  if (!has('tasks') && !has('capture_tasks') &&
+      jobsColumns.some((column) => column.name === 'workflow_name')) {
+    createJobIndexes(db)
+    return
+  }
+
+  const hasUnified = jobsColumns.some((column) => column.name === 'workflow_name')
+  // SCHEMA 会在新库里建出空的历史表；空表直接丢弃，不重建 jobs。
+  const countOf = (table: string): number => {
+    if (!has(table)) return 0
+    return (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
+  }
+  if (hasUnified && countOf('tasks') === 0 && countOf('capture_tasks') === 0) {
+    db.exec('DROP TABLE IF EXISTS tasks')
+    db.exec('DROP TABLE IF EXISTS capture_tasks')
+    createJobIndexes(db)
+    return
+  }
+  const oldJobs = hasUnified
+    ? []
+    : (db.prepare('SELECT * FROM jobs').all() as Array<Record<string, unknown>>)
+  const oldTasks = countOf('tasks')
+    ? (db.prepare('SELECT * FROM tasks').all() as Array<Record<string, unknown>>)
+    : []
+  const oldCapture = countOf('capture_tasks')
+    ? (db.prepare('SELECT * FROM capture_tasks').all() as Array<Record<string, unknown>>)
+    : []
+  // 迁移只允许数据变多：现有 jobs 若有行，必须有旧表数据可搬，否则拒绝重建。
+  const currentJobs = hasUnified
+    ? (db.prepare('SELECT COUNT(*) AS n FROM jobs').get() as { n: number }).n
+    : 0
+  if (currentJobs > 0 && oldJobs.length + oldTasks.length + oldCapture.length === 0) {
+    throw new RunnerError('refusing job migration: non-empty jobs with no source tables')
+  }
+
+  const ms = (value: unknown): number | null => {
+    if (value === null || value === undefined || value === '') return null
+    if (typeof value === 'number') return value
+    const parsed = Date.parse(String(value))
+    return Number.isNaN(parsed) ? null : parsed
+  }
+  const str = (value: unknown): string | null =>
+    value === null || value === undefined ? null : String(value)
+
+  db.exec('PRAGMA foreign_keys = OFF')
+  try {
+    transaction(db, () => {
+      db.exec('DROP TABLE IF EXISTS jobs_unified')
+      db.exec(`CREATE TABLE jobs_unified (${jobColumns})`)
+      const insert = db.prepare(`
+        INSERT INTO jobs_unified (
+          id, kind, status, workflow_name, workflow_id, work_id, comfy_path,
+          adapter_json, api_json, head_revision_id, parent_task_id, task, input_json,
+          prompt_id, comfy_base_url, output_path, process_json, asset_id, step,
+          dedupe_key, url, img_url, live_id, label, result, attempts, max_attempts,
+          next_run_at, error, created_at, started_at, finished_at
+        ) VALUES (
+          @id, @kind, @status, @workflow_name, @workflow_id, @work_id, @comfy_path,
+          @adapter_json, @api_json, @head_revision_id, @parent_task_id, @task, @input_json,
+          @prompt_id, @comfy_base_url, @output_path, @process_json, @asset_id, @step,
+          @dedupe_key, @url, @img_url, @live_id, @label, @result, @attempts, @max_attempts,
+          @next_run_at, @error, @created_at, @started_at, @finished_at
+        )
+      `)
+      const empty = {
+        workflow_name: null, workflow_id: null, work_id: null, comfy_path: null,
+        adapter_json: null, api_json: null, head_revision_id: null, parent_task_id: null,
+        task: null, input_json: null, prompt_id: null, comfy_base_url: null,
+        output_path: null, process_json: null, asset_id: null, step: null,
+        dedupe_key: null, url: '', img_url: '', live_id: null, label: '', result: null,
+      }
+      for (const row of oldJobs) {
+        insert.run({
+          ...empty,
+          id: str(row.id),
+          kind: JOB_KIND.process,
+          status: str(row.status),
+          attempts: Number(row.attempts ?? 0),
+          max_attempts: Number(row.max_attempts ?? 5),
+          next_run_at: Number(row.next_run_at ?? 0),
+          error: str(row.error),
+          asset_id: str(row.asset_id),
+          step: str(row.step),
+          created_at: Number(row.created_at ?? 0),
+          started_at: ms(row.started_at),
+          finished_at: ms(row.finished_at),
+        })
+      }
+      for (const row of oldTasks) {
+        insert.run({
+          ...empty,
+          id: str(row.id),
+          kind: JOB_KIND.generate,
+          status: str(row.status),
+          workflow_name: str(row.workflow_name),
+          workflow_id: str(row.workflow_id),
+          work_id: str(row.work_id),
+          comfy_path: str(row.comfy_path),
+          adapter_json: str(row.adapter_json),
+          api_json: str(row.api_json),
+          head_revision_id: str(row.head_revision_id),
+          parent_task_id: str(row.parent_task_id),
+          task: str(row.task),
+          input_json: str(row.input_json ?? '{}'),
+          prompt_id: str(row.prompt_id),
+          comfy_base_url: str(row.comfy_base_url),
+          output_path: str(row.output_path),
+          process_json: str(row.process_json),
+          attempts: 0,
+          max_attempts: 5,
+          next_run_at: 0,
+          error: str(row.error),
+          created_at: ms(row.created_at) ?? 0,
+          started_at: ms(row.started_at),
+          finished_at: ms(row.completed_at),
+        })
+      }
+      for (const row of oldCapture) {
+        insert.run({
+          ...empty,
+          id: str(row.id),
+          kind: str(row.kind),
+          status: str(row.status),
+          dedupe_key: str(row.dedupe_key ?? ''),
+          url: str(row.url ?? ''),
+          img_url: str(row.img_url ?? ''),
+          asset_id: str(row.asset_id),
+          live_id: str(row.live_id),
+          label: str(row.label ?? ''),
+          result: str(row.result),
+          attempts: Number(row.attempts ?? 0),
+          max_attempts: Number(row.max_attempts ?? 3),
+          next_run_at: Number(row.next_run_at ?? 0),
+          error: str(row.error),
+          created_at: Number(row.created_at ?? 0),
+          started_at: ms(row.started_at),
+          finished_at: ms(row.finished_at),
+        })
+      }
+      const migrated = (
+        db.prepare('SELECT COUNT(*) AS n FROM jobs_unified').get() as { n: number }
+      ).n
+      const expected = oldJobs.length + oldTasks.length + oldCapture.length
+      if (migrated < expected) {
+        throw new RunnerError(
+          `refusing job migration: wrote ${migrated} of ${expected} source rows`,
+        )
+      }
+      db.exec('DROP TABLE IF EXISTS jobs')
+      db.exec('ALTER TABLE jobs_unified RENAME TO jobs')
+      db.exec('DROP TABLE IF EXISTS tasks')
+      db.exec('DROP TABLE IF EXISTS capture_tasks')
+      createJobIndexes(db)
+    })
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON')
+  }
+}
+
+function createJobIndexes(db: DatabaseSync): void {
+  db.exec(`CREATE INDEX IF NOT EXISTS jobs_by_ready ON jobs (kind, status, next_run_at, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS jobs_by_status ON jobs (status, created_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS jobs_by_asset ON jobs (asset_id, kind)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS jobs_by_revision ON jobs (head_revision_id)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS jobs_by_key ON jobs (kind, dedupe_key, status)`)
 }
 
 // dice_fields 曾用保留字 values 作列名，后升 candidates；v3 = tiers JSON 列。
@@ -893,9 +1102,66 @@ export function branchOf(
   return row
 }
 
+type JobRowRaw = Record<string, unknown> & {
+  created_at: number | string
+  started_at: number | string | null
+  finished_at: number | string | null
+}
+
+function isoOf(value: number | string | null | undefined): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string') return value
+  return new Date(value).toISOString()
+}
+
+// 生成任务对外仍用 ISO 时间戳，与前端 Task 类型保持一致。
+export function taskRowOf(row: JobRowRaw): TaskRow {
+  return {
+    id: String(row.id),
+    workflow_name: (row.workflow_name as string | null) ?? null,
+    workflow_id: (row.workflow_id as string | null) ?? null,
+    work_id: (row.work_id as string | null) ?? null,
+    comfy_path: (row.comfy_path as string | null) ?? null,
+    adapter_json: (row.adapter_json as string | null) ?? null,
+    api_json: (row.api_json as string | null) ?? null,
+    head_revision_id: (row.head_revision_id as string | null) ?? null,
+    parent_task_id: (row.parent_task_id as string | null) ?? null,
+    task: (row.task as string | null) ?? '',
+    input_json: (row.input_json as string | null) ?? '{}',
+    status: String(row.status),
+    prompt_id: (row.prompt_id as string | null) ?? null,
+    comfy_base_url: (row.comfy_base_url as string | null) ?? null,
+    error: (row.error as string | null) ?? null,
+    output_path: (row.output_path as string | null) ?? null,
+    process_json: (row.process_json as string | null) ?? null,
+    created_at: isoOf(row.created_at) ?? '',
+    started_at: isoOf(row.started_at),
+    completed_at: isoOf(row.finished_at),
+  }
+}
+
+export function jobById(db: DatabaseSync, id: string): JobRowRaw | null {
+  return (
+    (db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as JobRowRaw | undefined) ?? null
+  )
+}
+
 export function taskById(db: DatabaseSync, id: string): TaskRow {
-  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as
-    TaskRow | undefined
-  if (!row) throw new RunnerError(`task ${id} not found`, 404)
-  return row
+  const row = jobById(db, id)
+  if (!row || row.kind !== JOB_KIND.generate) {
+    throw new RunnerError(`task ${id} not found`, 404)
+  }
+  return taskRowOf(row)
+}
+
+// 生成任务列表统一从这里读，保证 kind 过滤与时间戳换算只有一处实现。
+export function listTaskRows(
+  db: DatabaseSync,
+  where: string,
+  ...args: Array<string | number | null>
+): TaskRow[] {
+  const rows = db
+    .prepare(`SELECT * FROM jobs WHERE kind = '${JOB_KIND.generate}' AND ${where}`)
+    .all(...args)
+  return (rows as JobRowRaw[]).map(taskRowOf)
 }
