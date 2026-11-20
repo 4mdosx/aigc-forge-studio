@@ -159,16 +159,18 @@ function assetWhere(query: AssetListQuery): { sql: string; args: Array<string | 
   const clauses = ['1 = 1']
   const args: Array<string | number> = []
   if (query.statuses.length > 0) {
-    clauses.push(`status IN (${query.statuses.map(() => '?').join(', ')})`)
+    clauses.push(`image_assets.status IN (${query.statuses.map(() => '?').join(', ')})`)
     args.push(...query.statuses)
   }
   if (query.ratings.length > 0) {
-    clauses.push(`rating IN (${query.ratings.map(() => '?').join(', ')})`)
+    clauses.push(`image_assets.rating IN (${query.ratings.map(() => '?').join(', ')})`)
     args.push(...query.ratings)
   }
-  if (query.safe) clauses.push(`rating NOT IN ('questionable', 'explicit')`)
+  if (query.safe) clauses.push(`image_assets.rating NOT IN ('questionable', 'explicit')`)
   if (query.datasetId) {
-    clauses.push('id IN (SELECT asset_id FROM dataset_assets WHERE dataset_id = ?)')
+    clauses.push(
+      'image_assets.id IN (SELECT asset_id FROM dataset_assets WHERE dataset_id = ?)',
+    )
     args.push(query.datasetId)
   }
   for (const tag of query.tags) {

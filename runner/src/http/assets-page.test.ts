@@ -64,6 +64,19 @@ test('capture assets page by offset and size', async () => {
     ],
   })
 
+  runner.db
+    .prepare('INSERT INTO datasets (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)')
+    .run('set-1', 'pose-set', 1, 1)
+  runner.db
+    .prepare('INSERT INTO dataset_assets (dataset_id, asset_id, added_at) VALUES (?, ?, ?)')
+    .run('set-1', 'old', 1)
+  const datasetTags = await app.request('/capture/assets/tags?dataset=set-1')
+  assert.equal(datasetTags.status, 200)
+  assert.deepEqual(
+    (await datasetTags.json()) as { tags: Array<{ tag: string; count: number }> },
+    { tags: [{ tag: 'pose', count: 1 }] },
+  )
+
   const lookup = await app.request('/capture/assets/lookup', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
