@@ -1,0 +1,61 @@
+{
+  "_doc": "train_animagine.mjs 的训练 profile。只写与 runner STABLE_PRESET 不同的字段，其余继承。runner 会把请求体 merge 到 preset 上：{...STABLE_PRESET, ...body}。继承档 = resolution 1024 / batchSize 1 / dim128 alpha32 / unetLr 4e-4 / TE lr 5e-5 / constant / warmup 100 / saveEveryNEpochs 1 / clipSkip 2 / minSnrGamma 5 / sdpa / unetOnly / sdxl / TE cache 开 / shuffle 关 / keepTokens 0。cacheTextEncoderOutputs 与 shuffleCaption 互斥，别同时开。",
+  "_experiment": "见 /Users/token/workspace/AIGC/research/style-lora-multiscene-experiment.md。曝光次数 = numRepeats × maxTrainEpochs，安全区 15-20。",
+  "profiles": {
+    "seed": {
+      "desc": "v1 种子池：50 图（40-60），10×2 = 20 曝光/图，约 1000 step / 35min",
+      "expectImages": [40, 60],
+      "params": {
+        "numRepeats": 10,
+        "maxTrainEpochs": 2,
+        "networkDim": 128,
+        "networkAlpha": 32,
+        "keepTokens": 1
+      }
+    },
+    "refine-r1": {
+      "desc": "回流 R1：65 图（种子 50 + 15 精选），8×2 = 16 曝光/图，约 1040 step / 35min",
+      "expectImages": [60, 70],
+      "params": {
+        "numRepeats": 8,
+        "maxTrainEpochs": 2,
+        "networkDim": 128,
+        "networkAlpha": 32,
+        "keepTokens": 1
+      }
+    },
+    "refine-r2": {
+      "desc": "回流 R2：75 图（累计，风格锚不动），6×2 = 12 曝光/图，约 900 step / 30min",
+      "expectImages": [70, 80],
+      "params": {
+        "numRepeats": 6,
+        "maxTrainEpochs": 2,
+        "networkDim": 128,
+        "networkAlpha": 32,
+        "keepTokens": 1
+      }
+    },
+    "scene": {
+      "desc": "场景专属 LoRA：50 图（共享锚 20 + 场景专属 30），10×2 = 20 曝光/图，约 1000 step / 35min",
+      "expectImages": [40, 60],
+      "params": {
+        "numRepeats": 10,
+        "maxTrainEpochs": 2,
+        "networkDim": 128,
+        "networkAlpha": 32,
+        "keepTokens": 1
+      }
+    },
+    "smoke": {
+      "desc": "冒烟验证：2×1 = 2 曝光/图，dim32，只验证链路与产物，不用于交付",
+      "expectImages": [1, 999],
+      "params": {
+        "numRepeats": 2,
+        "maxTrainEpochs": 1,
+        "networkDim": 32,
+        "networkAlpha": 8,
+        "saveEveryNEpochs": 1
+      }
+    }
+  }
+}

@@ -19,7 +19,7 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const OUTDIR = resolve(REPO, '../experiments/runs/AX4Z-LORA-VERIFY-20261120')
 const WORK = 'baseline'
 const WF = 'baseline_ax4z_lora_v1'
-const VER = 'y4jl7y4f'
+const VER = 'ot9sw6zt'
 
 const args = process.argv.slice(2)
 const argOf = (k, d) => { const i = args.indexOf(`--${k}`); return i > 0 ? args[i + 1] : d }
@@ -108,14 +108,15 @@ if (!hasZero) throw new Error(`ComfyUI 看不到 animagine-xl-4.0-zero，现有:
 
 const loInfo = await (await fetch(`${COMFY}/object_info/LoraLoader`)).json()
 const visible = loInfo.LoraLoader.input.required.lora_name[0]
-let baseFile = 'None'
-if (!visible.includes('None')) {
-  baseFile = LORAS[1].file
-  if (!visible.includes(baseFile)) throw new Error(`LoRA 不可见: ${baseFile}`)
-  LORAS[0].file = baseFile
+let baseIsNone = visible.includes('None')
+if (!baseIsNone) {
+  if (!visible.includes(LORAS[1].file)) throw new Error(`LoRA 不可见: ${LORAS[1].file}`)
+  LORAS[0].file = LORAS[1].file
 }
+// base 列无 None 时用 l600 槽 + strength 0 等效裸模；记录进来供拼图标注。
+LORAS[0].label = baseIsNone ? '裸模 Zero' : '裸模 Zero (l600@0)'
 console.log(`ComfyUI OK：ckpt=${ckpts.filter((n) => n.includes('animagine')).join(', ')}`)
-console.log(`LoRA 可见 ${visible.filter((n) => n.includes('test-boot')).length}/3，裸模槽=${LORAS[0].file}`)
+console.log(`LoRA 可见 ${visible.filter((n) => n.includes('test-boot')).length}/3，裸模槽=${LORAS[0].file}${baseIsNone ? '' : ' @strength 0'}`)
 
 mkdirSync(OUTDIR, { recursive: true })
 const results = []
@@ -125,7 +126,7 @@ for (const [scene, body] of Object.entries(SCENES)) {
   mkdirSync(dir, { recursive: true })
   for (const l of LORAS) {
     if (ONLY && l.col !== ONLY) continue
-    const strength = l.col === 'base' && LORAS[0].file === 'None' ? 0 : STRENGTH
+    const strength = l.col === 'base' ? 0 : STRENGTH
     for (const seed of SEEDS) {
       const dst = join(dir, `${l.col}-s${seed}.png`)
       if (existsSync(dst)) { console.log(`skip ${scene}/${l.col}/s${seed}`); continue }

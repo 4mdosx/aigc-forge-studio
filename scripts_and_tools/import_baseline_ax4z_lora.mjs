@@ -18,7 +18,7 @@ const COMFY = 'http://192.168.8.136:8188'
 const NAME = 'baseline_ax4z_lora_v1'
 const VERSION = 'svwdm8q9'
 const CKPT = 'animagine-xl-4.0-zero.safetensors'
-const LORA_DEFAULT = 'style-v1-formal-000002.safetensors'
+const LORA_DEFAULT = 'test-boot-az-261119-174.safetensors'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const db = new DatabaseSync(join(repoRoot, 'data', 'runner.sqlite'), { readOnly: true })
@@ -62,6 +62,11 @@ const lora = {
   inputs: [
     { localized_name: 'model', name: 'model', type: 'MODEL', link: null },
     { localized_name: 'clip', name: 'clip', type: 'CLIP', link: null },
+    // widget 槽必须显式声明：runner 的 ui→api 抽取只遍历 inputs，
+    // 缺这三条会导致 api_json 没有 lora_name/strength_*，adapter 写入即炸 "no input lora_name"。
+    { localized_name: 'lora_name', name: 'lora_name', type: 'COMBO', widget: { name: 'lora_name' }, link: null },
+    { localized_name: 'strength_model', name: 'strength_model', type: 'FLOAT', widget: { name: 'strength_model' }, link: null },
+    { localized_name: 'strength_clip', name: 'strength_clip', type: 'FLOAT', widget: { name: 'strength_clip' }, link: null },
   ],
   outputs: [
     { localized_name: 'MODEL', name: 'MODEL', type: 'MODEL', links: [] },

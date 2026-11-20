@@ -23,8 +23,10 @@ node scripts_and_tools/import_image_assets.mjs <image-assets.tar.gz> [--dry-run]
 ## 数据集 → 训练集 → 训练（Animagine XL 4.0 Zero）
 
 ```
-node scripts_and_tools/export_dataset.mjs --dataset test-boot --trigger ohwx --strip-characters
-node scripts_and_tools/train_animagine.mjs --dataset test-boot --trigger ohwx
+node scripts_and_tools/export_dataset.mjs --dataset style-fullbody --trigger zzstyle --strip-characters
+node scripts_and_tools/train_animagine.mjs --list-profiles
+node scripts_and_tools/train_animagine.mjs --dataset style-fullbody --profile seed --trigger zzstyle --dry-run
+node scripts_and_tools/train_animagine.mjs --dataset style-fullbody --profile seed --trigger zzstyle
 ```
 
 `export_dataset.mjs` 走 runner `/datasets` → assetIds → `/capture/assets/:id`，取 processed 图和 WD14 tags：
@@ -34,7 +36,19 @@ node scripts_and_tools/train_animagine.mjs --dataset test-boot --trigger ohwx
 
 默认跳过 questionable/explicit，落到 `data/training-export/<name>/img/<id>.png + <id>.txt`。`--dry-run` 可预览。
 
-`train_animagine.mjs` 把上述目录推到训练机 `C:\AIGC\training\<name>\img`，再以 `checkpoints/animagine-xl-4.0-zero.safetensors` 为底模建训练 job。传了 `--trigger` 就设 `keepTokens: 1` 防止触发词被 shuffle。
+`train_animagine.mjs` 把上述目录推到训练机 `C:\AIGC\training\<name>\img`，再以 `checkpoints/animagine-xl-4.0-zero.safetensors` 为底模建训练 job。用 `--profile` 选训练参数组，配置在 `scripts_and_tools/train_profiles.json`：
+
+| profile | 图数 | repeats × epochs | 曝光/图 | 用途 |
+|---|---|---|---|---|
+| `seed` | 50（40–60） | 10 × 2 | 20 | v1 种子池 |
+| `refine-r1` | 65 | 8 × 2 | 16 | 回流第一轮 |
+| `refine-r2` | 75 | 6 × 2 | 12 | 回流第二轮 |
+| `scene` | 50 | 10 × 2 | 20 | 场景专属 LoRA |
+| `smoke` | 任意 | 2 × 1 | 2 | 链路冒烟，不交付 |
+
+profile 只写与 runner STABLE_PRESET 的差异项，其余继承。`--set key=value` 覆盖任意训练字段（可重复，如 `--set unetLr=0.0002`）；传 `--trigger` 强制 `keepTokens=1`。`--dry-run` 打印最终参数与 step 估算就退出，不上传、不建 job；图数偏离 profile 预期会警告。参数白名单对应 `trainer/src/train/toml.ts` 字段，拼错立刻报错。`cacheTextEncoderOutputs` 与 `shuffleCaption` 互斥——要开 shuffle 得同时 `--set cacheTextEncoderOutputs=false`。
+
+实验计划见 `/Users/token/workspace/AIGC/research/style-lora-multiscene-experiment.md`。曝光次数（`repeats × epochs`）才是过拟合旋钮，安全区 15–20；别靠堆 step 拉强度。
 
 **建 job 必须走 runner `/train/jobs`（127.0.0.1:8787，自动套 STABLE_PRESET），不要直连 trainer :8788**。trainer 原始默认档 = `cacheTextEncoderOutputs=false` + `shuffleCaption=true` + `maxTrainEpochs=10`，实测 14.4 s/it；runner 快档 = TE cache 开 / shuffle 关 / 3 epochs，实测 1.99 s/it（330 step，11 分钟），7 倍差。启动前会检查底模下载状态；没下完会警告。
 
@@ -47,4 +61,4 @@ node scripts_and_tools/verify_ax4z_lora.mjs --dry-run
 node scripts_and_tools/verify_ax4z_lora.mjs [--only l600] [--seed 3001]
 ```
 
-前置：ComfyUI :8188 在线；checkpoint 已在 `C:\AIGC\models\loras\`。走 runner `baseline` work → `baseline_ax4z_lora_v1@y4jl7y4f`（无 ControlNet），正负向取 `config/roll_config` 的 Animagine 官方词。4 列（裸模 / 110 / 220 / 330 step）× 2 场景（无装备词 / 明确 boots 词）× 2 seed = 16 张，落到 `experiments/runs/AX4Z-LORA-VERIFY-20261120/`。已有图跳过，可断点续跑。`base` 列用 ComfyUI 内建 `None` 空槽 + strength 0；无 `None` 时降级为首只 LoRA + strength 0。
+前置：ComfyUI :8188 在线；checkpoint 已在 `C:\AIGC\models\loras\`。走 runner `baseline` work → `baseline_ax4z_lora_v1@ot9sw6zt`（无 ControlNet），正负向取 `config/roll_config` 的 Animagine 官方词。4 列（裸模 / 110 / 220 / 330 step）× 2 场景（无装备词 / 明确 boots 词）× 2 seed = 16 张，落到 `experiments/runs/AX4Z-LORA-VERIFY-20261120/`。已有图跳过，可断点续跑。ComfyUI 的 LoraLoader 没有 `None` 空槽，`base` 列用首只 LoRA + strength 0 等效裸模。
