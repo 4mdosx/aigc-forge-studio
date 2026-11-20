@@ -14,19 +14,21 @@ import { fail, messageOf, notify } from '@/lib/notify'
 // role.json 的词只作快速输入；已经由角色或 pose 写入的词在候选里不可再选。
 // 生成按角色、pose、input 合成 CreativeIntent。
 
-const FORM_KEYS = ['character', 'pose', 'input'] as const
+const FORM_KEYS = ['character', 'pose', 'reference', 'input'] as const
 
 type FormKey = (typeof FORM_KEYS)[number]
 
 const FIELD_LABEL: Record<FormKey, string> = {
   character: '角色',
   pose: 'pose',
+  reference: '参考图',
   input: 'input',
 }
 
 interface FieldForm {
   pose: string
   character: string
+  reference: string
   input: string
 }
 
@@ -132,7 +134,7 @@ function sectionsOf(role: unknown): RoleSection[] {
 }
 
 function emptyForm(): FieldForm {
-  return { pose: '', character: '', input: '' }
+  return { pose: '', character: '', reference: '', input: '' }
 }
 
 function formsOf(sections: RoleSection[]): Record<string, FieldForm> {
@@ -352,7 +354,7 @@ function tokensOf(text: string, ordered: string[]): string[] {
 function mergeSlots(form: FieldForm, ordered: string[] = []): string[] {
   const seen = new Set<string>()
   const out: string[] = []
-  for (const part of [form.character, form.pose, form.input]) {
+  for (const part of [form.character, form.pose, form.reference, form.input]) {
     for (const tag of tokensOf(part, ordered)) {
       const key = normTag(tag)
       if (key === '' || seen.has(key)) continue
@@ -470,10 +472,34 @@ function formsFromIntent(sections: RoleSection[], fields: unknown): Record<strin
     forms[section.name] = {
       pose: '',
       character: '',
+      reference: '',
       input: joinTags([...ordered.filter((tag) => known.has(tag)), ...extras]),
     }
   }
   return forms
+}
+
+// 灵感记录带的带来源 forms：各槽原样还原，实现「可逆向重新编辑」。
+// 旧记录没有 forms（空）时返回 null，调用方回退到 formsFromIntent（按 fields 拆词）。
+function formsFromStored(sections: RoleSection[], raw: unknown): Record<string, FieldForm> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const stored = raw as Record<string, unknown>
+  const known = new Set(sections.map((section) => section.name))
+  if (!Object.keys(stored).some((key) => known.has(key))) return null
+  const next = formsOf(sections)
+  for (const section of sections) {
+    const value = stored[section.name]
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const part = value as Record<string, unknown>
+    const text = (key: FormKey): string => (typeof part[key] === 'string' ? (part[key] as string) : '')
+    next[section.name] = {
+      character: text('character'),
+      pose: text('pose'),
+      reference: text('reference'),
+      input: text('input'),
+    }
+  }
+  return next
 }
 
 interface DiceTemplate {
@@ -483,6 +509,7 @@ interface DiceTemplate {
   poseName: string | null
   poseId: string | null
   fields: CreativeIntent
+  forms?: unknown
 }
 
 function writeSlot(
@@ -536,12 +563,13 @@ export function DiceBoard({ role }: { role: unknown }) {
     void (async () => {
       try {
         const body = await api<{
-          roll: { fields: unknown; poseId: string | null }
+          roll: { fields: unknown; forms?: unknown; poseId: string | null }
         }>(`dice/rolls/${rollId}`)
         if (cancelled || appliedRoll.current === rollId) return
         appliedRoll.current = rollId
         characterRequest.current += 1
-        const next = formsFromIntent(sections, body.roll.fields)
+        // 优先带来源的 forms（可逐槽逆编辑）；旧记录无 forms 时回退按 fields 拆词。
+        const next = formsFromStored(sections, body.roll.forms) ?? formsFromIntent(sections, body.roll.fields)
         formsRef.current = next
         setCharacterSlug('')
         setCharacterNote('')
@@ -695,6 +723,7 @@ export function DiceBoard({ role }: { role: unknown }) {
           method: 'POST',
           body: JSON.stringify({
             fields: intent,
+            forms,
             prompt: text.positive,
             negative: text.negative,
             poseName: selectedPose?.poseName ?? null,
@@ -725,6 +754,7 @@ export function DiceBoard({ role }: { role: unknown }) {
           method: 'POST',
           body: JSON.stringify({
             fields: intent,
+            forms,
             prompt: text.positive,
             negative: text.negative,
             poseName: selectedPose.poseName,
@@ -753,7 +783,7 @@ export function DiceBoard({ role }: { role: unknown }) {
       const pose = template.poseId
         ? poses.find((item) => item.id === template.poseId)
         : poses.find((item) => item.poseName === template.poseName)
-      const next = formsFromIntent(sections, template.fields)
+      const next = formsFromStored(sections, template.forms) ?? formsFromIntent(sections, template.fields)
       formsRef.current = next
       setTemplateId(template.id)
       setCharacterSlug(template.character ?? '')
@@ -785,6 +815,7 @@ export function DiceBoard({ role }: { role: unknown }) {
       poseName: selectedPose?.poseName ?? null,
       poseId: selectedPose?.id ?? null,
       fields: intent,
+      forms,
     }
   }, [sections, forms, characterSlug, selectedPose])
 
@@ -889,6 +920,7 @@ export function DiceBoard({ role }: { role: unknown }) {
         const taken = new Set([
           ...selectedTags(form.character, ordered),
           ...selectedTags(form.pose, ordered),
+          ...selectedTags(form.reference, ordered),
         ])
         if (taken.has(tag)) return cur
         const selected = selectedTags(form.input, ordered).includes(tag)
@@ -909,6 +941,7 @@ export function DiceBoard({ role }: { role: unknown }) {
         const blocked = new Set([
           ...selectedTags(form.character, ordered),
           ...selectedTags(form.pose, ordered),
+          ...selectedTags(form.reference, ordered),
           ...selectedTags(form.input, ordered),
         ])
         const pool = tags.filter((tag) => !blocked.has(tag))
@@ -1124,6 +1157,7 @@ export function DiceBoard({ role }: { role: unknown }) {
         const locked = new Set([
           ...selectedTags(form.character, ordered),
           ...selectedTags(form.pose, ordered),
+          ...selectedTags(form.reference, ordered),
         ])
         return (
           <section className="panel" key={section.name}>

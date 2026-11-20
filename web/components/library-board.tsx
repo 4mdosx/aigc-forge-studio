@@ -433,6 +433,7 @@ function AssetLibrary() {
       <ImageDetail
         preview
         browse
+        toDice
         nearest={false}
         galleryIds={galleryIds}
         loaded={images.loaded}

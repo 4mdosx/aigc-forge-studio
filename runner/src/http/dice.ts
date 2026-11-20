@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { RunnerError } from '../errors.ts'
 import { DEFAULT_DICE_FIELDS, transaction } from '../db.ts'
 import { joinPrompt, readRollConfig } from '../rollConfig.ts'
+import { compileRolePool, tagsToIntent } from '../tag/tags2intent.ts'
 import { createTask, storedPaths } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
 import { jsonObject } from './request.ts'
@@ -97,6 +98,20 @@ function insertRows(
   }
 }
 
+// 带来源的字段结构：{ section: { character, pose, reference, input } }。
+// 旧 roll 没有 forms_json（空串/旧行）时返回空对象，前端回退到按 fields 拆词。
+function parseForms(raw: string | undefined | null): Record<string, unknown> {
+  if (!raw) return {}
+  try {
+    const value: unknown = JSON.parse(raw)
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {}
+  } catch {
+    return {}
+  }
+}
+
 export function mountDice(app: Hono, runner: Runner): void {
   app.get('/dice/fields', (c) => {
     const rows = runner.db
@@ -151,22 +166,84 @@ export function mountDice(app: Hono, runner: Runner): void {
     const negative = typeof body.negative === 'string' ? body.negative : null
     const poseName = typeof body.poseName === 'string' ? body.poseName : null
     const poseId = typeof body.poseId === 'string' ? body.poseId : null
+    // forms 是带来源的 { section: { character, pose, reference, input } }，
+    // 让灵感记录能逆还原各输入槽重新编辑；旧客户端不传时落空对象。
+    const forms = body.forms && typeof body.forms === 'object' && !Array.isArray(body.forms)
+      ? body.forms
+      : {}
     const id = randomUUID()
     runner.db
       .prepare(
-        `INSERT INTO dice_rolls (id, pose_name, pose_id, fields_json, prompt, negative, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO dice_rolls (id, pose_name, pose_id, fields_json, forms_json, prompt, negative, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
         poseName,
         poseId,
         JSON.stringify(fieldsJson),
+        JSON.stringify(forms),
         prompt,
         negative,
         runner.now().toISOString(),
       )
     return c.json({ id }, 201)
+  })
+
+  // 现成图 → dice 启动模版：读 image_assets 的 WD14 tags，用 data/role_full.json
+  // 全表词池归类成 CreativeIntent fields，落一条 roll 返回 id，前端跳 /dice?rid= 回填。
+  // 归类词池只服务此处；dice UI 候选按钮仍用 data/role.json。
+  let tagPool: ReturnType<typeof compileRolePool> | null = null
+  app.post('/dice/tags2intent', async (c) => {
+    const body = await jsonObject(c.req)
+    const imageId = typeof body.imageId === 'string' ? body.imageId.trim() : ''
+    if (imageId === '') throw new RunnerError('imageId is required')
+    const row = runner.db
+      .prepare('SELECT tags_json FROM image_assets WHERE id = ?')
+      .get(imageId) as { tags_json: string } | undefined
+    if (!row) throw new RunnerError(`image not found: ${imageId}`, 404)
+    let tags: string[]
+    try {
+      const parsed: unknown = JSON.parse(row.tags_json)
+      tags = Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : []
+    } catch {
+      tags = []
+    }
+    if (tags.length === 0) throw new RunnerError('image has no tags', 422)
+    if (!tagPool) {
+      const poolPath = join(runner.dataDir, 'role_full.json')
+      if (!existsSync(poolPath)) {
+        throw new RunnerError('role_full.json missing in data dir')
+      }
+      tagPool = compileRolePool(JSON.parse(readFileSync(poolPath, 'utf8')))
+    }
+    const result = tagsToIntent(tags, tagPool)
+    const id = randomUUID()
+    runner.db
+      .prepare(
+        `INSERT INTO dice_rolls (id, pose_name, pose_id, fields_json, forms_json, prompt, negative, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        null,
+        null,
+        JSON.stringify(result.intent),
+        JSON.stringify(result.forms),
+        result.positive,
+        result.negative,
+        runner.now().toISOString(),
+      )
+    return c.json(
+      {
+        id,
+        total: result.total,
+        hit: result.hit,
+        miss: result.miss,
+        url: `/dice?rid=${id}`,
+      },
+      201,
+    )
   })
 
   app.get('/dice/rolls', (c) => {
@@ -179,7 +256,7 @@ export function mountDice(app: Hono, runner: Runner): void {
     ).n
     const rows = runner.db
       .prepare(
-        `SELECT id, pose_name, pose_id, fields_json, prompt, negative, created_at
+        `SELECT id, pose_name, pose_id, fields_json, forms_json, prompt, negative, created_at
          FROM dice_rolls ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
       )
       .all(limit, offset) as Array<{
@@ -187,6 +264,7 @@ export function mountDice(app: Hono, runner: Runner): void {
       pose_name: string | null
       pose_id: string | null
       fields_json: string
+      forms_json: string
       prompt: string
       negative: string | null
       created_at: string
@@ -205,6 +283,7 @@ export function mountDice(app: Hono, runner: Runner): void {
           poseName: row.pose_name,
           poseId: row.pose_id,
           fields,
+          forms: parseForms(row.forms_json),
           prompt: row.prompt,
           negative: row.negative,
           createdAt: row.created_at,
@@ -216,7 +295,7 @@ export function mountDice(app: Hono, runner: Runner): void {
   app.get('/dice/rolls/:id', (c) => {
     const row = runner.db
       .prepare(
-        `SELECT id, pose_name, pose_id, fields_json, prompt, negative, created_at
+        `SELECT id, pose_name, pose_id, fields_json, forms_json, prompt, negative, created_at
          FROM dice_rolls WHERE id = ?`,
       )
       .get(c.req.param('id')) as
@@ -225,6 +304,7 @@ export function mountDice(app: Hono, runner: Runner): void {
           pose_name: string | null
           pose_id: string | null
           fields_json: string
+          forms_json: string
           prompt: string
           negative: string | null
           created_at: string
@@ -243,6 +323,7 @@ export function mountDice(app: Hono, runner: Runner): void {
         poseName: row.pose_name,
         poseId: row.pose_id,
         fields,
+        forms: parseForms(row.forms_json),
         prompt: row.prompt,
         negative: row.negative,
         createdAt: row.created_at,
@@ -259,7 +340,7 @@ export function mountDice(app: Hono, runner: Runner): void {
   app.get('/dice/templates', (c) => {
     const rows = runner.db
       .prepare(
-        `SELECT id, name, character_slug, pose_name, pose_id, fields_json, created_at, updated_at
+        `SELECT id, name, character_slug, pose_name, pose_id, fields_json, forms_json, created_at, updated_at
          FROM dice_templates ORDER BY updated_at DESC, rowid DESC`,
       )
       .all() as TemplateRow[]
@@ -275,13 +356,14 @@ export function mountDice(app: Hono, runner: Runner): void {
     const character = optionalText(body.character)
     const poseName = optionalText(body.poseName)
     const poseId = optionalText(body.poseId)
+    const forms = templateFields(body.forms ?? {})
     runner.db
       .prepare(
         `INSERT INTO dice_templates
-           (id, name, character_slug, pose_name, pose_id, fields_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, name, character_slug, pose_name, pose_id, fields_json, forms_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, name, character, poseName, poseId, JSON.stringify(fields), now, now)
+      .run(id, name, character, poseName, poseId, JSON.stringify(fields), JSON.stringify(forms), now, now)
     return c.json(
       {
         template: {
@@ -291,6 +373,7 @@ export function mountDice(app: Hono, runner: Runner): void {
           poseName,
           poseId,
           fields,
+          forms,
           createdAt: now,
           updatedAt: now,
         },
@@ -304,7 +387,7 @@ export function mountDice(app: Hono, runner: Runner): void {
     const body = await jsonObject(c.req)
     const current = runner.db
       .prepare(
-        `SELECT id, name, character_slug, pose_name, pose_id, fields_json, created_at, updated_at
+        `SELECT id, name, character_slug, pose_name, pose_id, fields_json, forms_json, created_at, updated_at
          FROM dice_templates WHERE id = ?`,
       )
       .get(id) as TemplateRow | undefined
@@ -320,17 +403,19 @@ export function mountDice(app: Hono, runner: Runner): void {
     const poseId = saving ? optionalText(body.poseId) : current.pose_id
     const fieldsJson =
       body.fields === undefined ? current.fields_json : JSON.stringify(templateFields(body.fields))
+    const formsJson =
+      body.forms === undefined ? current.forms_json : JSON.stringify(templateFields(body.forms))
     const now = runner.now().toISOString()
     runner.db
       .prepare(
         `UPDATE dice_templates
-         SET name = ?, character_slug = ?, pose_name = ?, pose_id = ?, fields_json = ?, updated_at = ?
+         SET name = ?, character_slug = ?, pose_name = ?, pose_id = ?, fields_json = ?, forms_json = ?, updated_at = ?
          WHERE id = ?`,
       )
-      .run(name, character, poseName, poseId, fieldsJson, now, id)
+      .run(name, character, poseName, poseId, fieldsJson, formsJson, now, id)
     const row = runner.db
       .prepare(
-        `SELECT id, name, character_slug, pose_name, pose_id, fields_json, created_at, updated_at
+        `SELECT id, name, character_slug, pose_name, pose_id, fields_json, forms_json, created_at, updated_at
          FROM dice_templates WHERE id = ?`,
       )
       .get(id) as TemplateRow
@@ -508,6 +593,7 @@ interface TemplateRow {
   pose_name: string | null
   pose_id: string | null
   fields_json: string
+  forms_json: string
   created_at: string
   updated_at: string
 }
@@ -526,6 +612,7 @@ function templateOf(row: TemplateRow) {
     poseName: row.pose_name,
     poseId: row.pose_id,
     fields,
+    forms: parseForms(row.forms_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }

@@ -132,6 +132,7 @@ CREATE TABLE IF NOT EXISTS dice_rolls (
   pose_name TEXT,
   pose_id TEXT,
   fields_json TEXT NOT NULL DEFAULT '{}',
+  forms_json TEXT NOT NULL DEFAULT '{}',
   prompt TEXT NOT NULL DEFAULT '',
   negative TEXT,
   created_at TEXT NOT NULL
@@ -156,6 +157,7 @@ CREATE TABLE IF NOT EXISTS dice_templates (
   pose_name TEXT,
   pose_id TEXT,
   fields_json TEXT NOT NULL,
+  forms_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -317,6 +319,8 @@ function migrate(db: DatabaseSync): void {
   addColumn(db, 'chats', 'system_text', 'TEXT')
   rebuildDiceFields(db)
   seedDiceFields(db)
+  addColumn(db, 'dice_rolls', 'forms_json', "TEXT NOT NULL DEFAULT '{}'")
+  addColumn(db, 'dice_templates', 'forms_json', "TEXT NOT NULL DEFAULT '{}'")
   addColumn(db, 'image_assets', 'rating', "TEXT NOT NULL DEFAULT ''")
   addColumn(db, 'image_assets', 'thumb_path', 'TEXT')
   addColumn(db, 'image_assets', 'nobg_path', 'TEXT')

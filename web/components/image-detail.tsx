@@ -1,6 +1,7 @@
 "use client";
 
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Dataset } from "@/components/datasets";
@@ -44,6 +45,7 @@ export function ImageDetail({
   erasing = false,
   cutoutBusy = false,
   hotkeys = false,
+  toDice = false,
   onSelect,
   onReload,
   onChanged,
@@ -60,6 +62,7 @@ export function ImageDetail({
   erasing?: boolean;
   cutoutBusy?: boolean;
   hotkeys?: boolean;
+  toDice?: boolean;
   onSelect: (id: string) => void;
   onReload: () => Promise<void>;
   onChanged?: () => void;
@@ -70,6 +73,8 @@ export function ImageDetail({
     onToggle: (datasetId: string, assetId: string, member: boolean) => void;
   };
 }) {
+  const router = useRouter();
+  const [diceBusy, setDiceBusy] = useState(false);
   const [slide, setSlide] = useState<SlideKey>("image");
   const [editing, setEditing] = useState<EditField | null>(null);
   const [draft, setDraft] = useState("");
@@ -215,6 +220,22 @@ export function ImageDetail({
   function chooseNeighbor(id: string) {
     closeNearest();
     onSelect(id);
+  }
+
+  async function sendToDice(item: ImageAsset) {
+    if (diceBusy) return;
+    setDiceBusy(true);
+    try {
+      const res = await api<{ id: string }>("dice/tags2intent", {
+        method: "POST",
+        body: JSON.stringify({ imageId: item.id }),
+      });
+      router.push(`/dice?rid=${res.id}`);
+    } catch (err) {
+      fail(messageOf(err));
+    } finally {
+      setDiceBusy(false);
+    }
   }
 
   async function removeAsset(item: ImageAsset) {
@@ -426,6 +447,17 @@ export function ImageDetail({
     <section className={preview ? "panel capture-info image-detail" : "panel capture-info"}>
       {selected ? (
         <div className="image-detail-corner">
+          {toDice ? (
+            <button
+              type="button"
+              className="quiet"
+              title="用这张图的标签作为 dice 起点"
+              disabled={diceBusy || deleting || erasing || selected.tags.length === 0}
+              onClick={() => void sendToDice(selected)}
+            >
+              {diceBusy ? "…" : "🧠"}
+            </button>
+          ) : null}
           {nearest ? (
             <button
               type="button"
