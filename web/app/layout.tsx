@@ -6,8 +6,8 @@ import { OverlayScrollbars } from '@/components/overlay-scrollbars'
 import './globals.css'
 
 export const metadata = {
-  title: 'AIGC',
-  description: 'Runner workflows and tasks',
+  title: 'GOF',
+  description: 'go forge',
 }
 
 export default function RootLayout({ children }: { children: ReactNode }) {

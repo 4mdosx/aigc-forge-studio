@@ -3,7 +3,9 @@ import { appendFileSync, mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
+import { WebSocketServer } from 'ws'
 
+import { CaptureLive } from './capture/live.ts'
 import { gatewayChat } from './chat/client.ts'
 import { loadGateway } from './chat/env.ts'
 import { ComfyClient } from './comfy/client.ts'
@@ -41,16 +43,25 @@ async function main(): Promise<void> {
   }
   writeWd14TagTable(runner.db, runner.dataDir)
   resume(runner)
-  const app = createApp(runner)
+  const live = new CaptureLive()
+  const app = createApp(runner, live)
   const host = values.host ?? config.runner.host
   const port = portOf(values.port, config.runner.port)
   const timer = setInterval(() => {
     void tick(runner)
   }, 1000)
-  const server = serve({ fetch: app.fetch, hostname: host, port })
+  const sockets = new WebSocketServer({ noServer: true })
+  const server = serve({
+    fetch: app.fetch,
+    hostname: host,
+    port,
+    websocket: { server: sockets },
+  })
   log(root, `Runner http://${host}:${port}`)
+  log(root, `Capture live ws://${host}:${port}/capture/live`)
   log(root, `ComfyUI ${config.runner.comfyUiBaseURLs.join(', ')}`)
-  if (config.runner.trainerBaseURL) log(root, `Trainer ${config.runner.trainerBaseURL}`)
+  if (config.runner.trainerBaseURL)
+    log(root, `Trainer ${config.runner.trainerBaseURL}`)
   log(root, gateway ? `Gateway ${gateway.models.join(', ')}` : 'Gateway off')
   process.once('SIGINT', () => {
     log(root, 'interrupting')

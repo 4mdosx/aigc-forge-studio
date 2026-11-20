@@ -12,7 +12,7 @@ export default async function StudioLayout({ children }: { children: ReactNode }
     <div className="shell">
       <header className="top">
         <Link className="mark" href="/">
-          AIGC<span>Runner</span>
+          GOF<span>go forge</span>
         </Link>
         <Nav />
       </header>

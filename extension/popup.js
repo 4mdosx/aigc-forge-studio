@@ -63,94 +63,65 @@ function extractPin() {
   return { url: pageUrl, imageUrl: best }
 }
 
-const RUNNER = 'http://127.0.0.1:8787'
-
-const select = document.getElementById('folder')
+const link = document.getElementById('link')
 const statusEl = document.getElementById('status')
 const grab = document.getElementById('grab')
-const refresh = document.getElementById('refresh')
 
 function setStatus(text, kind) {
   statusEl.textContent = text
   statusEl.className = kind ?? ''
 }
 
-async function loadFolders() {
-  try {
-    const res = await fetch(`${RUNNER}/capture/folders`)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const body = await res.json()
-    const current = select.value
-    select.innerHTML = ''
-    if (body.folders.length === 0) {
-      const option = document.createElement('option')
-      option.value = ''
-      option.textContent = '（先在 web /capture 新建文件夹）'
-      select.appendChild(option)
-      return
-    }
-    for (const folder of body.folders) {
-      const option = document.createElement('option')
-      option.value = folder.name
-      option.textContent = `${folder.name}（${folder.done}）`
-      select.appendChild(option)
-    }
-    let picked = null
-    try {
-      const stored = await chrome.storage.local.get('lastFolder')
-      if (typeof stored.lastFolder === 'string') picked = stored.lastFolder
-    } catch {
-      // storage 不可用就忽略记忆
-    }
-    const target = picked ?? current
-    if (target && body.folders.some((f) => f.name === target)) {
-      select.value = target
-    }
-    setStatus('就绪')
-  } catch (err) {
-    setStatus(`runner 不可达（:${err.message}）`, 'error')
-  }
+function applyState(state) {
+  const ready = state?.connected === true && state?.webReady === true
+  link.dataset.ready = ready ? '1' : '0'
+  grab.disabled = !ready
+  if (!state?.connected) link.textContent = 'runner 未连接'
+  else if (!state.webReady) link.textContent = '采集页未打开'
+  else link.textContent = '采集页已就绪'
 }
 
-grab.addEventListener('click', async () => {
-  const folder = select.value
-  if (!folder) {
-    setStatus('没有可用文件夹，先去 web /capture 建一个', 'error')
-    return
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type === 'live-state') applyState(message)
+  if (message?.type === 'live-status') {
+    const failed = message.state === 'rejected' || message.state === 'failed'
+    const ok = message.state === 'accepted' || message.state === 'done'
+    setStatus(message.message || message.state || '', failed ? 'error' : ok ? 'ok' : '')
   }
+})
+
+chrome.runtime.sendMessage({ type: 'live-snapshot' }, (state) => {
+  if (chrome.runtime.lastError || !state) return
+  applyState(state)
+})
+
+grab.addEventListener('click', async () => {
   grab.disabled = true
   try {
     setStatus('读取页面…')
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!tab?.id) throw new Error('没有当前标签页')
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: extractPin,
     })
-    const { url, imageUrl } = result.result
-    setStatus(imageUrl ? '已锁定主图，上传中…' : '没找到主图锚点，交给 runner 解析…')
-    const res = await fetch(`${RUNNER}/capture/pins`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ url, folder, ...(imageUrl ? { mediaUrl: imageUrl } : {}) }),
+    const extracted = result?.result ?? {}
+    const url = typeof extracted.url === 'string' && extracted.url.startsWith('http')
+      ? extracted.url
+      : tab.url
+    if (!url || !url.startsWith('http')) throw new Error('这个页面没有可采集的链接')
+    const mediaUrl = typeof extracted.imageUrl === 'string' ? extracted.imageUrl : ''
+    setStatus('交给采集页…')
+    const response = await chrome.runtime.sendMessage({
+      type: 'capture-url',
+      url,
+      ...(mediaUrl ? { mediaUrl } : {}),
     })
-    const body = await res.json()
-    if (!res.ok) throw new Error(body.error || res.statusText)
-    try {
-      await chrome.storage.local.set({ lastFolder: folder })
-      chrome.runtime.sendMessage({ type: 'refresh-menus' })
-    } catch {
-      // 记忆/菜单刷新失败不影响采集
-    }
-    setStatus(
-      body.duplicate ? '重复图片，已跳过' : `已采集 ${body.id}，预处理进行中（去 web /capture 看）`,
-      body.duplicate ? '' : 'ok',
-    )
+    if (!response?.ok) throw new Error(response?.error || '采集页没有接住')
+    setStatus(response.message || '已交给采集页', 'ok')
   } catch (err) {
     setStatus(`失败：${err.message}`, 'error')
   } finally {
-    grab.disabled = false
+    grab.disabled = link.dataset.ready !== '1'
   }
 })
-
-refresh.addEventListener('click', () => void loadFolders())
-void loadFolders()

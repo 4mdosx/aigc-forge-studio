@@ -13,6 +13,11 @@ import {
 } from "@/components/image-assets";
 import { NobgEraser } from "@/components/nobg-eraser";
 import { api, fileHref } from "@/lib/api";
+import {
+  connectCaptureLive,
+  type CaptureJob,
+  type CaptureReport,
+} from "@/lib/capture-live";
 import { fail, messageOf, notify } from "@/lib/notify";
 import { isSafetyHiddenRating, useSafetyMode } from "@/lib/safety-mode";
 
@@ -20,6 +25,7 @@ type DownloadState = "queued" | "active" | "done" | "failed";
 
 type DownloadTask = {
   id: number;
+  liveId?: string;
   url: string;
   key: string;
   imageKey: string;
@@ -60,6 +66,9 @@ export function CaptureBoard() {
   const duplicateCount = useRef(0);
   const hideDownloads = useRef<number | null>(null);
   const [downloads, setDownloads] = useState<DownloadTask[]>([]);
+  const [liveLink, setLiveLink] = useState({ extensions: 0, connected: false });
+  const reportRef = useRef<((status: CaptureReport) => void) | null>(null);
+  const acceptRef = useRef<(job: CaptureJob) => void>(() => {});
   const cutoutsRef = useRef<CutoutTask[]>([]);
   const cutoutPumping = useRef(false);
   const cutoutGen = useRef(0);
@@ -199,6 +208,15 @@ export function CaptureBoard() {
     setDownloads(downloadsRef.current.map((task) => ({ ...task })));
   }
 
+  function reportLive(
+    task: DownloadTask,
+    state: CaptureReport["state"],
+    message?: string,
+  ) {
+    if (!task.liveId) return;
+    reportRef.current?.({ id: task.liveId, state, message });
+  }
+
   function knownUrlKeys(exceptId?: number): Set<string> {
     const keys = new Set<string>();
     for (const item of itemsRef.current) {
@@ -252,6 +270,47 @@ export function CaptureBoard() {
     setUrl("");
     void pumpDownloads();
   }
+
+  function acceptRemote(job: CaptureJob) {
+    const known = knownUrlKeys();
+    const identity = urlKey(job.mediaUrl || job.url);
+    if (known.has(identity)) {
+      notify("这个链接已经有了，已跳过");
+      reportRef.current?.({
+        id: job.id,
+        state: "duplicate",
+        message: "重复图片，已跳过",
+      });
+      return;
+    }
+    if (hideDownloads.current !== null) {
+      window.clearTimeout(hideDownloads.current);
+      hideDownloads.current = null;
+    }
+    downloadSeq.current += 1;
+    downloadsRef.current = [
+      ...downloadsRef.current,
+      {
+        id: downloadSeq.current,
+        liveId: job.id,
+        url: job.url,
+        key: identity,
+        imageKey:
+          Boolean(job.mediaUrl) || !needsResolve(job.url) ? identity : "",
+        ...(job.mediaUrl ? { imgUrl: job.mediaUrl } : {}),
+        state: "queued",
+      },
+    ];
+    publishDownloads();
+    reportRef.current?.({
+      id: job.id,
+      state: "queued",
+      message: "已进入采集队列",
+    });
+    void pumpDownloads();
+  }
+
+  acceptRef.current = acceptRemote;
 
   function enqueueResolved(sourceUrl: string, imgUrls: string[]) {
     if (imgUrls.length === 0) return;
@@ -320,21 +379,26 @@ export function CaptureBoard() {
         if (!next) break;
         next.state = "active";
         publishDownloads();
+        reportLive(next, "active", "正在下载");
         try {
           const result = await runDownload(next);
           if (result === "duplicate") {
+            reportLive(next, "duplicate", "重复图片，已跳过");
             downloadsRef.current = downloadsRef.current.filter(
               (task) => task.id !== next.id,
             );
             duplicateCount.current += 1;
           } else {
             next.state = "done";
+            reportLive(next, "done", "已下载原图");
             addedCount.current += 1;
             await loadItems();
           }
         } catch (err) {
           next.state = "failed";
-          fail(messageOf(err));
+          const message = messageOf(err);
+          reportLive(next, "failed", message);
+          fail(message);
         }
         publishDownloads();
       }
@@ -386,7 +450,18 @@ export function CaptureBoard() {
   }
 
   useEffect(() => {
+    const live = connectCaptureLive({
+      onCapture(job) {
+        acceptRef.current(job);
+      },
+      onLink(link) {
+        setLiveLink(link);
+      },
+    });
+    reportRef.current = (status) => live.report(status);
     return () => {
+      reportRef.current = null;
+      live.close();
       if (hideDownloads.current !== null) {
         window.clearTimeout(hideDownloads.current);
       }
@@ -530,6 +605,7 @@ export function CaptureBoard() {
         <section className="panel capture-stage">
           <div className="column-head">
             <h2>采集</h2>
+            <span className="muted">{liveLabel(liveLink)}</span>
           </div>
 
           <form
@@ -738,6 +814,11 @@ export function CaptureBoard() {
       ) : null}
     </>
   );
+}
+
+function liveLabel(link: { connected: boolean; extensions: number }): string {
+  if (!link.connected) return "采集通道未连接";
+  return link.extensions > 0 ? "插件已连接" : "插件未连接";
 }
 
 function versionOf(key: SlideKey | undefined): FinalVersion {

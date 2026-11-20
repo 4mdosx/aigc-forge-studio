@@ -1,77 +1,221 @@
-// MV3 background service worker：图片右键菜单采集。
+// MV3 background service worker：图片右键采集。
 // 菜单唯一入口 = rebuildMenus()（先 removeAll 再 create，杜绝 duplicate id）。
-// SW 唤醒即重建；popup 采集成功后发 refresh-menus 消息唤醒 SW 顺带刷新菜单。
-// folder 列表取自 runner；「采集到上次 folder」用 chrome.storage.local 记忆最近成功目标。
-// pixiv 页面：登录态下把点击的缩略图升级到 /img-original/ 原图 URL 再交给 runner。
+// 插件不自己下载。它和采集页都连 runner 的 /capture/live，握手状态在 runner 内存里。
+// 采集页开着才算 ready。右键或 popup 把 url 交给 runner，由采集页执行下载。
 
-const RUNNER = 'http://127.0.0.1:8787'
-const PARENT = 'aigc-capture-root'
-const FALLBACK_FOLDER = 'common'
-
+const LIVE = 'ws://127.0.0.1:8787/capture/live'
 const ICON_URL = chrome.runtime.getURL('icon128.png')
 
-async function loadFolders() {
+let socket = null
+let webReady = false
+let connectAttempt = 0
+let reconnectTimer = null
+const openWaiters = []
+const pending = new Map()
+
+function connected() {
+  return socket !== null && socket.readyState === WebSocket.OPEN
+}
+
+function publish(body) {
   try {
-    const res = await fetch(`${RUNNER}/capture/folders`)
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const body = await res.json()
-    return body.folders.map((f) => f.name)
+    const result = chrome.runtime.sendMessage(body)
+    if (result && typeof result.catch === 'function') result.catch(() => {})
   } catch {
-    return []
+    // popup 没开时没有接收方
   }
 }
 
-async function lastFolderOf() {
-  try {
-    const stored = await chrome.storage.local.get('lastFolder')
-    const value = stored.lastFolder
-    return typeof value === 'string' && value !== '' ? value : null
-  } catch {
-    return null
-  }
+function publishState() {
+  publish({ type: 'live-state', webReady, connected: connected() })
 }
 
-async function rebuildMenus() {
-  const folders = await loadFolders()
-  const list = folders.length > 0 ? folders : [FALLBACK_FOLDER]
-  const last = await lastFolderOf()
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({
-      id: PARENT,
-      title: 'AIGC 采集',
-      contexts: ['image'],
+function failOpen(error) {
+  const waiters = openWaiters.splice(0)
+  for (const waiter of waiters) waiter.reject(error)
+}
+
+function connect() {
+  if (
+    socket &&
+    (socket.readyState === WebSocket.CONNECTING || socket.readyState === WebSocket.OPEN)
+  ) {
+    return
+  }
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  const ws = new WebSocket(LIVE)
+  socket = ws
+  ws.onopen = () => {
+    connectAttempt = 0
+    ws.send(JSON.stringify({ type: 'hello', role: 'extension' }))
+    const waiters = openWaiters.splice(0)
+    for (const waiter of waiters) waiter.resolve()
+  }
+  ws.onmessage = (event) => {
+    let message
+    try {
+      message = JSON.parse(event.data)
+    } catch {
+      return
+    }
+    if (!message || typeof message !== 'object') return
+    if (message.type === 'state') {
+      webReady = message.webReady === true
+      publishState()
+      return
+    }
+    if (message.type !== 'status') return
+    const waiter = pending.get(message.id)
+    if (waiter && (message.state === 'accepted' || message.state === 'rejected')) {
+      pending.delete(message.id)
+      waiter(message)
+    }
+    notifyStatus(message)
+    publish({
+      type: 'live-status',
+      id: message.id,
+      state: message.state,
+      message: message.message,
     })
-    if (last) {
-      chrome.contextMenus.create({
-        id: 'capture:last',
-        parentId: PARENT,
-        title: `采集到上次 folder（${last}）`,
-        contexts: ['image'],
-      })
+  }
+  ws.onclose = () => {
+    if (socket !== ws) return
+    socket = null
+    webReady = false
+    publishState()
+    failOpen(new Error('runner 未连接'))
+    const delay = Math.min(5000, 300 * 2 ** connectAttempt)
+    connectAttempt += 1
+    reconnectTimer = setTimeout(connect, delay)
+  }
+  ws.onerror = () => {
+    ws.close()
+  }
+}
+
+function whenOpen() {
+  connect()
+  if (connected()) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error('runner 未连接')))
+    }, 4000)
+    const waiter = {
+      resolve() {
+        finish(resolve)
+      },
+      reject(error) {
+        finish(() => reject(error))
+      },
     }
-    for (const name of list) {
-      chrome.contextMenus.create({
-        id: `capture:${name}`,
-        parentId: PARENT,
-        title: `采集到 ${name}`,
-        contexts: ['image'],
-      })
+    function finish(done) {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const index = openWaiters.indexOf(waiter)
+      if (index >= 0) openWaiters.splice(index, 1)
+      done()
     }
+    openWaiters.push(waiter)
   })
 }
 
-// popup 采集成功后唤醒 SW 并刷新菜单（新建的 folder 立即可见）
-chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type === 'refresh-menus') void rebuildMenus()
-})
-
-async function markLastFolder(folder) {
-  try {
-    await chrome.storage.local.set({ lastFolder: folder })
-  } catch {
-    // 记忆失败不影响采集
-  }
+function makeId() {
+  return `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
 }
+
+function requestCapture({ url, mediaUrl }) {
+  return new Promise((resolve) => {
+    const id = makeId()
+    const timer = setTimeout(() => {
+      if (!pending.has(id)) return
+      pending.delete(id)
+      resolve({ ok: false, error: 'runner 没有回应', notified: false })
+    }, 8000)
+    pending.set(id, (message) => {
+      clearTimeout(timer)
+      resolve({
+        ok: message.state !== 'rejected',
+        error: message.message || '采集页未打开',
+        message: message.message || '已交给采集页',
+        notified: true,
+      })
+    })
+    const body = { type: 'capture', id, url }
+    if (mediaUrl) body.mediaUrl = mediaUrl
+    whenOpen()
+      .then(() => {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          throw new Error('runner 未连接')
+        }
+        socket.send(JSON.stringify(body))
+      })
+      .catch((err) => {
+        clearTimeout(timer)
+        pending.delete(id)
+        resolve({ ok: false, error: String(err.message || err), notified: false })
+      })
+  })
+}
+
+function notifyStatus(message) {
+  if (message.state === 'queued' || message.state === 'active') return
+  const failed = message.state === 'rejected' || message.state === 'failed'
+  const title = failed
+    ? '采集失败'
+    : message.state === 'duplicate'
+      ? '重复图片，已跳过'
+      : message.state === 'accepted'
+        ? '已交给采集页'
+        : '已采集'
+  const text =
+    typeof message.message === 'string' && message.message !== ''
+      ? message.message
+      : title
+  showNotice(typeof message.id === 'string' ? message.id : '', title, text)
+}
+
+function showNotice(id, title, message) {
+  const options = {
+    type: 'basic',
+    iconUrl: ICON_URL,
+    title,
+    message,
+  }
+  if (!id) {
+    chrome.notifications.create(options)
+    return
+  }
+  chrome.notifications.clear(id, () => {
+    chrome.notifications.create(id, options)
+  })
+}
+
+function rebuildMenus() {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: 'capture',
+      title: '采集到工作台',
+      contexts: ['image'],
+    })
+  })
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === 'live-snapshot') {
+    connect()
+    sendResponse({ webReady, connected: connected() })
+    return
+  }
+  if (message?.type === 'capture-url') {
+    void requestCapture(message).then((result) => sendResponse(result))
+    return true
+  }
+})
 
 // 注入 pixiv 页面跑：从点击的缩略图找同一张画的 img-original 原图 URL。
 // 自包含（MV3 序列化注入）。找不到返回 null，调用方退回缩略图。
@@ -132,18 +276,11 @@ function isPixiv(url) {
 }
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  const raw = String(info.menuItemId)
-  if (!raw.startsWith('capture:')) return
-  const folder =
-    raw === 'capture:last'
-      ? await lastFolderOf()
-      : raw.slice('capture:'.length)
-  if (!folder) return notify('采集失败', '还没有「上次 folder」，先用具体 folder 采一张')
+  if (info.menuItemId !== 'capture') return
   const src = info.srcUrl
-  if (!src) return notify('采集失败', '右键目标没有图片地址')
+  if (!src) return showNotice('', '采集失败', '右键目标没有图片地址')
 
   let mediaUrl = src
-  let upgraded = false
   if (tab?.id !== undefined && isPixiv(tab.url ?? '')) {
     try {
       const [result] = await chrome.scripting.executeScript({
@@ -152,48 +289,31 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         args: [src],
       })
       const original = result?.result
-      if (original) {
-        mediaUrl = original
-        upgraded = true
-      }
+      if (original) mediaUrl = original
     } catch {
       // 注入失败（无 activeTab 授权等）：退回缩略图 URL
     }
   }
 
-  // 作品页右键时 source 用页面本身；网格页 source 就是当前页（没有更好的出处）
-  const pageUrl = tab?.url && tab.url.startsWith('http') ? tab.url : undefined
-  try {
-    const res = await fetch(`${RUNNER}/capture/pins`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        folder,
-        mediaUrl,
-        ...(pageUrl ? { url: pageUrl } : {}),
-      }),
-    })
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.error || res.statusText)
-    void markLastFolder(folder)
-    if (data.duplicate) {
-      notify('重复图片，已跳过', `folder ${folder} 里已有这张图`)
-    } else {
-      notify('已采集到 ' + folder, `${data.id}（${upgraded ? '原图' : '点击图'}，预处理进行中）`)
-    }
-  } catch (err) {
-    notify('采集失败', String(err.message || err))
+  const pageUrl = tab?.url && tab.url.startsWith('http') ? tab.url : src
+  const result = await requestCapture({
+    url: pageUrl,
+    ...(mediaUrl ? { mediaUrl } : {}),
+  })
+  if (!result.ok && !result.notified) {
+    showNotice('', '采集失败', result.error || '采集失败')
   }
 })
 
-function notify(title, message) {
-  chrome.notifications.create({
-    type: 'basic',
-    iconUrl: ICON_URL,
-    title,
-    message,
-  })
+function arm() {
+  chrome.alarms.create('capture-live', { periodInMinutes: 0.5 })
+  connect()
+  rebuildMenus()
 }
 
-// SW 唤醒即重建菜单：先 fallback 秒出，runner 数据到了再刷一轮
-void rebuildMenus()
+chrome.runtime.onInstalled.addListener(arm)
+chrome.runtime.onStartup.addListener(arm)
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'capture-live') connect()
+})
+arm()

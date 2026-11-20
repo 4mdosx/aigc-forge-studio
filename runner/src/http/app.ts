@@ -1,8 +1,10 @@
 import { Hono } from 'hono'
 
+import { CaptureLive } from '../capture/live.ts'
 import { RunnerError } from '../errors.ts'
 import type { Runner } from '../task/queue.ts'
 import { mountCapture } from './capture.ts'
+import { mountCaptureLive } from './live.ts'
 import { mountConfig } from './config.ts'
 import { mountDice } from './dice.ts'
 import { mountChats } from './chats.ts'
@@ -18,7 +20,10 @@ import { mountTrain } from './train.ts'
 import { mountWorkflows } from './workflows.ts'
 import { mountWorks } from './works.ts'
 
-export function createApp(runner: Runner): Hono {
+export function createApp(
+  runner: Runner,
+  live: CaptureLive = new CaptureLive(),
+): Hono {
   const app = new Hono()
   app.onError((err, c) => {
     const status = err instanceof RunnerError ? err.status : 500
@@ -35,6 +40,7 @@ export function createApp(runner: Runner): Hono {
   mountPoses(app, runner)
   mountPosePending(app, runner)
   mountCapture(app, runner)
+  mountCaptureLive(app, live)
   mountDatasets(app, runner)
   mountDice(app, runner)
   mountConfig(app, runner)

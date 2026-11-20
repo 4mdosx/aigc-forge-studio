@@ -8,7 +8,7 @@ import { PinAccessForm } from './pin-access-form'
 export const dynamic = 'force-dynamic'
 
 export const metadata = {
-  title: 'PIN · AIGC',
+  title: 'PIN · GOF',
 }
 
 export default async function LoginPage() {
