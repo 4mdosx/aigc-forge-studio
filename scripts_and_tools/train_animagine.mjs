@@ -5,7 +5,8 @@
 //
 // 数据源：data/training-export/<dataset>/img（由 export_dataset.mjs 产出）。
 // 落点：训练机 C:\AIGC\training\<dataset>\img，底模 C:\AIGC\models\checkpoints\animagine-xl-4.0-zero.safetensors。
-// 训练超参走 trainer 默认档（SDXL / bf16 / unet-only / dim128 alpha32 / 10 epochs）。
+// 训练超参走 runner /train/jobs 的 STABLE_PRESET（TE cache 开 / shuffle 关 / 3 epochs，
+// 实测 2.2~2.6 s/it）；不要直连 trainer :8788，那会吃到 trainer 原始慢档（~14.5 s/it）。
 
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
@@ -29,6 +30,7 @@ const config = JSON.parse(readFileSync(join(repoRoot, 'config.json'), 'utf8'))
 const trainerBase = String(
   config.runner?.trainerBaseURL ?? 'http://192.168.8.136:8788',
 ).replace(/\/$/, '')
+const runnerBase = `http://127.0.0.1:${config.runner?.port ?? 8787}`
 const dirName = values.dataset.replace(/[^\w.-]+/g, '-')
 const imageDir = join(repoRoot, 'data', 'training-export', dirName, 'img')
 const BASE_MODEL = 'checkpoints/animagine-xl-4.0-zero.safetensors'
@@ -121,7 +123,7 @@ const body = {
   scheduler: 'constant',
   ...(values.trigger.trim() ? { keepTokens: 1 } : {}),
 }
-const { job } = await fetchJson('/train/jobs', {
+const { job } = await fetchJson(`${runnerBase}/train/jobs`, {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
   body: JSON.stringify(body),
@@ -131,7 +133,8 @@ console.log(`  curl ${trainerBase}/train/jobs/${job.id}`)
 console.log(`  curl ${trainerBase}/train/jobs/${job.id}/log`)
 
 async function fetchJson(path, init) {
-  const res = await fetch(`${trainerBase}${path}`, init)
+  const url = /^https?:\/\//.test(path) ? path : `${trainerBase}${path}`
+  const res = await fetch(url, init)
   if (!res.ok) throw new Error(`${path}: HTTP ${res.status} ${await res.text()}`)
   return res.json()
 }

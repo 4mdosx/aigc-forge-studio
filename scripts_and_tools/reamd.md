@@ -34,6 +34,17 @@ node scripts_and_tools/train_animagine.mjs --dataset test-boot --trigger ohwx
 
 默认跳过 questionable/explicit，落到 `data/training-export/<name>/img/<id>.png + <id>.txt`。`--dry-run` 可预览。
 
-`train_animagine.mjs` 把上述目录推到训练机 `C:\AIGC\training\<name>\img`，再以 `checkpoints/animagine-xl-4.0-zero.safetensors` 为底模建训练 job。传了 `--trigger` 就设 `keepTokens: 1` 防止触发词被 shuffle。其余超参（SDXL / bf16 / unet-only / dim128 alpha32 / 10 epochs）走 trainer 默认档。启动前会检查底模下载状态；没下完会警告。
+`train_animagine.mjs` 把上述目录推到训练机 `C:\AIGC\training\<name>\img`，再以 `checkpoints/animagine-xl-4.0-zero.safetensors` 为底模建训练 job。传了 `--trigger` 就设 `keepTokens: 1` 防止触发词被 shuffle。
 
-底模下载用 trainer 的 `/downloads` 异步端点（模型源 Civitai model 1409042，Zero fp16，6.46 GB，SHA256 `f15812e65c2ea7f4e19ce37fb2a8445eb65c64da450a508dd9c8f237c73f6bb8`）。
+**建 job 必须走 runner `/train/jobs`（127.0.0.1:8787，自动套 STABLE_PRESET），不要直连 trainer :8788**。trainer 原始默认档 = `cacheTextEncoderOutputs=false` + `shuffleCaption=true` + `maxTrainEpochs=10`，实测 14.4 s/it；runner 快档 = TE cache 开 / shuffle 关 / 3 epochs，实测 1.99 s/it（330 step，11 分钟），7 倍差。启动前会检查底模下载状态；没下完会警告。
+
+底模下载用 trainer 的 `/downloads` 异步端点。训练机侧 Civitai 直链只有 ~170 KB/s，改走 ModelScope `https://www.modelscope.cn/models/cagliostrolab/animagine-xl-4.0-zero/resolve/master/animagine-xl-4.0-zero.safetensors`（6.94 GB，SHA256 `f15812e65c2ea7f4e19ce37fb2a8445eb65c64da450a508dd9c8f237c73f6bb8`）。
+
+## LoRA 验证矩阵（Animagine Zero + test-boot）
+
+```
+node scripts_and_tools/verify_ax4z_lora.mjs --dry-run
+node scripts_and_tools/verify_ax4z_lora.mjs [--only l600] [--seed 3001]
+```
+
+前置：ComfyUI :8188 在线；checkpoint 已在 `C:\AIGC\models\loras\`。走 runner `baseline` work → `baseline_ax4z_lora_v1@y4jl7y4f`（无 ControlNet），正负向取 `config/roll_config` 的 Animagine 官方词。4 列（裸模 / 110 / 220 / 330 step）× 2 场景（无装备词 / 明确 boots 词）× 2 seed = 16 张，落到 `experiments/runs/AX4Z-LORA-VERIFY-20261120/`。已有图跳过，可断点续跑。`base` 列用 ComfyUI 内建 `None` 空槽 + strength 0；无 `None` 时降级为首只 LoRA + strength 0。
