@@ -429,9 +429,16 @@ function AssetLibrary() {
         query
         selectable
         items={images.items}
+        total={images.total}
+        pageOffset={images.pageOffset}
+        done={images.done}
+        processing={images.processing}
+        unsafe={images.unsafe}
         loaded={images.loaded}
         selectedId={shown?.id ?? null}
         onSelect={images.select}
+        onPage={images.loadPage}
+        revision={images.revision}
         tagSeed={tagSeed}
         onVisible={setGalleryIds}
         onReload={reloadAll}

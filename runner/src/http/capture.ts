@@ -18,14 +18,18 @@ import type { Hono } from 'hono'
 import {
   approveAsset,
   assetById,
+  assetTagCounts,
+  assetsByIds,
   deleteAsset,
   ingestBytes,
-  listAssets,
+  listAssetIds,
+  pageAssets,
   groupAssets,
   nearestAssets,
   rejectAsset,
   replaceNobg,
   updateAsset,
+  type AssetListQuery,
   type FinalVersion,
 } from '../capture/asset.ts'
 import { removeBackground } from '../capture/nobg.ts'
@@ -55,6 +59,63 @@ function nearestOrderOf(raw: string | undefined): 'near' | 'far' {
   if (raw === undefined || raw === '' || raw === 'near') return 'near'
   if (raw === 'far') return 'far'
   throw new RunnerError('order 必须是 near 或 far')
+}
+
+const ASSET_STATUSES = new Set(['collected', 'processed', 'approved', 'rejected'])
+const ASSET_RATINGS = new Set(['general', 'sensitive', 'questionable', 'explicit'])
+const PAGE_SIZE_MAX = 200
+
+function pageOffsetOf(raw: string | undefined): number {
+  if (raw === undefined || raw === '') return 0
+  if (!/^\d+$/.test(raw)) throw new RunnerError('offset 必须是非负整数')
+  const offset = Number(raw)
+  if (!Number.isSafeInteger(offset)) throw new RunnerError('offset 必须是非负整数')
+  return offset
+}
+
+function pageSizeOf(raw: string | undefined): number {
+  if (raw === undefined || raw === '') return 60
+  if (!/^[1-9]\d*$/.test(raw)) throw new RunnerError('size 必须是正整数')
+  const size = Number(raw)
+  if (!Number.isSafeInteger(size) || size > PAGE_SIZE_MAX) {
+    throw new RunnerError(`size 必须是 1 到 ${PAGE_SIZE_MAX}`)
+  }
+  return size
+}
+
+function csvOf(raw: string | undefined, label: string, allowed?: Set<string>): string[] {
+  if (raw === undefined || raw === '') return []
+  const values = raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item !== '')
+  if (!allowed) return values
+  for (const value of values) {
+    if (!allowed.has(value)) throw new RunnerError(`${label} 无效: ${value}`)
+  }
+  return values
+}
+
+function assetListQueryOf(c: {
+  req: {
+    query: (name: string) => string | undefined
+    queries: (name: string) => string[] | undefined
+  }
+}): AssetListQuery {
+  const tags = [
+    ...(c.req.queries('tag') ?? []),
+    ...csvOf(c.req.query('tags'), 'tag'),
+  ]
+    .map((tag) => tag.trim())
+    .filter((tag) => tag !== '')
+  const dataset = c.req.query('dataset')?.trim() ?? ''
+  return {
+    statuses: csvOf(c.req.query('status'), 'status', ASSET_STATUSES),
+    ratings: csvOf(c.req.query('rating'), 'rating', ASSET_RATINGS),
+    tags,
+    safe: c.req.query('safe') === '1',
+    datasetId: dataset === '' ? null : dataset,
+  }
 }
 
 function nearestIdsOf(raw: string | undefined): string[] | undefined {
@@ -1013,8 +1074,33 @@ export function mountCapture(app: Hono, runner: Runner): void {
   })
 
   app.get('/capture/assets', (c) => {
-    const items = listAssets(runner.db)
-    return c.json({ total: items.length, items })
+    const query = assetListQueryOf(c)
+    const view = c.req.query('view')
+    if (view === 'ids') return c.json(listAssetIds(runner.db, query))
+    if (view !== undefined && view !== '') throw new RunnerError('view 必须是 ids')
+    return c.json(
+      pageAssets(runner.db, {
+        ...query,
+        offset: pageOffsetOf(c.req.query('offset')),
+        size: pageSizeOf(c.req.query('size')),
+      }),
+    )
+  })
+
+  app.get('/capture/assets/tags', (c) => {
+    return c.json({ tags: assetTagCounts(runner.db, assetListQueryOf(c)) })
+  })
+
+  app.post('/capture/assets/lookup', async (c) => {
+    const body = await jsonObject(c.req)
+    if (
+      !Array.isArray(body.ids) ||
+      body.ids.some((id) => typeof id !== 'string' || id.trim() === '')
+    ) {
+      throw new RunnerError('ids 必须是图片 id 数组')
+    }
+    if (body.ids.length > PAGE_SIZE_MAX) throw new RunnerError('ids 过多')
+    return c.json({ items: assetsByIds(runner.db, body.ids) })
   })
 
   app.get('/capture/assets/:id', (c) => {

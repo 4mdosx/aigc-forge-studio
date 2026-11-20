@@ -113,7 +113,171 @@ export function listAssets(db: DatabaseSync): ImageAsset[] {
   const rows = db
     .prepare('SELECT * FROM image_assets ORDER BY created_at DESC')
     .all() as AssetRow[]
-  return rows.map(assetOf)
+  return rows.map((row) => assetOf(row))
+}
+
+export type AssetListQuery = {
+  statuses: string[]
+  ratings: string[]
+  tags: string[]
+  safe: boolean
+  datasetId: string | null
+}
+
+export type AssetPage = {
+  total: number
+  offset: number
+  size: number
+  done: number
+  processing: number
+  unsafe: number
+  items: ImageAsset[]
+}
+
+const ASSET_LIST_COLUMNS = `id, status, source_type, source_url, img_url, parent_image_id,
+  original_path, original_width, original_height, hash,
+  processed_path, processed_width, processed_height,
+  thumb_path, nobg_path, nobg_width, nobg_height,
+  tags_json, tags_model_version, embedding_model_version, rating,
+  reviewed_at, note, created_at, updated_at`
+
+const tagKeyReady = new WeakSet<DatabaseSync>()
+
+export function assetTagKey(tag: string): string {
+  return tag.trim().toLowerCase().replace(/[\s_]+/g, '_')
+}
+
+function ensureTagKey(db: DatabaseSync): void {
+  if (tagKeyReady.has(db)) return
+  db.function('asset_tag_key', (value) =>
+    typeof value === 'string' ? assetTagKey(value) : '',
+  )
+  tagKeyReady.add(db)
+}
+
+function assetWhere(query: AssetListQuery): { sql: string; args: Array<string | number> } {
+  const clauses = ['1 = 1']
+  const args: Array<string | number> = []
+  if (query.statuses.length > 0) {
+    clauses.push(`status IN (${query.statuses.map(() => '?').join(', ')})`)
+    args.push(...query.statuses)
+  }
+  if (query.ratings.length > 0) {
+    clauses.push(`rating IN (${query.ratings.map(() => '?').join(', ')})`)
+    args.push(...query.ratings)
+  }
+  if (query.safe) clauses.push(`rating NOT IN ('questionable', 'explicit')`)
+  if (query.datasetId) {
+    clauses.push('id IN (SELECT asset_id FROM dataset_assets WHERE dataset_id = ?)')
+    args.push(query.datasetId)
+  }
+  for (const tag of query.tags) {
+    const key = assetTagKey(tag)
+    if (key === '') continue
+    clauses.push(
+      'EXISTS (SELECT 1 FROM json_each(image_assets.tags_json) j WHERE asset_tag_key(j.value) = ?)',
+    )
+    args.push(key)
+  }
+  return { sql: clauses.join(' AND '), args }
+}
+
+function briefAssets(rows: Array<Omit<AssetRow, 'embedding_json'>>): ImageAsset[] {
+  return rows.map((row) => assetOf({ ...row, embedding_json: '[]' }, true))
+}
+
+export function pageAssets(
+  db: DatabaseSync,
+  query: AssetListQuery & { offset: number; size: number },
+): AssetPage {
+  if (query.tags.length > 0) ensureTagKey(db)
+  const where = assetWhere(query)
+  const safe = query.safe ? 1 : 0
+  const counts = db
+    .prepare(
+      `SELECT
+        COALESCE(SUM(CASE
+          WHEN status IN ('processed', 'approved')
+            AND (? = 0 OR rating NOT IN ('questionable', 'explicit'))
+          THEN 1 ELSE 0 END), 0) AS done,
+        COALESCE(SUM(CASE
+          WHEN status = 'collected'
+            AND (? = 0 OR rating NOT IN ('questionable', 'explicit'))
+          THEN 1 ELSE 0 END), 0) AS processing,
+        COALESCE(SUM(CASE WHEN rating IN ('questionable', 'explicit') THEN 1 ELSE 0 END), 0) AS unsafe
+      FROM image_assets`,
+    )
+    .get(safe, safe) as {
+    done: number
+    processing: number
+    unsafe: number
+  }
+  const filtered = db
+    .prepare(`SELECT COUNT(*) AS total FROM image_assets WHERE ${where.sql}`)
+    .get(...where.args) as { total: number }
+  const rows = db
+    .prepare(
+      `SELECT ${ASSET_LIST_COLUMNS}
+       FROM image_assets WHERE ${where.sql}
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(...where.args, query.size, query.offset) as Array<Omit<AssetRow, 'embedding_json'>>
+  return {
+    total: filtered.total,
+    offset: query.offset,
+    size: query.size,
+    done: counts.done,
+    processing: counts.processing,
+    unsafe: counts.unsafe,
+    items: briefAssets(rows),
+  }
+}
+
+export function listAssetIds(
+  db: DatabaseSync,
+  query: AssetListQuery,
+): { total: number; ids: string[] } {
+  if (query.tags.length > 0) ensureTagKey(db)
+  const where = assetWhere(query)
+  const rows = db
+    .prepare(
+      `SELECT id FROM image_assets WHERE ${where.sql} ORDER BY created_at DESC, rowid DESC`,
+    )
+    .all(...where.args) as Array<{ id: string }>
+  return { total: rows.length, ids: rows.map((row) => row.id) }
+}
+
+export function assetsByIds(db: DatabaseSync, ids: readonly string[]): ImageAsset[] {
+  if (ids.length === 0) return []
+  const rows = db
+    .prepare(
+      `SELECT ${ASSET_LIST_COLUMNS} FROM image_assets WHERE id IN (${ids.map(() => '?').join(', ')})`,
+    )
+    .all(...ids) as Array<Omit<AssetRow, 'embedding_json'>>
+  const byId = new Map(briefAssets(rows).map((asset) => [asset.id, asset]))
+  return ids.flatMap((id) => {
+    const asset = byId.get(id)
+    return asset ? [asset] : []
+  })
+}
+
+export function assetTagCounts(
+  db: DatabaseSync,
+  query: AssetListQuery,
+): Array<{ tag: string; count: number }> {
+  ensureTagKey(db)
+  const where = assetWhere({ ...query, tags: [] })
+  const rows = db
+    .prepare(
+      `SELECT asset_tag_key(j.value) AS tag, COUNT(*) AS count
+       FROM image_assets, json_each(image_assets.tags_json) AS j
+       WHERE ${where.sql} AND asset_tag_key(j.value) <> ''
+       GROUP BY asset_tag_key(j.value)
+       ORDER BY count DESC, tag ASC`,
+    )
+    .all(...where.args) as Array<{ tag: string; count: number }>
+  return rows
 }
 
 export function assetById(db: DatabaseSync, id: string): ImageAsset | null {
@@ -847,9 +1011,9 @@ function dropOriginalFiles(dir: string): void {
   }
 }
 
-function assetOf(row: AssetRow): ImageAsset {
+function assetOf(row: AssetRow, brief = false): ImageAsset {
   const tags = parseStringList(row.tags_json)
-  const embedding = parseNumberList(row.embedding_json)
+  const embedding = brief ? [] : parseNumberList(row.embedding_json)
   const source: ImageAsset['source'] = {
     type: row.source_type === 'crawler' ? 'crawler' : 'manual',
     sourceUrl: row.source_url,

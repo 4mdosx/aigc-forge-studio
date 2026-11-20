@@ -5,8 +5,11 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEven
 import {
   RATINGS,
   STATUSES,
+  assetSearchParams,
+  fetchAssetsByIds,
   ratingLabel,
   statusLabel,
+  type AssetPageQuery,
   type ImageAsset,
   type ImageRating,
   type ImageStatus,
@@ -18,9 +21,16 @@ import { isSafetyHiddenRating } from "@/lib/safety-mode";
 
 export function ImageGallery({
   items,
+  total,
+  pageOffset,
+  done,
+  processing,
+  unsafe,
   loaded,
   selectedId,
   onSelect,
+  onPage,
+  revision = 0,
   query = false,
   tagSeed = null,
   onVisible,
@@ -35,9 +45,16 @@ export function ImageGallery({
   onSafety,
 }: {
   items: ImageAsset[];
+  total: number;
+  pageOffset: number;
+  done: number;
+  processing: number;
+  unsafe: number;
   loaded: boolean;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  onPage: (query: AssetPageQuery) => void;
+  revision?: number;
   query?: boolean;
   tagSeed?: { tag: string; nonce: number } | null;
   onVisible?: (ids: string[]) => void;
@@ -94,75 +111,74 @@ export function ImageGallery({
   pickedRef.current = picked;
   const dragRef = useRef<MarqueeDrag | null>(null);
   const suppressClick = useRef(false);
-  const admitted = safety
-    ? items.filter((item) => !isSafetyHiddenRating(item.rating))
-    : items;
-  const doneCount = admitted.filter(
-    (item) => item.status === "processed" || item.status === "approved",
-  ).length;
-  const processingCount = admitted.filter(
-    (item) => item.status === "collected",
-  ).length;
-  const scoped =
-    datasetOnly && datasetFocus
-      ? admitted.filter((item) => datasetFocus.members.has(item.id))
-      : admitted;
-  const statusMatched =
-    statusFilter.length === 0
-      ? scoped
-      : scoped.filter((item) => statusFilter.includes(item.status));
-  const ratingMatched =
-    !query || ratingFilter.length === 0
-      ? statusMatched
-      : statusMatched.filter((item) =>
-          ratingFilter.includes((item.rating ?? "") as ImageRating),
-        );
-  const tagMatched =
-    !query || tagFilter.length === 0
-      ? ratingMatched
-      : ratingMatched.filter((item) =>
-          tagFilter.every((tag) =>
-            item.tags.some((itemTag) => tagKey(itemTag) === tagKey(tag)),
-          ),
-        );
+  const [orderIds, setOrderIds] = useState<string[]>([]);
+  const [tagCounts, setTagCounts] = useState<Map<string, number>>(new Map());
+  const [pool, setPool] = useState<Map<string, ImageAsset>>(new Map());
+  const [range, setRange] = useState({
+    offset: 0,
+    size: 0,
+    cols: 1,
+    row: 104,
+  });
+  const datasetId = datasetOnly && datasetFocus ? datasetFocus.id : null;
+  const filterQuery = useMemo<Omit<AssetPageQuery, "offset" | "size">>(
+    () => ({
+      statuses: statusFilter,
+      ratings: query ? ratingFilter : [],
+      tags: query ? tagFilter : [],
+      safe: safety,
+      datasetId,
+    }),
+    [datasetId, query, ratingFilter, safety, statusFilter, tagFilter],
+  );
   const filterKey = `${safety ? "safe" : "open"}\n${statusFilter.join("\n")}\n${ratingFilter.join("\n")}\n${tagFilter.join("\n")}`;
-  const scopeKey = datasetOnly && datasetFocus ? datasetFocus.id : "";
-  const ranked =
-    query && near && tagMatched.some((item) => item.id === near.anchor)
-      ? tagMatched
-          .filter((item) => near.ids.includes(item.id))
-          .sort(
-            (left, right) =>
-              near.ids.indexOf(left.id) - near.ids.indexOf(right.id),
-          )
-      : null;
-  const listed = ranked ?? tagMatched;
-  const diversified =
-    query && diverse
+  const scopeKey = datasetId ?? "";
+  const orderKey = orderIds.join("\n");
+  const nearOn = query && near !== null && orderIds.includes(near.anchor);
+  const diverseOn = query && diverse !== null && !nearOn;
+  const groupedOn = query && grouped !== null && grouped.key === orderKey;
+  const browseIds = groupedOn
+    ? [...(grouped?.groups.flat() ?? []), ...(grouped?.skipped ?? [])]
+    : nearOn && near
+      ? near.ids
+      : diverseOn && diverse
+        ? diverse.ids
+        : orderIds;
+  const browseKey = browseIds.join("\n");
+  const sections = groupedOn
+    ? (grouped?.groups ?? []).map((ids) =>
+        ids.flatMap((id) => {
+          const item = pool.get(id);
+          return item ? [item] : [];
+        }),
+      )
+    : null;
+  const skipped =
+    sections && grouped
+      ? grouped.skipped.flatMap((id) => {
+          const item = pool.get(id);
+          return item ? [item] : [];
+        })
+      : [];
+  const flat = nearOn && near
+    ? near.ids.flatMap((id) => {
+        const item = pool.get(id);
+        return item ? [item] : [];
+      })
+    : diverseOn && diverse
       ? diverse.ids.flatMap((id) => {
-          const item = tagMatched.find((candidate) => candidate.id === id);
+          const item = pool.get(id);
           return item ? [item] : [];
         })
       : null;
-  const visible = diversified ?? listed;
-  const visibleKey = visible.map((item) => item.id).join("\n");
-  const sections =
-    query && grouped && grouped.key === visibleKey
-      ? grouped.groups.map((ids) =>
-          ids
-            .map((id) => visible.find((item) => item.id === id))
-            .filter((item): item is ImageAsset => item !== undefined),
-        )
-      : null;
-  const skipped =
-    sections && grouped
-      ? grouped.skipped
-          .map((id) => visible.find((item) => item.id === id))
-          .filter((item): item is ImageAsset => item !== undefined)
-      : [];
-  const browseKey = (sections ? [...sections.flat(), ...skipped] : visible)
-    .map((item) => item.id)
-    .join("\n");
+  const virtual = sections === null && flat === null;
+  const firstRow = range.cols > 0 ? Math.floor(pageOffset / range.cols) : 0;
+  const shownRows = range.cols > 0 ? Math.ceil(items.length / range.cols) : 0;
+  const totalRows = range.cols > 0 ? Math.ceil(total / range.cols) : 0;
+  const padTop = virtual ? firstRow * range.row : 0;
+  const padBottom = virtual
+    ? Math.max(0, (totalRows - firstRow - shownRows) * range.row)
+    : 0;
 
   useEffect(() => {
     if (!safetyReady) return;
@@ -215,17 +231,100 @@ export function ImageGallery({
     setNearError(null);
     setDiverseError(null);
     setGroupError(null);
+    const body = galleryBodyRef.current;
+    if (body) body.scrollTop = 0;
+    setRange((cur) => (cur.offset === 0 ? cur : { ...cur, offset: 0 }));
   }, [filterKey, scopeKey]);
 
-  const tagCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const item of ratingMatched) {
-      for (const tag of item.tags) {
-        counts.set(tag, (counts.get(tag) ?? 0) + 1);
-      }
-    }
-    return counts;
-  }, [ratingMatched]);
+  useEffect(() => {
+    if (!safetyReady || range.size === 0) return;
+    onPage({ ...filterQuery, offset: range.offset, size: range.size });
+  }, [filterQuery, onPage, range.offset, range.size, safetyReady]);
+
+  useEffect(() => {
+    const body = galleryBody;
+    if (!body || !safetyReady || !virtual) return;
+    const apply = () => {
+      if (body.clientHeight === 0) return;
+      const next = galleryWindow(body, total);
+      setRange((cur) =>
+        cur.offset === next.offset &&
+        cur.size === next.size &&
+        cur.cols === next.cols &&
+        cur.row === next.row
+          ? cur
+          : next,
+      );
+    };
+    apply();
+    body.addEventListener("scroll", apply, { passive: true });
+    const observer = new ResizeObserver(apply);
+    observer.observe(body);
+    return () => {
+      body.removeEventListener("scroll", apply);
+      observer.disconnect();
+    };
+  }, [galleryBody, safetyReady, total, virtual]);
+
+  useEffect(() => {
+    if (!safetyReady) return;
+    const controller = new AbortController();
+    const qs = assetSearchParams({ ...filterQuery, view: "ids" });
+    void api<{ ids: string[] }>(`capture/assets?${qs}`, {
+      signal: controller.signal,
+    })
+      .then((body) => {
+        if (!controller.signal.aborted) setOrderIds(body.ids);
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        fail(messageOf(err));
+      });
+    return () => controller.abort();
+  }, [filterQuery, revision, safetyReady]);
+
+  useEffect(() => {
+    if (!query || !safetyReady) return;
+    const controller = new AbortController();
+    const qs = assetSearchParams({
+      statuses: filterQuery.statuses,
+      ratings: filterQuery.ratings,
+      safe: filterQuery.safe,
+      datasetId: filterQuery.datasetId,
+    });
+    void api<{ tags: Array<{ tag: string; count: number }> }>(
+      `capture/assets/tags?${qs}`,
+      { signal: controller.signal },
+    )
+      .then((body) => {
+        if (controller.signal.aborted) return;
+        setTagCounts(
+          new Map(body.tags.map((item) => [item.tag, item.count])),
+        );
+      })
+      .catch((err: unknown) => {
+        if (controller.signal.aborted) return;
+        fail(messageOf(err));
+      });
+    return () => controller.abort();
+  }, [filterQuery, query, revision, safetyReady]);
+
+  useEffect(() => {
+    if (virtual) return;
+    const ids = browseKey === "" ? [] : browseKey.split("\n");
+    let stop = false;
+    void fetchAssetsByIds(ids)
+      .then((list) => {
+        if (!stop) setPool(new Map(list.map((item) => [item.id, item])));
+      })
+      .catch((err: unknown) => {
+        if (!stop) fail(messageOf(err));
+      });
+    return () => {
+      stop = true;
+    };
+  }, [browseKey, virtual]);
+
   const vocabKey = [...tagCounts.keys()].sort().join("\n");
   const shuffled = useMemo(() => shuffleTags(vocabKey), [vocabKey]);
   const needle = tagQuery.trim();
@@ -311,8 +410,7 @@ export function ImageGallery({
       setNearError("先选中一张图片");
       return;
     }
-    const anchor = tagMatched.find((item) => item.id === selectedId);
-    if (!anchor) {
+    if (!orderIds.includes(selectedId)) {
       setNearError("当前图片不在筛选结果里");
       return;
     }
@@ -321,9 +419,7 @@ export function ImageGallery({
       setNearError("N 必须是正整数");
       return;
     }
-    const ids = tagMatched
-      .filter((item) => item.id !== selectedId)
-      .map((item) => item.id);
+    const ids = orderIds.filter((id) => id !== selectedId);
     if (ids.length === 0) {
       setNearError("筛选结果里没有其它图片");
       return;
@@ -359,7 +455,7 @@ export function ImageGallery({
       setGroupError("组数必须是正整数");
       return;
     }
-    const ids = listed.map((item) => item.id);
+    const ids = orderIds;
     if (ids.length === 0) {
       setGroupError("没有可分组的图片");
       return;
@@ -394,7 +490,7 @@ export function ImageGallery({
       setDiverseError("张数必须是正整数");
       return;
     }
-    const ids = listed.map((item) => item.id);
+    const ids = orderIds;
     if (ids.length === 0) {
       setDiverseError("没有可取样的图片");
       return;
@@ -690,9 +786,9 @@ export function ImageGallery({
         <div className="gallery-head-actions">
           <span className="muted">
             {datasetOnly && datasetFocus ? `「${datasetFocus.name}」 · ` : ""}
-            {query ? `显示 ${visible.length} · ` : ""}
-            完成 {doneCount}
-            {processingCount > 0 ? ` · 处理中 ${processingCount}` : ""}
+            {query ? `显示 ${virtual ? total : browseIds.length} · ` : ""}
+            完成 {done}
+            {processing > 0 ? ` · 处理中 ${processing}` : ""}
           </span>
           {onSafety ? (
             <SafetySwitch
@@ -886,39 +982,52 @@ export function ImageGallery({
       >
         {!loaded || !safetyReady ? (
           <p className="muted">加载中…</p>
-        ) : items.length === 0 ? (
-          <p className="muted">还没有图片。</p>
-        ) : datasetOnly && datasetFocus && datasetFocus.members.size === 0 ? (
-          <p className="muted">「{datasetFocus.name}」里还没有图片。</p>
-        ) : visible.length === 0 ? (
+        ) : virtual && total === 0 ? (
           <p className="muted">
-            {safety &&
-            statusFilter.length === 0 &&
-            ratingFilter.length === 0 &&
-            tagFilter.length === 0 &&
-            items.some((item) => isSafetyHiddenRating(item.rating))
-              ? "安全模式已隐藏标记为可疑和露骨的图片。"
-              : "没有符合筛选的图片。"}
+            {datasetOnly && datasetFocus && datasetFocus.members.size === 0
+              ? `「${datasetFocus.name}」里还没有图片。`
+              : safety &&
+                  statusFilter.length === 0 &&
+                  ratingFilter.length === 0 &&
+                  tagFilter.length === 0 &&
+                  unsafe > 0
+                ? "安全模式已隐藏标记为可疑和露骨的图片。"
+                : statusFilter.length === 0 &&
+                    ratingFilter.length === 0 &&
+                    tagFilter.length === 0 &&
+                    !datasetOnly
+                  ? "还没有图片。"
+                  : "没有符合筛选的图片。"}
           </p>
         ) : sections ? (
           <>
             {sections.map((group, index) => (
-              <section key={group.map((item) => item.id).join(",") || index} className="gallery-group">
+              <section key={grouped?.groups[index]?.join(",") || index} className="gallery-group">
                 <h3>
-                  组 {index + 1} · {group.length}
+                  组 {index + 1} · {grouped?.groups[index]?.length ?? group.length}
                 </h3>
                 {renderTiles(group)}
               </section>
             ))}
-            {skipped.length > 0 ? (
+            {grouped && grouped.skipped.length > 0 ? (
               <section className="gallery-group">
-                <h3>未分组 · {skipped.length}</h3>
+                <h3>未分组 · {grouped.skipped.length}</h3>
                 {renderTiles(skipped)}
               </section>
             ) : null}
           </>
+        ) : flat ? (
+          renderTiles(flat)
         ) : (
-          renderTiles(visible)
+          <>
+            {padTop > 0 ? (
+              <div className="capture-gallery-pad" style={{ height: padTop }} />
+            ) : null}
+            {renderTiles(items)}
+            {padBottom > 0 ? (
+              <div className="capture-gallery-pad" style={{ height: padBottom }} />
+            ) : null}
+          </>
         )}
         {marquee ? (
           <div
@@ -945,7 +1054,7 @@ export function ImageGallery({
           <span>张</span>
           <button
             type="button"
-            disabled={sampleBusy || listed.length === 0}
+            disabled={sampleBusy || orderIds.length === 0}
             onClick={() => void runDiverse()}
           >
             {sampleBusy ? "取样中…" : "取样"}
@@ -961,7 +1070,7 @@ export function ImageGallery({
           <span>组</span>
           <button
             type="button"
-            disabled={groupBusy || listed.length === 0}
+            disabled={groupBusy || orderIds.length === 0}
             onClick={() => void runGroups()}
           >
             {groupBusy ? "分组中…" : "分组"}
@@ -1175,6 +1284,26 @@ type MarqueeDrag = {
   frame: number;
 };
 
+function galleryWindow(body: HTMLElement, total: number) {
+  const style = getComputedStyle(body);
+  const gap = Number.parseFloat(style.rowGap) || Number.parseFloat(style.gap) || 7;
+  const pad =
+    (Number.parseFloat(style.paddingLeft) || 0) +
+    (Number.parseFloat(style.paddingRight) || 0);
+  const width = Math.max(1, body.clientWidth - pad);
+  const min = 92;
+  const cols = Math.max(1, Math.floor((width + gap) / (min + gap)));
+  const tile = (width - gap * (cols - 1)) / cols;
+  const row = Math.max(48, tile - 4) + 4 + gap;
+  const overscan = 2;
+  const firstRow = Math.max(0, Math.floor(body.scrollTop / row) - overscan);
+  const lastRow = Math.ceil((body.scrollTop + body.clientHeight) / row) + overscan;
+  const offset = firstRow * cols;
+  const end = total > 0 ? Math.min(total, Math.max(offset + cols, lastRow * cols)) : lastRow * cols;
+  const size = Math.min(200, Math.max(cols, end - offset));
+  return { offset, size, cols, row };
+}
+
 function centersOf(groups: Array<{ ids: string[] }>): string[] {
   const ids: string[] = [];
   for (const group of groups) {
@@ -1182,10 +1311,6 @@ function centersOf(groups: Array<{ ids: string[] }>): string[] {
     ids.push(group.ids[Math.floor((group.ids.length - 1) / 2)] as string);
   }
   return ids;
-}
-
-function tagKey(tag: string): string {
-  return tag.trim().toLowerCase().replace(/[\s_]+/g, "_");
 }
 
 function shuffleTags(vocabKey: string): string[] {

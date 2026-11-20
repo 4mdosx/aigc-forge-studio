@@ -2082,9 +2082,17 @@ button.capture-tag-edit:hover:not(:disabled) {
   background: rgba(12, 92, 73, 0.16);
 }
 
-.capture-gallery-body > .muted {
+.capture-gallery-body > .muted,
+.capture-gallery-pad {
   grid-column: 1 / -1;
+}
+
+.capture-gallery-body > .muted {
   margin: 0;
+}
+
+.capture-gallery-pad {
+  pointer-events: none;
 }
 
 button.capture-tile {

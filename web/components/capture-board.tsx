@@ -591,12 +591,19 @@ export function CaptureBoard() {
         <ImageGallery
           advanceProcessed
           items={items}
+          total={images.total}
+          pageOffset={images.pageOffset}
+          done={images.done}
+          processing={images.processing}
+          unsafe={images.unsafe}
           loaded={loaded}
           selectedId={selected?.id ?? null}
           onSelect={(id) => {
             setErasing(false);
             images.select(id);
           }}
+          onPage={images.loadPage}
+          revision={images.revision}
           safety={safety.enabled}
           safetyReady={safety.ready}
           onSafety={(next) => void safety.setSafety(next)}
