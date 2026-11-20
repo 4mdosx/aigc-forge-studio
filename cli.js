@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile, spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { promisify, styleText } from 'node:util'
@@ -53,14 +53,20 @@ async function main() {
   const mode = await select({
     message: '模式',
     options: [
-      { value: 'dev', label: 'dev', hint: '热更新' },
-      { value: 'deploy', label: 'deploy', hint: '先构建 web' },
+      { value: 'dev', label: '1. dev', hint: '热更新，占着终端' },
+      { value: 'background', label: '2. 后台 dev', hint: '热更新，不占终端' },
+      { value: 'deploy', label: '3. deploy', hint: '先构建 web，再进后台' },
+      { value: 'stop', label: '4. 停止服务', hint: '关掉 runner、web、critic' },
     ],
     showInstructions: false,
   })
   if (isCancel(mode)) {
     cancel('已取消')
     process.exit(0)
+  }
+  if (mode === 'stop') {
+    await stopServices()
+    return
   }
 
   const runner = runnerEndpoint()
@@ -77,7 +83,8 @@ async function main() {
   ])
 
   const ids = new Set(selected)
-  const script = mode === 'dev' ? 'dev' : 'start'
+  const background = mode !== 'dev'
+  const script = mode === 'deploy' ? 'start' : 'dev'
   let runnerCwd = ''
   let webCwd = ''
   let python = ''
@@ -112,8 +119,8 @@ async function main() {
   if (ids.has('critic')) {
     lines.push(`critic  http://${critic.host}:${critic.port}`)
   }
-  note(lines.join('\n'), mode)
-  outro('Ctrl+C 停止')
+  note(lines.join('\n'), mode === 'background' ? '后台 dev' : mode)
+  outro(background ? '启动后终端可以关闭' : 'Ctrl+C 停止')
 
   try {
     if (ids.has('runner+web')) {
@@ -126,17 +133,49 @@ async function main() {
     process.exit(1)
   }
 
+  const start = background ? launchBackground : launch
   if (ids.has('runner+web')) {
-    launch('runner', npm, ['run', script], runnerCwd)
-    launch('web', npm, ['run', script], webCwd)
+    start('runner', npm, ['run', script], runnerCwd)
+    start('web', npm, ['run', script], webCwd)
   }
   if (ids.has('critic')) {
-    launch('critic', python, [
+    start('critic', python, [
       join(root, 'critic', 'server.py'),
       '--host', critic.host,
       '--port', String(critic.port),
     ], root)
   }
+
+  if (background) {
+    const logs = ['runner', 'web', 'critic']
+      .filter((name) => name === 'critic' ? ids.has('critic') : ids.has('runner+web'))
+      .map((name) => join(root, 'data', 'logs', `cli-${name}.log`))
+    log.message(logs.join('\n'))
+    process.exit(0)
+  }
+
+  process.stdin.resume()
+  await new Promise(() => {})
+}
+
+async function stopServices() {
+  const runner = runnerEndpoint()
+  const critic = criticEndpoint()
+  const targets = [
+    ['runner', runner.port],
+    ['web', webPort],
+    ['critic', critic.port],
+  ]
+  let stopped = 0
+  try {
+    for (const [name, port] of targets) {
+      if (await freePort(name, port)) stopped += 1
+    }
+  } catch (err) {
+    log.error(err instanceof Error ? err.message : String(err))
+    process.exit(1)
+  }
+  outro(stopped === 0 ? '没有需要停止的进程' : '已停止')
 }
 
 async function chooseServices(options) {
@@ -217,13 +256,13 @@ function criticEndpoint() {
 
 async function freePort(name, port) {
   const owned = await portTargets(port)
-  if (owned.length === 0) return
+  if (owned.length === 0) return false
   const pids = owned.map((item) => item.pid).join('、')
   process.stdout.write(`${formatLine(name, `${port} 已被占用，结束 ${pids}`)}\n`)
   for (const item of owned) signalTarget(item, 'SIGTERM')
-  if (await waitUntilFree(port)) return
+  if (await waitUntilFree(port)) return true
   for (const item of await portTargets(port)) signalTarget(item, 'SIGKILL')
-  if (await waitUntilFree(port)) return
+  if (await waitUntilFree(port)) return true
   const left = await listenerPids(port)
   throw new Error(`${name}: ${port} 仍被 ${left.join('、') || '未知进程'} 占用`)
 }
@@ -377,6 +416,24 @@ function spawnOptions(cwd) {
     stdio: ['ignore', 'pipe', 'pipe'],
     detached: process.platform !== 'win32',
   }
+}
+
+function launchBackground(name, command, args, cwd) {
+  const dir = join(root, 'data', 'logs')
+  mkdirSync(dir, { recursive: true })
+  const logFile = join(dir, `cli-${name}.log`)
+  const output = openSync(logFile, 'a')
+  const child = spawn(command, args, {
+    cwd,
+    detached: true,
+    stdio: ['ignore', output, output],
+    windowsHide: true,
+  })
+  child.on('error', (err) => {
+    process.stderr.write(`${name}: ${err.message}\n`)
+  })
+  child.unref()
+  return child
 }
 
 function launch(name, command, args, cwd) {

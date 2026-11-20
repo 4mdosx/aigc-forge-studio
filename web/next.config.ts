@@ -2,7 +2,7 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   agentRules: false,
-  allowedDevOrigins: ['192.168.8.226'],
+  allowedDevOrigins: ['127.0.0.1', 'localhost', '192.168.8.226'],
   experimental: {
     turbopackFileSystemCacheForDev: false,
   },
