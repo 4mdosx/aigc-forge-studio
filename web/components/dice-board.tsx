@@ -983,8 +983,6 @@ export function DiceBoard({ role }: { role: unknown }) {
     }, 180)
   }, [])
 
-  const prompt = generated ? promptOf(generated) : null
-
   return (
     <div className="dice-page">
       <section className="panel">
@@ -1288,16 +1286,8 @@ export function DiceBoard({ role }: { role: unknown }) {
             </div>
           </div>
         </Dialog>
-        {generated && prompt ? (
+        {generated ? (
           <div className="dice-generated">
-            <p className="dice-prompt-line">
-              <span className="dice-card-title">positive </span>
-              {prompt.positive || '（空）'}
-            </p>
-            <p className="dice-prompt-line">
-              <span className="dice-card-title">negative </span>
-              {prompt.negative || '（空）'}
-            </p>
             <pre className="dice-json">{JSON.stringify(generated, null, 2)}</pre>
           </div>
         ) : null}
