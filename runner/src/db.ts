@@ -215,6 +215,33 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE INDEX IF NOT EXISTS jobs_by_ready ON jobs (status, next_run_at, created_at);
+
+-- 采集页的两个前台队列：下载链接和移除背景。浏览器只发起和查看，进度在此表。
+CREATE TABLE IF NOT EXISTS capture_tasks (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  url TEXT NOT NULL,
+  img_url TEXT NOT NULL DEFAULT '',
+  dedupe_key TEXT NOT NULL,
+  asset_id TEXT,
+  live_id TEXT,
+  label TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  next_run_at INTEGER NOT NULL,
+  error TEXT,
+  result TEXT,
+  created_at INTEGER NOT NULL,
+  started_at INTEGER,
+  finished_at INTEGER,
+  CHECK (kind IN ('download', 'nobg')),
+  CHECK (status IN ('pending', 'running', 'done', 'failed', 'skipped'))
+);
+
+CREATE INDEX IF NOT EXISTS capture_tasks_by_ready ON capture_tasks (kind, status, next_run_at, created_at);
+CREATE INDEX IF NOT EXISTS capture_tasks_by_key ON capture_tasks (kind, dedupe_key, status);
+
 CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

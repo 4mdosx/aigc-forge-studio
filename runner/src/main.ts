@@ -6,6 +6,7 @@ import { parseArgs } from 'node:util'
 import { WebSocketServer } from 'ws'
 
 import { CaptureLive } from './capture/live.ts'
+import { enqueueDownload, resumeCaptureTasks } from './capture/tasks.ts'
 import { gatewayChat } from './chat/client.ts'
 import { loadGateway } from './chat/env.ts'
 import { ComfyClient } from './comfy/client.ts'
@@ -43,7 +44,16 @@ async function main(): Promise<void> {
   }
   writeWd14TagTable(runner.db, runner.dataDir)
   resume(runner)
-  const live = new CaptureLive()
+  resumeCaptureTasks(runner.db, runner.now().getTime())
+  const live = new CaptureLive({
+    enqueue: (job) =>
+      enqueueDownload(
+        runner.db,
+        { url: job.url, ...(job.mediaUrl ? { mediaUrl: job.mediaUrl } : {}), liveId: job.id },
+        runner.now().getTime(),
+      ),
+  })
+  runner.captureLive = live
   const app = createApp(runner, live)
   const host = values.host ?? config.runner.host
   const port = portOf(values.port, config.runner.port)

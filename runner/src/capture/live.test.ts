@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { CaptureLive, type LiveSocket } from './live.ts'
+import { CaptureLive, type LiveCapture, type LiveSocket } from './live.ts'
 
 function peer(): { socket: LiveSocket; messages: unknown[] } {
   const messages: unknown[] = []
@@ -45,13 +45,16 @@ test('web is ready only after it says so, and leaving clears it', () => {
   assert.equal(last(extension.messages).webs, 0)
 })
 
-test('capture is rejected until a capture page is ready', () => {
-  const live = new CaptureLive()
-  const web = peer()
+test('capture is enqueued by runner without waiting for a capture page', () => {
+  const seen: LiveCapture[] = []
+  const live = new CaptureLive({
+    enqueue(job) {
+      seen.push(job)
+      return { duplicate: false }
+    },
+  })
   const extension = peer()
-  const webId = live.attach(web.socket)
   const extensionId = live.attach(extension.socket)
-  live.receive(webId, JSON.stringify({ type: 'hello', role: 'web' }))
   live.receive(
     extensionId,
     JSON.stringify({ type: 'hello', role: 'extension' }),
@@ -63,24 +66,33 @@ test('capture is rejected until a capture page is ready', () => {
       type: 'capture',
       id: 'job-1',
       url: 'https://www.pixiv.net/artworks/42',
+      mediaUrl: 'https://i.pximg.net/img-original/img/a.jpg',
     }),
   )
+  assert.deepEqual(seen, [
+    {
+      id: 'job-1',
+      url: 'https://www.pixiv.net/artworks/42',
+      mediaUrl: 'https://i.pximg.net/img-original/img/a.jpg',
+    },
+  ])
   assert.equal(
-    web.messages.some((item) => isType(item, 'capture')),
+    extension.messages.some((item) => isType(item, 'capture')),
     false,
   )
-  assert.equal(last(extension.messages).state, 'rejected')
-  assert.equal(last(extension.messages).message, '采集页未打开')
+  assert.equal(
+    extension.messages.some(
+      (item) => isType(item, 'status') && (item as { state?: string }).state === 'accepted',
+    ),
+    true,
+  )
+  assert.equal(last(extension.messages).state, 'queued')
 })
 
-test('a ready capture page receives the url, then its progress reaches the extension', () => {
-  const live = new CaptureLive()
-  const web = peer()
+test('duplicate capture reports duplicate instead of queueing another task', () => {
+  const live = new CaptureLive({ enqueue: () => ({ duplicate: true }) })
   const extension = peer()
-  const webId = live.attach(web.socket)
   const extensionId = live.attach(extension.socket)
-  live.receive(webId, JSON.stringify({ type: 'hello', role: 'web' }))
-  live.receive(webId, JSON.stringify({ type: 'ready', ready: true }))
   live.receive(
     extensionId,
     JSON.stringify({ type: 'hello', role: 'extension' }),
@@ -90,66 +102,55 @@ test('a ready capture page receives the url, then its progress reaches the exten
     extensionId,
     JSON.stringify({
       type: 'capture',
-      id: 'job-2',
-      url: 'https://www.pixiv.net/artworks/42',
-      mediaUrl: 'https://i.pximg.net/img-original/img/a.jpg',
+      id: 'job-duplicate',
+      url: 'https://www.pinterest.com/pin/1/',
     }),
   )
-  assert.deepEqual(last(web.messages), {
-    type: 'capture',
-    id: 'job-2',
-    url: 'https://www.pixiv.net/artworks/42',
-    mediaUrl: 'https://i.pximg.net/img-original/img/a.jpg',
-  })
-  assert.equal(last(extension.messages).state, 'accepted')
+  assert.equal(last(extension.messages).state, 'duplicate')
+})
 
-  live.receive(
-    webId,
-    JSON.stringify({
-      type: 'status',
-      id: 'job-2',
-      state: 'done',
-      message: '已下载原图',
-    }),
-  )
-  assert.deepEqual(last(extension.messages), {
+test('worker progress reaches every extension, never the capture page', () => {
+  const live = new CaptureLive({ enqueue: () => ({ duplicate: false }) })
+  const web = peer()
+  const first = peer()
+  const second = peer()
+  const webId = live.attach(web.socket)
+  const firstId = live.attach(first.socket)
+  const secondId = live.attach(second.socket)
+  live.receive(webId, JSON.stringify({ type: 'hello', role: 'web' }))
+  live.receive(webId, JSON.stringify({ type: 'ready', ready: true }))
+  for (const id of [firstId, secondId]) {
+    live.receive(id, JSON.stringify({ type: 'hello', role: 'extension' }))
+  }
+
+  live.report('job-2', 'done', '已下载原图')
+  assert.deepEqual(last(first.messages), {
     type: 'status',
     id: 'job-2',
     state: 'done',
     message: '已下载原图',
   })
+  assert.deepEqual(last(second.messages), last(first.messages))
   assert.equal(web.messages.filter((item) => isType(item, 'status')).length, 0)
 })
 
-test('the capture goes to the page that became ready most recently', () => {
+test('the capture page cannot report progress any more', () => {
   const live = new CaptureLive()
-  const first = peer()
-  const second = peer()
-  const extension = peer()
-  const firstId = live.attach(first.socket)
-  const secondId = live.attach(second.socket)
-  const extensionId = live.attach(extension.socket)
-  for (const id of [firstId, secondId]) {
-    live.receive(id, JSON.stringify({ type: 'hello', role: 'web' }))
-    live.receive(id, JSON.stringify({ type: 'ready', ready: true }))
-  }
+  const web = peer()
+  const webId = live.attach(web.socket)
+  live.receive(webId, JSON.stringify({ type: 'hello', role: 'web' }))
+  live.receive(webId, JSON.stringify({ type: 'ready', ready: true }))
+
   live.receive(
-    extensionId,
-    JSON.stringify({ type: 'hello', role: 'extension' }),
-  )
-  live.receive(
-    extensionId,
+    webId,
     JSON.stringify({
-      type: 'capture',
-      id: 'job-3',
-      url: 'https://www.pinterest.com/pin/1/',
+      type: 'status',
+      id: 'job-4',
+      state: 'done',
+      message: '已下载原图',
     }),
   )
-  assert.equal(
-    first.messages.some((item) => isType(item, 'capture')),
-    false,
-  )
-  assert.equal(last(second.messages).type, 'capture')
+  assert.equal(last(web.messages).message, '进度由 runner 维护，采集页不再回报')
 })
 
 test('roles stay on their own side of the handshake', () => {
@@ -171,18 +172,11 @@ test('roles stay on their own side of the handshake', () => {
     webId,
     JSON.stringify({
       type: 'capture',
-      id: 'job-4',
+      id: 'job-5',
       url: 'https://www.pinterest.com/pin/1/',
     }),
   )
   assert.equal(last(web.messages).message, '只有插件可以发起采集')
-
-  live.receive(webId, JSON.stringify({ type: 'ready', ready: true }))
-  live.receive(
-    extensionId,
-    JSON.stringify({ type: 'status', id: 'job-4', state: 'done' }),
-  )
-  assert.equal(last(extension.messages).message, '只有采集页可以回报进度')
 })
 
 test('a peer must hello before anything else, and bad frames stay on that socket', () => {
@@ -198,7 +192,7 @@ test('a peer must hello before anything else, and bad frames stay on that socket
 
 function isType(value: unknown, type: string): boolean {
   return (
-    !!value &&
+    Boolean(value) &&
     typeof value === 'object' &&
     (value as { type?: unknown }).type === type
   )

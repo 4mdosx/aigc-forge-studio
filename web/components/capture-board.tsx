@@ -13,30 +13,45 @@ import {
 } from "@/components/image-assets";
 import { NobgEraser } from "@/components/nobg-eraser";
 import { api, fileHref } from "@/lib/api";
-import {
-  connectCaptureLive,
-  type CaptureJob,
-  type CaptureReport,
-} from "@/lib/capture-live";
+import { connectCaptureLive } from "@/lib/capture-live";
 import { fail, messageOf, notify } from "@/lib/notify";
 import { isSafetyHiddenRating, useSafetyMode } from "@/lib/safety-mode";
 
-type DownloadState = "queued" | "active" | "done" | "failed";
+type TaskKind = "download" | "nobg";
+type TaskStatus = "pending" | "running" | "done" | "failed" | "skipped";
 
-type DownloadTask = {
-  id: number;
-  liveId?: string;
+type CaptureTask = {
+  id: string;
+  kind: TaskKind;
+  status: TaskStatus;
   url: string;
-  key: string;
-  imageKey: string;
-  state: DownloadState;
-  imgUrl?: string;
+  imgUrl: string;
+  dedupeKey: string;
+  assetId: string | null;
+  liveId: string | null;
+  label: string;
+  attempts: number;
+  maxAttempts: number;
+  nextRunAt: number;
+  error: string | null;
+  result: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
 };
 
-type CutoutTask = {
-  assetId: string;
-  label: string;
-  state: DownloadState;
+type TaskList = {
+  counts: Record<TaskKind, Record<TaskStatus, number>>;
+  items: CaptureTask[];
+};
+
+const TERMINAL: TaskStatus[] = ["done", "failed", "skipped"];
+const SEG_CLASS: Record<TaskStatus, string> = {
+  pending: "queued",
+  running: "active",
+  done: "done",
+  failed: "failed",
+  skipped: "done",
 };
 
 export function CaptureBoard() {
@@ -51,424 +66,130 @@ export function CaptureBoard() {
       ? images.selected
       : null;
   const loadItems = images.loadItems;
-  const itemsRef = images.itemsRef;
   const selectedRef = images.selectedRef;
   const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [slide, setSlide] = useState<SlideKey>("image");
   const [erasing, setErasing] = useState(false);
-  const downloadsRef = useRef<DownloadTask[]>([]);
-  const downloadSeq = useRef(0);
-  const pumping = useRef(false);
-  const pumpGen = useRef(0);
-  const addedCount = useRef(0);
-  const duplicateCount = useRef(0);
-  const hideDownloads = useRef<number | null>(null);
-  const [downloads, setDownloads] = useState<DownloadTask[]>([]);
+  const [tasks, setTasks] = useState<CaptureTask[]>([]);
+  const previousRef = useRef<Map<string, TaskStatus>>(new Map());
+  const firstPollRef = useRef(true);
+  const reportedRef = useRef("");
+  const loadItemsRef = useRef(loadItems);
+  loadItemsRef.current = loadItems;
+  const [clock, setClock] = useState(() => Date.now());
   const [liveLink, setLiveLink] = useState({ extensions: 0, connected: false });
-  const reportRef = useRef<((status: CaptureReport) => void) | null>(null);
-  const acceptRef = useRef<(job: CaptureJob) => void>(() => {});
-  const cutoutsRef = useRef<CutoutTask[]>([]);
-  const cutoutPumping = useRef(false);
-  const cutoutGen = useRef(0);
-  const cutoutAdded = useRef(0);
-  const cutoutSkipped = useRef(0);
-  const hideCutouts = useRef<number | null>(null);
-  const [cutouts, setCutouts] = useState<CutoutTask[]>([]);
 
-  function publishCutouts() {
-    setCutouts(cutoutsRef.current.map((task) => ({ ...task })));
-  }
-
-  function cutoutQueued(item: ImageAsset): boolean {
-    const hash = item.original.hash;
-    return cutoutsRef.current.some((task) => {
-      if (task.state === "failed") return false;
-      if (task.assetId === item.id) return true;
-      const other = itemsRef.current.find((row) => row.id === task.assetId);
-      return Boolean(hash && other?.original.hash === hash);
-    });
-  }
-
-  function cutoutExists(item: ImageAsset): boolean {
-    if (item.nobgUrl) return true;
-    const hash = item.original.hash;
-    if (!hash) return false;
-    return itemsRef.current.some(
-      (row) => row.id !== item.id && row.original.hash === hash && row.nobgUrl,
+  function applyTasks(list: TaskList) {
+    const previous = previousRef.current;
+    let added = 0;
+    let duplicates = 0;
+    let cutouts = 0;
+    let failures = 0;
+    if (!firstPollRef.current) {
+      for (const task of list.items) {
+        const before = previous.get(task.id);
+        if (before === undefined || before === task.status) continue;
+        if (task.status === "done" || task.status === "skipped") {
+          if (task.kind === "download") {
+            if (task.status === "skipped") duplicates += 1;
+            else added += 1;
+          } else cutouts += 1;
+        } else if (task.status === "failed") failures += 1;
+      }
+    }
+    firstPollRef.current = false;
+    previousRef.current = new Map(
+      list.items.map((task) => [task.id, task.status]),
     );
+    setTasks(list.items);
+    setClock(Date.now());
+    if (added > 0) {
+      notify(added === 1 ? "已下载原图，预处理进行中" : `已接收 ${added} 个链接，预处理进行中`);
+    }
+    if (duplicates > 0) {
+      notify(duplicates === 1 ? "重复图片，已跳过" : `${duplicates} 个链接是重复图片，已跳过`);
+    }
+    if (cutouts > 0) {
+      notify(cutouts === 1 ? "背景已移除" : `已移除 ${cutouts} 张图的背景`);
+    }
+    if (failures > 0) fail(failures === 1 ? "有 1 个任务失败" : `有 ${failures} 个任务失败`);
+    if (added > 0 || cutouts > 0) void loadItemsRef.current();
   }
 
-  function enqueueCutout(item: ImageAsset) {
+  useEffect(() => {
+    let active = true;
+    async function poll() {
+      try {
+        const list = await api<TaskList>("capture/tasks");
+        if (!active) return;
+        reportedRef.current = "";
+        applyTasks(list);
+      } catch (err) {
+        const message = messageOf(err);
+        if (!active || reportedRef.current === message) return;
+        reportedRef.current = message;
+        fail(message);
+      }
+    }
+    void poll();
+    const timer = window.setInterval(() => void poll(), 1200);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  async function enqueueUrls(rawUrls: string[]) {
+    const urls = rawUrls.map((value) => value.trim()).filter((value) => value !== "");
+    if (urls.length === 0) return;
+    try {
+      const result = await api<{ added: number; duplicates: number }>(
+        "capture/downloads",
+        { method: "POST", body: JSON.stringify({ urls }) },
+      );
+      setUrl("");
+      if (result.added > 0) {
+        notify(result.added === 1 ? "已进入下载队列" : `已加入 ${result.added} 个链接`);
+      }
+      if (result.duplicates > 0) {
+        notify(result.duplicates === 1 ? "重复图片，已跳过" : `${result.duplicates} 个链接是重复图片，已跳过`);
+      }
+      await loadItems();
+    } catch (err) {
+      fail(messageOf(err));
+    }
+  }
+
+  async function enqueueCutout(item: ImageAsset) {
     if (!item.processedUrl) return;
     if (item.nobgUrl) {
       if (selectedRef.current === item.id) setSlide("nobg");
       return;
     }
-    if (cutoutQueued(item)) {
-      notify("这张图已在移除队列里");
-      return;
-    }
-    if (cutoutExists(item)) {
-      notify("这张图已经移除过背景，已跳过");
-      return;
-    }
-    if (hideCutouts.current !== null) {
-      window.clearTimeout(hideCutouts.current);
-      hideCutouts.current = null;
-    }
-    cutoutsRef.current = [
-      ...cutoutsRef.current,
-      {
-        assetId: item.id,
-        label: item.source.sourceUrl || item.source.imgUrl || item.id,
-        state: "queued",
-      },
-    ];
-    publishCutouts();
-    void pumpCutouts();
-  }
-
-  async function pumpCutouts() {
-    if (cutoutPumping.current) return;
-    cutoutPumping.current = true;
-    const gen = ++cutoutGen.current;
     try {
-      for (;;) {
-        const next = cutoutsRef.current.find((task) => task.state === "queued");
-        if (!next) break;
-        const current = itemsRef.current.find((row) => row.id === next.assetId);
-        if (current && cutoutExists(current)) {
-          cutoutsRef.current = cutoutsRef.current.filter(
-            (task) => task.assetId !== next.assetId,
-          );
-          cutoutSkipped.current += 1;
-          publishCutouts();
-          continue;
-        }
-        next.state = "active";
-        publishCutouts();
-        try {
-          await api(`capture/assets/${next.assetId}/nobg`, { method: "POST" });
-          next.state = "done";
-          cutoutAdded.current += 1;
-          await loadItems();
-          if (selectedRef.current === next.assetId) setSlide("nobg");
-        } catch (err) {
-          next.state = "failed";
-          fail(messageOf(err));
-        }
-        publishCutouts();
-      }
-    } finally {
-      cutoutPumping.current = false;
-      if (cutoutsRef.current.some((task) => task.state === "queued")) {
-        void pumpCutouts();
-        return;
-      }
-      if (gen !== cutoutGen.current) return;
-      const added = cutoutAdded.current;
-      const skipped = cutoutSkipped.current;
-      cutoutAdded.current = 0;
-      cutoutSkipped.current = 0;
-      if (added > 0) {
-        notify(added === 1 ? "背景已移除" : `已移除 ${added} 张图的背景`);
-      }
-      if (skipped > 0) {
-        notify(
-          skipped === 1
-            ? "这张图已经移除过背景，已跳过"
-            : `${skipped} 张图已经移除过背景，已跳过`,
-        );
-      }
-      if (
-        cutoutsRef.current.some(
-          (task) => task.state === "queued" || task.state === "active",
-        )
-      ) {
-        return;
-      }
-      hideCutouts.current = window.setTimeout(() => {
-        hideCutouts.current = null;
-        if (
-          cutoutsRef.current.some(
-            (task) => task.state === "queued" || task.state === "active",
-          )
-        ) {
-          return;
-        }
-        cutoutsRef.current = [];
-        publishCutouts();
-      }, 900);
-    }
-  }
-
-  function publishDownloads() {
-    setDownloads(downloadsRef.current.map((task) => ({ ...task })));
-  }
-
-  function reportLive(
-    task: DownloadTask,
-    state: CaptureReport["state"],
-    message?: string,
-  ) {
-    if (!task.liveId) return;
-    reportRef.current?.({ id: task.liveId, state, message });
-  }
-
-  function knownUrlKeys(exceptId?: number): Set<string> {
-    const keys = new Set<string>();
-    for (const item of itemsRef.current) {
-      if (item.source.sourceUrl) keys.add(urlKey(item.source.sourceUrl));
-      if (item.source.imgUrl) keys.add(urlKey(item.source.imgUrl));
-    }
-    for (const task of downloadsRef.current) {
-      if (task.id === exceptId || task.state === "failed") continue;
-      keys.add(task.key);
-      if (task.imageKey) keys.add(task.imageKey);
-    }
-    return keys;
-  }
-
-  function enqueueUrls(rawUrls: string[]) {
-    const known = knownUrlKeys();
-    const fresh: DownloadTask[] = [];
-    let skipped = 0;
-    for (const raw of rawUrls) {
-      const url = raw.trim();
-      if (url === "") continue;
-      const key = urlKey(url);
-      if (known.has(key)) {
-        skipped += 1;
-        continue;
-      }
-      known.add(key);
-      downloadSeq.current += 1;
-      fresh.push({
-        id: downloadSeq.current,
-        url,
-        key,
-        imageKey: needsResolve(url) ? "" : key,
-        state: "queued",
-      });
-    }
-    if (skipped > 0) {
-      notify(
-        skipped === 1
-          ? "这个链接已经有了，已跳过"
-          : `${skipped} 个链接已经有了，已跳过`,
+      const result = await api<{ added: number; skipped: number }>(
+        "capture/cutouts",
+        { method: "POST", body: JSON.stringify({ assetIds: [item.id] }) },
       );
+      if (result.skipped > 0) {
+        notify("这张图已经移除过背景或已在队列中，已跳过");
+      }
+      if (result.added > 0) await loadItems();
+    } catch (err) {
+      fail(messageOf(err));
     }
-    if (fresh.length === 0) return;
-    if (hideDownloads.current !== null) {
-      window.clearTimeout(hideDownloads.current);
-      hideDownloads.current = null;
-    }
-    downloadsRef.current = [...downloadsRef.current, ...fresh];
-    publishDownloads();
-    setUrl("");
-    void pumpDownloads();
   }
 
-  function acceptRemote(job: CaptureJob) {
-    const known = knownUrlKeys();
-    const identity = urlKey(job.mediaUrl || job.url);
-    if (known.has(identity)) {
-      notify("这个链接已经有了，已跳过");
-      reportRef.current?.({
-        id: job.id,
-        state: "duplicate",
-        message: "重复图片，已跳过",
-      });
-      return;
-    }
-    if (hideDownloads.current !== null) {
-      window.clearTimeout(hideDownloads.current);
-      hideDownloads.current = null;
-    }
-    downloadSeq.current += 1;
-    downloadsRef.current = [
-      ...downloadsRef.current,
-      {
-        id: downloadSeq.current,
-        liveId: job.id,
-        url: job.url,
-        key: identity,
-        imageKey:
-          Boolean(job.mediaUrl) || !needsResolve(job.url) ? identity : "",
-        ...(job.mediaUrl ? { imgUrl: job.mediaUrl } : {}),
-        state: "queued",
-      },
-    ];
-    publishDownloads();
-    reportRef.current?.({
-      id: job.id,
-      state: "queued",
-      message: "已进入采集队列",
-    });
-    void pumpDownloads();
-  }
-
-  acceptRef.current = acceptRemote;
-
-  function enqueueResolved(sourceUrl: string, imgUrls: string[]) {
-    if (imgUrls.length === 0) return;
-    const known = knownUrlKeys();
-    const fresh: DownloadTask[] = [];
-    for (const imgUrl of imgUrls) {
-      const key = urlKey(imgUrl);
-      if (known.has(key)) continue;
-      known.add(key);
-      downloadSeq.current += 1;
-      fresh.push({
-        id: downloadSeq.current,
-        url: sourceUrl,
-        key,
-        imageKey: key,
-        imgUrl,
-        state: "queued",
-      });
-    }
-    if (fresh.length === 0) return;
-    downloadsRef.current = [...downloadsRef.current, ...fresh];
-    publishDownloads();
-  }
-
-  async function runDownload(task: DownloadTask): Promise<"added" | "duplicate"> {
-    let imgUrl = task.imgUrl || task.url;
-    let sourceUrl = "";
-    let sourceType: "manual" | "crawler" = "manual";
-    if (task.imgUrl || needsResolve(task.url)) {
-      if (!task.imgUrl) {
-        const provider = isPixiv(task.url) ? "pixiv" : "pinterest";
-        const resolved = await api<{ imgUrl: string; imgUrls?: string[] }>(
-          "capture/resolve",
-          {
-            method: "POST",
-            body: JSON.stringify({ provider, url: task.url }),
-          },
-        );
-        const list = (resolved.imgUrls ?? []).filter((item) => item.trim() !== "");
-        const urls = list.length > 0 ? list : [resolved.imgUrl];
-        const first = urls[0];
-        if (!first) throw new Error("没有解析出图片");
-        imgUrl = first;
-        enqueueResolved(task.url, urls.slice(1));
-      }
-      sourceUrl = task.url;
-      sourceType = "crawler";
-      const imageKey = urlKey(imgUrl);
-      task.imageKey = imageKey;
-      if (knownUrlKeys(task.id).has(imageKey)) return "duplicate";
-    }
-    const body = await api<{ duplicate?: boolean }>("capture/collected", {
-      method: "POST",
-      body: JSON.stringify({ sourceType, sourceUrl, imgUrl }),
-    });
-    return body.duplicate ? "duplicate" : "added";
-  }
-
-  async function pumpDownloads() {
-    if (pumping.current) return;
-    pumping.current = true;
-    const gen = ++pumpGen.current;
-    try {
-      for (;;) {
-        const next = downloadsRef.current.find((task) => task.state === "queued");
-        if (!next) break;
-        next.state = "active";
-        publishDownloads();
-        reportLive(next, "active", "正在下载");
-        try {
-          const result = await runDownload(next);
-          if (result === "duplicate") {
-            reportLive(next, "duplicate", "重复图片，已跳过");
-            downloadsRef.current = downloadsRef.current.filter(
-              (task) => task.id !== next.id,
-            );
-            duplicateCount.current += 1;
-          } else {
-            next.state = "done";
-            reportLive(next, "done", "已下载原图");
-            addedCount.current += 1;
-            await loadItems();
-          }
-        } catch (err) {
-          next.state = "failed";
-          const message = messageOf(err);
-          reportLive(next, "failed", message);
-          fail(message);
-        }
-        publishDownloads();
-      }
-    } finally {
-      pumping.current = false;
-      if (downloadsRef.current.some((task) => task.state === "queued")) {
-        void pumpDownloads();
-        return;
-      }
-      if (gen !== pumpGen.current) return;
-      const added = addedCount.current;
-      const duplicates = duplicateCount.current;
-      addedCount.current = 0;
-      duplicateCount.current = 0;
-      if (added > 0) {
-        notify(
-          added === 1
-            ? "已下载原图，预处理进行中"
-            : `已接收 ${added} 个链接，预处理进行中`,
-        );
-      }
-      if (duplicates > 0) {
-        notify(
-          duplicates === 1
-            ? "重复图片，已跳过"
-            : `${duplicates} 个链接是重复图片，已跳过`,
-        );
-      }
-      if (
-        downloadsRef.current.some(
-          (task) => task.state === "queued" || task.state === "active",
-        )
-      ) {
-        return;
-      }
-      hideDownloads.current = window.setTimeout(() => {
-        hideDownloads.current = null;
-        if (
-          downloadsRef.current.some(
-            (task) => task.state === "queued" || task.state === "active",
-          )
-        ) {
-          return;
-        }
-        downloadsRef.current = [];
-        publishDownloads();
-      }, 900);
-    }
-  }
 
   useEffect(() => {
     const live = connectCaptureLive({
-      onCapture(job) {
-        acceptRef.current(job);
-      },
       onLink(link) {
         setLiveLink(link);
       },
     });
-    reportRef.current = (status) => live.report(status);
-    return () => {
-      reportRef.current = null;
-      live.close();
-      if (hideDownloads.current !== null) {
-        window.clearTimeout(hideDownloads.current);
-      }
-      if (hideCutouts.current !== null) {
-        window.clearTimeout(hideCutouts.current);
-      }
-    };
+    return () => live.close();
   }, []);
 
   async function submitFiles(files: File[]) {
@@ -503,12 +224,12 @@ export function CaptureBoard() {
 
   function submitPin(event: FormEvent) {
     event.preventDefault();
-    enqueueUrls([url]);
+    void enqueueUrls([url]);
   }
 
   async function takeIncoming(files: File[], urls: string[] | null) {
     if (files.length > 0) await submitFiles(files);
-    if (urls) enqueueUrls(urls);
+    if (urls) await enqueueUrls(urls);
   }
 
   function takeDrop(event: DragEvent<HTMLElement>) {
@@ -557,6 +278,14 @@ export function CaptureBoard() {
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
   }, []);
+
+  const visibleTasks = tasks.filter(
+    (task) =>
+      !TERMINAL.includes(task.status) ||
+      clock - (task.finishedAt ?? 0) < 12000,
+  );
+  const downloads = visibleTasks.filter((task) => task.kind === "download");
+  const cutouts = visibleTasks.filter((task) => task.kind === "nobg");
 
   const slides = selected
     ? [
@@ -707,7 +436,7 @@ export function CaptureBoard() {
                           cutouts.some(
                             (task) =>
                               task.assetId === selected.id &&
-                              (task.state === "queued" || task.state === "active"),
+                              (task.status === "pending" || task.status === "running"),
                           )
                         }
                         onClick={() => enqueueCutout(selected)}
@@ -765,7 +494,7 @@ export function CaptureBoard() {
               ? cutouts.some(
                   (task) =>
                     task.assetId === selected.id &&
-                    (task.state === "queued" || task.state === "active"),
+                    (task.status === "pending" || task.status === "running"),
                 )
               : false
           }
@@ -785,13 +514,13 @@ export function CaptureBoard() {
             aria-label="下载进度"
             aria-valuemin={0}
             aria-valuemax={downloads.length}
-            aria-valuenow={downloads.filter((task) => task.state === "done").length}
+            aria-valuenow={downloads.filter((task) => task.status === "done").length}
           >
             {downloads.map((task) => (
               <span
                 key={task.id}
-                className={`capture-download-seg ${task.state}`}
-                title={task.url}
+                className={`capture-download-seg ${SEG_CLASS[task.status]}`}
+                title={task.label}
               />
             ))}
           </div>
@@ -806,12 +535,12 @@ export function CaptureBoard() {
             aria-label="移除背景进度"
             aria-valuemin={0}
             aria-valuemax={cutouts.length}
-            aria-valuenow={cutouts.filter((task) => task.state === "done").length}
+            aria-valuenow={cutouts.filter((task) => task.status === "done").length}
           >
             {cutouts.map((task) => (
               <span
-                key={task.assetId}
-                className={`capture-download-seg ${task.state}`}
+                key={task.id}
+                className={`capture-download-seg ${SEG_CLASS[task.status]}`}
                 title={task.label}
               />
             ))}
@@ -834,110 +563,35 @@ function versionOf(key: SlideKey | undefined): FinalVersion {
   return "processed";
 }
 
-function cutoutLabelFor(tasks: CutoutTask[], assetId: string): string {
+function cutoutLabelFor(tasks: CaptureTask[], assetId: string): string {
   const task = tasks.find((item) => item.assetId === assetId);
-  if (task?.state === "active") return "移除中…";
-  if (task?.state === "queued") return "排队中…";
+  if (task?.status === "running") return "移除中…";
+  if (task?.status === "pending") return "排队中…";
   return "移除背景";
 }
 
-function cutoutLabel(tasks: CutoutTask[]): string {
+function cutoutLabel(tasks: CaptureTask[]): string {
   const total = tasks.length;
-  const done = tasks.filter((task) => task.state === "done").length;
-  const queued = tasks.filter((task) => task.state === "queued").length;
-  const failed = tasks.filter((task) => task.state === "failed").length;
-  const active = tasks.some((task) => task.state === "active");
+  const done = tasks.filter((task) => task.status === "done").length;
+  const queued = tasks.filter((task) => task.status === "pending").length;
+  const failed = tasks.filter((task) => task.status === "failed").length;
+  const active = tasks.some((task) => task.status === "running");
   if (queued > 0) return `正在移除背景 ${done + 1}/${total}，还有 ${queued} 个在排队`;
   if (active) return `正在移除背景 ${done + 1}/${total}`;
   if (failed > 0) return `移除结束，${failed} 个没有完成`;
   return `已移除 ${done}/${total}`;
 }
 
-function downloadLabel(tasks: DownloadTask[]): string {
+function downloadLabel(tasks: CaptureTask[]): string {
   const total = tasks.length;
-  const done = tasks.filter((task) => task.state === "done").length;
-  const queued = tasks.filter((task) => task.state === "queued").length;
-  const failed = tasks.filter((task) => task.state === "failed").length;
-  const active = tasks.some((task) => task.state === "active");
+  const done = tasks.filter((task) => task.status === "done").length;
+  const queued = tasks.filter((task) => task.status === "pending").length;
+  const failed = tasks.filter((task) => task.status === "failed").length;
+  const active = tasks.some((task) => task.status === "running");
   if (queued > 0) return `正在下载 ${done + 1}/${total}，还有 ${queued} 个在排队`;
   if (active) return `正在下载 ${done + 1}/${total}`;
   if (failed > 0) return `下载结束，${failed} 个没有下下来`;
   return `已下载 ${done}/${total}`;
-}
-
-function hostOf(value: string): string | null {
-  try {
-    return new URL(value).hostname.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-function isPinterestHost(host: string): boolean {
-  return (
-    host === "pin.it" ||
-    host.endsWith(".pin.it") ||
-    host === "pinterest.com" ||
-    host.endsWith(".pinterest.com") ||
-    host === "pinimg.com" ||
-    host.endsWith(".pinimg.com")
-  );
-}
-
-function isPixivHost(host: string): boolean {
-  return host === "pixiv.net" || host.endsWith(".pixiv.net");
-}
-
-function isPximgHost(host: string): boolean {
-  return host === "pximg.net" || host.endsWith(".pximg.net");
-}
-
-function pixivArtworkId(url: URL): string | null {
-  const fromPath = /\/artworks\/(\d+)/.exec(url.pathname);
-  if (fromPath?.[1]) return fromPath[1];
-  const illustId = url.searchParams.get("illust_id");
-  if (illustId && /^\d+$/.test(illustId)) return illustId;
-  return null;
-}
-
-function urlKey(value: string): string {
-  const text = value.trim();
-  try {
-    const url = new URL(text);
-    url.hash = "";
-    url.hostname = url.hostname.toLowerCase();
-    const host = url.hostname;
-    if (isPixivHost(host)) {
-      const id = pixivArtworkId(url);
-      if (id) return `https://www.pixiv.net/artworks/${id}`;
-    }
-    if (isPinterestHost(host) || isPixivHost(host) || isPximgHost(host)) {
-      url.search = "";
-    }
-    url.pathname = url.pathname.replace(/\/+$/, "") || "/";
-    return url.toString();
-  } catch {
-    return text;
-  }
-}
-
-function isPinterest(value: string): boolean {
-  const text = value.trim();
-  if (/^(pin\.it\/|pinterest\.|www\.pinterest\.|i\.pinimg\.)/i.test(text))
-    return true;
-  const host = hostOf(text);
-  return host ? isPinterestHost(host) : false;
-}
-
-function isPixiv(value: string): boolean {
-  const text = value.trim();
-  if (/^(pixiv\.net\/|www\.pixiv\.net\/|i\.pximg\.)/i.test(text)) return true;
-  const host = hostOf(text);
-  return host ? isPixivHost(host) || isPximgHost(host) : false;
-}
-
-function needsResolve(value: string): boolean {
-  return isPinterest(value) || isPixiv(value);
 }
 
 function imageFiles(list: FileList | null): File[] {

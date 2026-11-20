@@ -1,17 +1,6 @@
 // 采集页和 runner 的握手。只有这个页面开着才报 ready。
 // 不走 Next 的 HTTP 代理：升级不了 WebSocket，直接连本机 runner。
-
-export type CaptureJob = {
-  id: string;
-  url: string;
-  mediaUrl?: string;
-};
-
-export type CaptureReport = {
-  id: string;
-  state: "queued" | "active" | "done" | "duplicate" | "failed";
-  message?: string;
-};
+// 任务由 runner 直接写入 SQLite；这里只同步在线状态，不再传任务、也不回报进度。
 
 export type CaptureLink = {
   connected: boolean;
@@ -21,21 +10,12 @@ export type CaptureLink = {
 const LIVE = "ws://127.0.0.1:8787/capture/live";
 
 export function connectCaptureLive(handlers: {
-  onCapture: (job: CaptureJob) => void;
   onLink: (link: CaptureLink) => void;
-}): {
-  close: () => void;
-  report: (status: CaptureReport) => void;
-} {
+}): { close: () => void } {
   let socket: WebSocket | null = null;
   let closed = false;
   let attempt = 0;
   let timer = 0;
-
-  function send(body: unknown) {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(JSON.stringify(body));
-  }
 
   function open() {
     if (closed) return;
@@ -61,15 +41,7 @@ export function connectCaptureLive(handlers: {
           connected: true,
           extensions: typeof body.extensions === "number" ? body.extensions : 0,
         });
-        return;
       }
-      if (body.type !== "capture") return;
-      if (typeof body.id !== "string" || typeof body.url !== "string") return;
-      handlers.onCapture({
-        id: body.id,
-        url: body.url,
-        ...(typeof body.mediaUrl === "string" ? { mediaUrl: body.mediaUrl } : {}),
-      });
     };
     ws.onclose = () => {
       if (socket !== ws) return;
@@ -85,16 +57,6 @@ export function connectCaptureLive(handlers: {
   open();
 
   return {
-    report(status) {
-      const body: {
-        type: "status";
-        id: string;
-        state: CaptureReport["state"];
-        message?: string;
-      } = { type: "status", id: status.id, state: status.state };
-      if (status.message) body.message = status.message;
-      send(body);
-    },
     close() {
       closed = true;
       window.clearTimeout(timer);

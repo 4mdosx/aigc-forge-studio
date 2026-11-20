@@ -1,6 +1,6 @@
-// 采集握手只活在这个进程的内存里，重启即清空。
-// Web 只有停在采集页并报 ready 才接任务；插件把链接送进来，再推给最近就绪的那个采集页。
-// 在线状态推给两边，任务进度只从采集页推回插件。
+// 采集握手的在线状态活在这个进程的内存里，重启即清空。
+// 插件把链接交给 runner，runner 直接写入 capture_tasks；采集页只负责发起和查看。
+// 任务进度由 worker 调 report() 推给插件，采集页不再回报状态。
 
 export type LiveRole = 'web' | 'extension'
 
@@ -33,6 +33,14 @@ export type LiveSocket = {
   send: (text: string) => void
 }
 
+export type LiveCapture = {
+  id: string
+  url: string
+  mediaUrl?: string
+}
+
+export type LiveEnqueue = (job: LiveCapture) => { duplicate: boolean }
+
 type Peer = {
   id: string
   role: LiveRole | null
@@ -43,8 +51,15 @@ type Peer = {
 
 export class CaptureLive {
   private readonly peers = new Map<string, Peer>()
+  private readonly hooks: { enqueue: LiveEnqueue }
   private seq = 0
   private readySeq = 0
+
+  constructor(
+    hooks: { enqueue: LiveEnqueue } = { enqueue: () => ({ duplicate: false }) },
+  ) {
+    this.hooks = hooks
+  }
 
   attach(socket: LiveSocket): string {
     this.seq += 1
@@ -114,7 +129,7 @@ export class CaptureLive {
       return
     }
     if (type === 'status') {
-      this.onStatus(peer, message)
+      this.onStatus(peer)
       return
     }
     this.fail(peer, '未知消息')
@@ -173,13 +188,7 @@ export class CaptureLive {
       }
       mediaUrl = media
     }
-    const target = this.readyWeb()
-    if (!target) {
-      this.reject(peer, id, '采集页未打开')
-      return
-    }
-    this.push(target, {
-      type: 'capture',
+    const result = this.hooks.enqueue({
       id,
       url,
       ...(mediaUrl ? { mediaUrl } : {}),
@@ -188,41 +197,29 @@ export class CaptureLive {
       type: 'status',
       id,
       state: 'accepted',
-      message: '已交给采集页',
+      message: '已进入采集队列',
     })
+    this.report(
+      id,
+      result.duplicate ? 'duplicate' : 'queued',
+      result.duplicate ? '重复图片，已跳过' : '已进入采集队列',
+    )
   }
 
-  private onStatus(peer: Peer, message: Record<string, unknown>): void {
-    if (peer.role !== 'web') {
-      this.fail(peer, '只有采集页可以回报进度')
-      return
-    }
-    if (!peer.ready) {
-      this.fail(peer, '采集页未就绪')
-      return
-    }
-    const id = captureIdOf(message.id)
-    if (!id) {
-      this.fail(peer, '采集 id 无效')
-      return
-    }
-    const state = message.state
-    if (
-      typeof state !== 'string' ||
-      !WEB_STATUS.has(state as LiveStatusState)
-    ) {
-      this.fail(peer, '状态无效')
-      return
-    }
+  private onStatus(peer: Peer): void {
+    this.fail(peer, '进度由 runner 维护，采集页不再回报')
+  }
+
+  // worker 把任务状态推给所有插件；采集页通过 GET /capture/tasks 看同一份真相。
+  report(id: string, state: LiveStatusState, message?: string): void {
+    if (!WEB_STATUS.has(state)) return
     const status: {
       type: 'status'
       id: string
       state: LiveStatusState
       message?: string
-    } = { type: 'status', id, state: state as LiveStatusState }
-    if (typeof message.message === 'string' && message.message !== '') {
-      status.message = message.message.slice(0, 500)
-    }
+    } = { type: 'status', id, state }
+    if (message && message !== '') status.message = message.slice(0, 500)
     const text = JSON.stringify(status)
     for (const other of [...this.peers.values()]) {
       if (other.role !== 'extension') continue
@@ -232,15 +229,6 @@ export class CaptureLive {
 
   private reject(peer: Peer, id: string, message: string): void {
     this.push(peer, { type: 'status', id, state: 'rejected', message })
-  }
-
-  private readyWeb(): Peer | null {
-    let best: Peer | null = null
-    for (const peer of this.peers.values()) {
-      if (peer.role !== 'web' || !peer.ready) continue
-      if (!best || peer.readyAt >= best.readyAt) best = peer
-    }
-    return best
   }
 
   private emitState(): void {

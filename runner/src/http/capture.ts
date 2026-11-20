@@ -38,6 +38,12 @@ import {
   resumeCaptureJobs,
   retryCaptureJob,
 } from '../capture/jobs.ts'
+import {
+  enqueueDownload,
+  enqueueNobg,
+  listCaptureTasks,
+  retryCaptureTask,
+} from '../capture/tasks.ts'
 import { pixivSessionFromFile } from '../chat/env.ts'
 import { findRepoRoot } from '../config.ts'
 import { RunnerError } from '../errors.ts'
@@ -573,7 +579,7 @@ function pixivCookie(): string | undefined {
   }
 }
 
-function pixivRequestCookie(url: string): string | undefined {
+export function pixivRequestCookie(url: string): string | undefined {
   try {
     const host = new URL(url).hostname.toLowerCase()
     if (!isPixivHost(host) && !isPximgHost(host)) return undefined
@@ -626,7 +632,7 @@ async function fetchPage(
 }
 
 // 下文件到 dest.part，成功后改名 dest（防半截文件）
-async function downloadTo(
+export async function downloadTo(
   url: string,
   dest: string,
   referer?: string,
@@ -713,7 +719,7 @@ export function writeMeta(
 
 // 页面/短链 → 图片 URL。Pinterest 用 og:image，失败再走 oEmbed。
 // pixiv 作品页走 ajax /pages，一次拿齐每一页的 img-original。
-async function resolveMediaUrls(input: string): Promise<string[]> {
+export async function resolveMediaUrls(input: string): Promise<string[]> {
   const { kind, url } = normalizeCaptureUrl(input)
   const host = new URL(url).hostname.toLowerCase()
   if (kind === 'image') {
@@ -1236,6 +1242,63 @@ export function mountCapture(app: Hono, runner: Runner): void {
   app.post('/capture/jobs/:id/retry', (c) => {
     return c.json(
       retryCaptureJob(runner.db, c.req.param('id'), runner.now().getTime()),
+    )
+  })
+
+  // 采集页的前台队列：这里发起，GET /capture/tasks 查看。执行在 capture/tasks.ts。
+  app.post('/capture/downloads', async (c) => {
+    const body = await jsonObject(c.req)
+    const raw = body.urls ?? (body.url === undefined ? undefined : [body.url])
+    if (!Array.isArray(raw) || raw.some((item) => typeof item !== 'string')) {
+      throw new RunnerError('urls 必须是字符串数组')
+    }
+    if (raw.length > 200) throw new RunnerError('urls 过多')
+    const now = runner.now().getTime()
+    let added = 0
+    let duplicates = 0
+    const tasks = []
+    for (const value of raw) {
+      const url = value.trim()
+      if (url === '') continue
+      const result = enqueueDownload(runner.db, { url }, now)
+      if (result.duplicate) duplicates += 1
+      else if (result.task) {
+        tasks.push(result.task)
+        added += 1
+      }
+    }
+    return c.json({ tasks, added, duplicates })
+  })
+
+  app.post('/capture/cutouts', async (c) => {
+    const body = await jsonObject(c.req)
+    const ids = body.assetIds
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string')) {
+      throw new RunnerError('assetIds 必须是字符串数组')
+    }
+    if (ids.length > 200) throw new RunnerError('assetIds 过多')
+    const now = runner.now().getTime()
+    let added = 0
+    let skipped = 0
+    const tasks = []
+    for (const id of ids) {
+      const result = enqueueNobg(runner.db, id, now)
+      if (result.skipped) skipped += 1
+      else if (result.task) {
+        tasks.push(result.task)
+        added += 1
+      }
+    }
+    return c.json({ tasks, added, skipped })
+  })
+
+  app.get('/capture/tasks', (c) => {
+    return c.json(listCaptureTasks(runner.db))
+  })
+
+  app.post('/capture/tasks/:id/retry', (c) => {
+    return c.json(
+      retryCaptureTask(runner.db, c.req.param('id'), runner.now().getTime()),
     )
   })
 

@@ -10,8 +10,14 @@ import { WebSocketServer } from 'ws'
 import { CaptureLive } from '../capture/live.ts'
 import { mountCaptureLive } from './live.ts'
 
-test('web and extension exchange capture over the websocket', async () => {
-  const live = new CaptureLive()
+test('runner enqueues capture over the websocket and reports progress back', async () => {
+  const seen: Array<{ id: string; url: string; mediaUrl?: string }> = []
+  const live = new CaptureLive({
+    enqueue(job) {
+      seen.push(job)
+      return { duplicate: false }
+    },
+  })
   const app = new Hono()
   mountCaptureLive(app, live)
   const sockets = new WebSocketServer({ noServer: true })
@@ -47,18 +53,17 @@ test('web and extension exchange capture over the websocket', async () => {
       url: 'https://www.pixiv.net/artworks/7',
       mediaUrl: 'https://i.pximg.net/img-original/img/a.jpg',
     })
-    const job = await web.next()
-    assert.equal(job.type, 'capture')
-    assert.equal(job.id, 'job-ws')
-    assert.equal(job.mediaUrl, 'https://i.pximg.net/img-original/img/a.jpg')
     assert.equal((await extension.next()).state, 'accepted')
+    assert.equal((await extension.next()).state, 'queued')
+    assert.deepEqual(seen, [
+      {
+        id: 'job-ws',
+        url: 'https://www.pixiv.net/artworks/7',
+        mediaUrl: 'https://i.pximg.net/img-original/img/a.jpg',
+      },
+    ])
 
-    web.send({
-      type: 'status',
-      id: 'job-ws',
-      state: 'done',
-      message: '已下载原图',
-    })
+    live.report('job-ws', 'done', '已下载原图')
     const done = await extension.next()
     assert.equal(done.state, 'done')
     assert.equal(done.message, '已下载原图')
@@ -70,7 +75,8 @@ test('web and extension exchange capture over the websocket', async () => {
       id: 'job-late',
       url: 'https://www.pinterest.com/pin/1/',
     })
-    assert.equal((await extension.next()).state, 'rejected')
+    assert.equal((await extension.next()).state, 'accepted')
+    assert.equal((await extension.next()).state, 'queued')
   } finally {
     for (const client of clients) client.close()
     await new Promise<void>((resolve, reject) => {
