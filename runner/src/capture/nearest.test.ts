@@ -95,6 +95,10 @@ test('nearest limits the vector table to the requested ids', async () => {
     const res = await app.request('/capture/assets/a/nearest?k=5&order=far&ids=b')
     assert.equal(res.status, 200)
     assert.deepEqual(Object.keys(calls[0]?.body.vectors ?? {}).sort(), ['a', 'b'])
+    db.prepare(`UPDATE image_assets SET status = 'approved' WHERE id = 'c'`).run()
+    const scoped = await app.request('/capture/assets/a/nearest?status=processed')
+    assert.equal(scoped.status, 200)
+    assert.deepEqual(Object.keys(calls.at(-2)?.body.vectors ?? {}).sort(), ['a', 'b'])
     const duplicate = await app.request('/capture/assets/a/nearest?ids=b,b')
     assert.equal(duplicate.status, 400)
   } finally {

@@ -419,8 +419,7 @@ export function ImageGallery({
       setNearError("N 必须是正整数");
       return;
     }
-    const ids = orderIds.filter((id) => id !== selectedId);
-    if (ids.length === 0) {
+    if (orderIds.length < 2) {
       setNearError("筛选结果里没有其它图片");
       return;
     }
@@ -430,10 +429,11 @@ export function ImageGallery({
       const params = new URLSearchParams({
         k: String(count),
         order,
-        ids: ids.join(","),
       });
+      const scope = assetSearchParams(filterQuery);
+      const qs = scope === "" ? params.toString() : `${params}&${scope}`;
       const result = await api<{ neighbors: Array<{ id: string }> }>(
-        `capture/assets/${encodeURIComponent(selectedId)}/nearest?${params}`,
+        `capture/assets/${encodeURIComponent(selectedId)}/nearest?${qs}`,
       );
       setNear({
         anchor: selectedId,

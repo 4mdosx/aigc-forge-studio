@@ -118,6 +118,16 @@ function assetListQueryOf(c: {
   }
 }
 
+function hasAssetScope(query: AssetListQuery): boolean {
+  return (
+    query.statuses.length > 0 ||
+    query.ratings.length > 0 ||
+    query.tags.length > 0 ||
+    query.safe ||
+    query.datasetId !== null
+  )
+}
+
 function nearestIdsOf(raw: string | undefined): string[] | undefined {
   if (raw === undefined || raw === '') return undefined
   const ids = raw
@@ -1110,13 +1120,15 @@ export function mountCapture(app: Hono, runner: Runner): void {
   })
 
   app.get('/capture/assets/:id/nearest', async (c) => {
+    const scope = assetListQueryOf(c)
+    const ids = nearestIdsOf(c.req.query('ids'))
     return c.json(
       await nearestAssets(
         runner,
         c.req.param('id'),
         nearestCountOf(c.req.query('k')),
         nearestOrderOf(c.req.query('order')),
-        nearestIdsOf(c.req.query('ids')),
+        ids ?? (hasAssetScope(scope) ? listAssetIds(runner.db, scope).ids : undefined),
       ),
     )
   })
