@@ -541,7 +541,8 @@ export function DiceBoard({ role }: { role: unknown }) {
   const [poses, setPoses] = useState<PoseEntry[]>([])
   const [poseId, setPoseId] = useState('')
   const [poseError, setPoseError] = useState('')
-  const [generated, setGenerated] = useState<CreativeIntent | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [promptView, setPromptView] = useState<'fields' | 'joined'>('joined')
   const [saving, setSaving] = useState(false)
   const [templates, setTemplates] = useState<DiceTemplate[]>([])
   const [templateId, setTemplateId] = useState('')
@@ -576,12 +577,7 @@ export function DiceBoard({ role }: { role: unknown }) {
         setTemplateId('')
         setPoseId(body.roll.poseId ?? '')
         setForms(next)
-        const fields = body.roll.fields
-        setGenerated(
-          fields && typeof fields === 'object' && !Array.isArray(fields) && 'subject' in fields
-            ? (fields as CreativeIntent)
-            : null,
-        )
+        setPreviewOpen(true)
       } catch (err) {
         if (!cancelled) fail(messageOf(err))
       }
@@ -646,7 +642,6 @@ export function DiceBoard({ role }: { role: unknown }) {
       const request = characterRequest.current + 1
       characterRequest.current = request
       setCharacterSlug(slug)
-      setGenerated(null)
       if (slug === '') {
         setCharacterNote('')
         applyCharacter(null)
@@ -682,14 +677,12 @@ export function DiceBoard({ role }: { role: unknown }) {
     const source = pool.length > 0 ? pool : poses
     const pick = source[Math.floor(Math.random() * source.length)]
     if (!pick) return
-    setGenerated(null)
     setPoseId(pick.id)
     applyPose(pick)
   }, [poses, poseId, applyPose])
 
   const choosePose = useCallback(
     (entry: PoseEntry) => {
-      setGenerated(null)
       if (poseId === entry.id) {
         setPoseId('')
         applyPose(null)
@@ -715,7 +708,7 @@ export function DiceBoard({ role }: { role: unknown }) {
   const submitRoll = useCallback(() => {
     const intent = composeIntent(sections, forms)
     const text = promptOf(intent)
-    setGenerated(intent)
+    setPreviewOpen(true)
     setSaving(true)
     void (async () => {
       try {
@@ -746,7 +739,7 @@ export function DiceBoard({ role }: { role: unknown }) {
     }
     const intent = composeIntent(sections, forms)
     const text = promptOf(intent)
-    setGenerated(intent)
+    setPreviewOpen(true)
     setSaving(true)
     void (async () => {
       try {
@@ -790,7 +783,7 @@ export function DiceBoard({ role }: { role: unknown }) {
       setCharacterNote(summary?.display || template.character || '')
       setPoseId(pose?.id ?? '')
       setForms(next)
-      setGenerated(template.fields)
+      setPreviewOpen(true)
     },
     [characters, poses, sections],
   )
@@ -809,7 +802,7 @@ export function DiceBoard({ role }: { role: unknown }) {
 
   const templatePayload = useCallback(() => {
     const intent = composeIntent(sections, forms)
-    setGenerated(intent)
+    setPreviewOpen(true)
     return {
       character: characterSlug || null,
       poseName: selectedPose?.poseName ?? null,
@@ -904,7 +897,6 @@ export function DiceBoard({ role }: { role: unknown }) {
   }, [pickedId, templatePayload])
 
   const setFormField = useCallback((name: string, key: FormKey, value: string) => {
-    setGenerated(null)
     setForms((cur) => ({
       ...cur,
       [name]: { ...(cur[name] ?? emptyForm()), [key]: value },
@@ -913,7 +905,6 @@ export function DiceBoard({ role }: { role: unknown }) {
 
   const fillTag = useCallback(
     (name: string, tag: string) => {
-      setGenerated(null)
       setForms((cur) => {
         const form = cur[name] ?? emptyForm()
         const ordered = orderOf.get(name) ?? []
@@ -934,7 +925,6 @@ export function DiceBoard({ role }: { role: unknown }) {
 
   const rollGroupTag = useCallback(
     (name: string, tags: string[]) => {
-      setGenerated(null)
       setForms((cur) => {
         const form = cur[name] ?? emptyForm()
         const ordered = orderOf.get(name) ?? []
@@ -989,7 +979,6 @@ export function DiceBoard({ role }: { role: unknown }) {
 
   const acceptRec = useCallback(
     (section: string, key: FormKey, tag: string) => {
-      setGenerated(null)
       setRecommendations((list) => list.filter((item) => normTag(item) !== normTag(tag)))
       setForms((cur) => {
         const form = cur[section] ?? emptyForm()
@@ -1015,6 +1004,16 @@ export function DiceBoard({ role }: { role: unknown }) {
       setFocus((cur) => (cur?.section === section && cur.key === key ? null : cur))
     }, 180)
   }, [])
+
+  const previewIntent = useMemo(() => composeIntent(sections, forms), [sections, forms])
+  const previewText = useMemo(() => promptOf(previewIntent), [previewIntent])
+  const previewActive = Object.values(forms).some(
+    (form) => form.character !== '' || form.pose !== '' || form.reference !== '' || form.input !== '',
+  )
+  const showPreview = previewOpen || previewActive
+  const copyText = (text: string) => {
+    void navigator.clipboard.writeText(text)
+  }
 
   return (
     <div className="dice-page">
@@ -1127,7 +1126,6 @@ export function DiceBoard({ role }: { role: unknown }) {
               className="quiet"
               onClick={() => {
                 setPoseId('')
-                setGenerated(null)
                 applyPose(null)
               }}
             >
@@ -1252,13 +1250,32 @@ export function DiceBoard({ role }: { role: unknown }) {
       <section className="panel">
         <div className="column-head">
           <h2>结构化 prompt</h2>
-          <span className="muted">角色、pose、input 按这个顺序合成</span>
+          <div className="dice-prompt-switch" role="group" aria-label="prompt 预览">
+            <button
+              type="button"
+              className={`dice-tag ${promptView === 'joined' ? 'on' : ''}`}
+              aria-pressed={promptView === 'joined'}
+              onClick={() => setPromptView('joined')}
+            >
+              拼合
+            </button>
+            <button
+              type="button"
+              className={`dice-tag ${promptView === 'fields' ? 'on' : ''}`}
+              aria-pressed={promptView === 'fields'}
+              onClick={() => setPromptView('fields')}
+            >
+              结构化
+            </button>
+          </div>
         </div>
+        <p className="muted dice-pose-hint">
+          {promptView === 'joined'
+            ? '角色、pose、input 合成后，按提交时写入的正向和负面摊开'
+            : '角色、pose、input 按这个顺序合成'}
+        </p>
         <div className="dice-pose-tools">
-          <button
-            type="button"
-            onClick={() => setGenerated(composeIntent(sections, forms))}
-          >
+          <button type="button" onClick={() => setPreviewOpen(true)}>
             生成
           </button>
           <button type="button" className="quiet" disabled={saving} onClick={submitRoll}>
@@ -1320,9 +1337,36 @@ export function DiceBoard({ role }: { role: unknown }) {
             </div>
           </div>
         </Dialog>
-        {generated ? (
+        {showPreview ? (
           <div className="dice-generated">
-            <pre className="dice-json">{JSON.stringify(generated, null, 2)}</pre>
+            {promptView === 'joined' ? (
+              <>
+                <div className="dice-roll-detail-block">
+                  <div className="dice-roll-detail-label">
+                    <span className="muted">正向</span>
+                    <button type="button" className="quiet" onClick={() => copyText(previewText.positive)}>
+                      复制
+                    </button>
+                  </div>
+                  <p className="mono dice-roll-detail-prompt">
+                    {previewText.positive !== '' ? previewText.positive : '（空）'}
+                  </p>
+                </div>
+                <div className="dice-roll-detail-block">
+                  <div className="dice-roll-detail-label">
+                    <span className="muted">负面</span>
+                    <button type="button" className="quiet" onClick={() => copyText(previewText.negative)}>
+                      复制
+                    </button>
+                  </div>
+                  <p className="mono dice-roll-detail-prompt">
+                    {previewText.negative !== '' ? previewText.negative : '（空）'}
+                  </p>
+                </div>
+              </>
+            ) : (
+              <pre className="dice-json">{JSON.stringify(previewIntent, null, 2)}</pre>
+            )}
           </div>
         ) : null}
       </section>

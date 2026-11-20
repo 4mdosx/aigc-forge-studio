@@ -2842,6 +2842,12 @@ button.capture-pick.active {
   margin: 0;
 }
 
+.dice-prompt-switch {
+  display: flex;
+  flex: none;
+  gap: 0.35rem;
+}
+
 .dice-generated {
   display: grid;
   gap: 0.55rem;
