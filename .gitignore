@@ -57,6 +57,7 @@ Desktop.ini
 # ========================================
 # Runner
 # ========================================
+/node_modules/
 /runner/node_modules/
 /web/node_modules/
 /trainer/node_modules/

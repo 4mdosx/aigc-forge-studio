@@ -4,7 +4,9 @@
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0 --port 3000",
     "build": "next build",
-    "start": "next start --hostname 0.0.0.0 --port 3000"
+    "start": "next start --hostname 0.0.0.0 --port 3000",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-detect-module --test lib/backoff.test.ts lib/pin-auth.test.ts",
+    "clear-pin": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-detect-module scripts/clear-pin.ts"
   },
   "dependencies": {
     "lucide-react": "^1.72.0",

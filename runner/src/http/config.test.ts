@@ -56,6 +56,36 @@ test('roll_config rejects a blank workflowName', async () => {
   assert.equal(saved.status, 400)
 })
 
+test('safety_mode defaults off and round-trips', async () => {
+  const app = createApp(testRunner())
+  const got = await app.request('/config/safety_mode')
+  assert.equal(got.status, 200)
+  const body = (await got.json()) as { key: string; value: { enabled: boolean } }
+  assert.equal(body.key, 'safety_mode')
+  assert.equal(body.value.enabled, false)
+
+  const saved = await app.request('/config/safety_mode', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: true }),
+  })
+  assert.equal(saved.status, 200)
+  const again = (await (await app.request('/config/safety_mode')).json()) as {
+    value: { enabled: boolean }
+  }
+  assert.deepEqual(again.value, { enabled: true })
+})
+
+test('safety_mode rejects a non-boolean', async () => {
+  const app = createApp(testRunner())
+  const saved = await app.request('/config/safety_mode', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: 'yes' }),
+  })
+  assert.equal(saved.status, 400)
+})
+
 function testRunner(): Runner {
   return {
     db: openDatabase(':memory:'),

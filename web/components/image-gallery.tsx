@@ -11,8 +11,10 @@ import {
   type ImageRating,
   type ImageStatus,
 } from "@/components/image-assets";
+import { SafetySwitch } from "@/components/safety-switch";
 import { api, fileHref } from "@/lib/api";
 import { fail, messageOf, notify } from "@/lib/notify";
+import { isSafetyHiddenRating } from "@/lib/safety-mode";
 
 export function ImageGallery({
   items,
@@ -28,6 +30,9 @@ export function ImageGallery({
   datasetFocus = null,
   datasetOnly = false,
   onDatasetBatch,
+  safety = false,
+  safetyReady = true,
+  onSafety,
 }: {
   items: ImageAsset[];
   loaded: boolean;
@@ -42,6 +47,9 @@ export function ImageGallery({
   datasetFocus?: { id: string; name: string; members: ReadonlySet<string> } | null;
   datasetOnly?: boolean;
   onDatasetBatch?: (action: "add" | "remove", ids: string[]) => Promise<void>;
+  safety?: boolean;
+  safetyReady?: boolean;
+  onSafety?: (enabled: boolean) => void;
 }) {
   const [statusFilter, setStatusFilter] = useState<ImageStatus[]>([]);
   const [ratingFilter, setRatingFilter] = useState<ImageRating[]>([]);
@@ -86,16 +94,19 @@ export function ImageGallery({
   pickedRef.current = picked;
   const dragRef = useRef<MarqueeDrag | null>(null);
   const suppressClick = useRef(false);
-  const doneCount = items.filter(
+  const admitted = safety
+    ? items.filter((item) => !isSafetyHiddenRating(item.rating))
+    : items;
+  const doneCount = admitted.filter(
     (item) => item.status === "processed" || item.status === "approved",
   ).length;
-  const processingCount = items.filter(
+  const processingCount = admitted.filter(
     (item) => item.status === "collected",
   ).length;
   const scoped =
     datasetOnly && datasetFocus
-      ? items.filter((item) => datasetFocus.members.has(item.id))
-      : items;
+      ? admitted.filter((item) => datasetFocus.members.has(item.id))
+      : admitted;
   const statusMatched =
     statusFilter.length === 0
       ? scoped
@@ -114,7 +125,7 @@ export function ImageGallery({
             item.tags.some((itemTag) => tagKey(itemTag) === tagKey(tag)),
           ),
         );
-  const filterKey = `${statusFilter.join("\n")}\n${ratingFilter.join("\n")}\n${tagFilter.join("\n")}`;
+  const filterKey = `${safety ? "safe" : "open"}\n${statusFilter.join("\n")}\n${ratingFilter.join("\n")}\n${tagFilter.join("\n")}`;
   const scopeKey = datasetOnly && datasetFocus ? datasetFocus.id : "";
   const ranked =
     query && near && tagMatched.some((item) => item.id === near.anchor)
@@ -154,8 +165,17 @@ export function ImageGallery({
     .join("\n");
 
   useEffect(() => {
+    if (!safetyReady) return;
     onVisible?.(browseKey === "" ? [] : browseKey.split("\n"));
-  }, [browseKey, onVisible]);
+  }, [browseKey, onVisible, safetyReady]);
+
+  useEffect(() => {
+    if (!safety) return;
+    setRatingFilter((cur) => {
+      const next = cur.filter((rating) => !isSafetyHiddenRating(rating));
+      return next.length === cur.length ? cur : next;
+    });
+  }, [safety]);
 
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
@@ -674,6 +694,13 @@ export function ImageGallery({
             完成 {doneCount}
             {processingCount > 0 ? ` · 处理中 ${processingCount}` : ""}
           </span>
+          {onSafety ? (
+            <SafetySwitch
+              enabled={safety}
+              disabled={!safetyReady}
+              onChange={onSafety}
+            />
+          ) : null}
           {selectable && !picking ? (
             <button type="button" className="quiet" onClick={togglePicking}>
               多选
@@ -744,7 +771,7 @@ export function ImageGallery({
               })}
             </div>
             <div className="capture-filters" role="group" aria-label="按分级筛选">
-              {RATINGS.map((rating) => {
+              {RATINGS.filter((rating) => !safety || !isSafetyHiddenRating(rating)).map((rating) => {
                 const on = ratingFilter.includes(rating);
                 return (
                   <button
@@ -857,14 +884,22 @@ export function ImageGallery({
         onPointerDown={selectable && picking ? beginMarquee : undefined}
         onClickCapture={selectable && picking ? swallowMarqueeClick : undefined}
       >
-        {!loaded ? (
+        {!loaded || !safetyReady ? (
           <p className="muted">加载中…</p>
         ) : items.length === 0 ? (
           <p className="muted">还没有图片。</p>
         ) : datasetOnly && datasetFocus && datasetFocus.members.size === 0 ? (
           <p className="muted">「{datasetFocus.name}」里还没有图片。</p>
         ) : visible.length === 0 ? (
-          <p className="muted">没有符合筛选的图片。</p>
+          <p className="muted">
+            {safety &&
+            statusFilter.length === 0 &&
+            ratingFilter.length === 0 &&
+            tagFilter.length === 0 &&
+            items.some((item) => isSafetyHiddenRating(item.rating))
+              ? "安全模式已隐藏标记为可疑和露骨的图片。"
+              : "没有符合筛选的图片。"}
+          </p>
         ) : sections ? (
           <>
             {sections.map((group, index) => (

@@ -5,7 +5,6 @@
     "port": 8188
   },
   "runner": {
-    "comfyUiBaseURL": "http://192.168.8.136:8188",
     "//comfyUiBaseURL": "可选 在不设置的情况下使用 comfyui.baseURL",
     "host": "0.0.0.0",
     "port": 8787,
@@ -17,7 +16,7 @@
   },
   "trainer": {
     "host": "0.0.0.0",
-    "//host": "训练机部署：0.0.0.0 供 Mac 侧 runner/脚本调用",
+    "//host": "训练机部署：0.0.0.0 供 runner/脚本",
     "port": 8788,
     "db": "trainer/data/trainer.sqlite",
     "roots": {

@@ -1,16 +1,29 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { createInterface } from 'node:readline'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { styleText } from 'node:util'
 import { fileURLToPath } from 'node:url'
+import {
+  cancel,
+  intro,
+  isCancel,
+  log,
+  multiselect,
+  note,
+  outro,
+  select,
+  updateSettings,
+} from '@clack/prompts'
 
 const root = dirname(fileURLToPath(import.meta.url))
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
-const modes = [
-  { id: 'dev', label: 'dev' },
-  { id: 'deploy', label: 'deploy' },
-]
+const webPort = 3000
+const tags = {
+  runner: ['bold', 'cyan'],
+  web: ['bold', 'magenta'],
+  critic: ['bold', 'yellow'],
+}
 
 const children = []
 let stopping = false
@@ -20,142 +33,148 @@ if (!process.stdin.isTTY) {
   process.exit(1)
 }
 
+process.on('SIGINT', () => halt(0))
+process.on('SIGTERM', () => halt(0))
+
 await main()
 
 async function main() {
-  const rl = createInterface({ input: process.stdin, output: process.stdout })
-  const mode = await choose(rl, '模式', modes)
-  const selected = await chooseMany(rl, '服务', serviceOptions())
-  rl.close()
+  updateSettings({
+    messages: {
+      cancel: '已取消',
+      error: '出错了',
+    },
+  })
+  intro(styleText(['bgCyan', 'black'], ' AIGC '))
+  log.info('方向键移动 · 空格勾选 · 回车确认')
 
-  const ids = new Set(selected.map((item) => item.id))
-  const script = mode.id === 'dev' ? 'dev' : 'start'
-  const runner = ids.has('runner+web') ? nodeApp('runner') : ''
-  const web = ids.has('runner+web') ? nodeApp('web') : ''
-  const python = ids.has('critic') ? pythonBin() : ''
+  const mode = await select({
+    message: '模式',
+    options: [
+      { value: 'dev', label: 'dev', hint: '热更新' },
+      { value: 'deploy', label: 'deploy', hint: '先构建 web' },
+    ],
+    showInstructions: false,
+  })
+  if (isCancel(mode)) {
+    cancel('已取消')
+    process.exit(0)
+  }
 
-  if (ids.has('runner+web') && mode.id === 'deploy') {
-    console.log('构建 web')
+  const runner = runnerEndpoint()
+  const critic = criticEndpoint()
+  const selected = await chooseServices([
+    {
+      value: 'runner+web',
+      label: serviceLabel('runner+web', `${browseHost(runner.host)}:${runner.port} · ${webPort}`),
+    },
+    {
+      value: 'critic',
+      label: serviceLabel('critic', `${critic.host}:${critic.port}`),
+    },
+  ])
+
+  const ids = new Set(selected)
+  const script = mode === 'dev' ? 'dev' : 'start'
+  let runnerCwd = ''
+  let webCwd = ''
+  let python = ''
+  try {
+    if (ids.has('runner+web')) {
+      runnerCwd = nodeApp('runner')
+      webCwd = nodeApp('web')
+    }
+    if (ids.has('critic')) python = pythonBin()
+  } catch (err) {
+    log.error(err instanceof Error ? err.message : String(err))
+    process.exit(1)
+  }
+
+  if (ids.has('runner+web') && mode === 'deploy') {
+    log.step('构建 web')
     try {
-      await runOnce('web', npm, ['run', 'build'], web)
+      await runOnce('web', npm, ['run', 'build'], webCwd)
     } catch (err) {
-      console.error(err instanceof Error ? err.message : err)
+      log.error(err instanceof Error ? err.message : String(err))
       stop(1)
       return
     }
+    log.success('web 构建完成')
   }
+
+  const lines = []
   if (ids.has('runner+web')) {
-    console.log(`启动 runner+web (${mode.id})`)
-    launch('runner', npm, ['run', script], runner)
-    launch('web', npm, ['run', script], web)
+    lines.push(`runner  http://${browseHost(runner.host)}:${runner.port}`)
+    lines.push(`web     http://127.0.0.1:${webPort}`)
   }
   if (ids.has('critic')) {
-    const { host, port } = criticEndpoint()
-    console.log(`启动 critic (${mode.id}) http://${host}:${port}`)
+    lines.push(`critic  http://${critic.host}:${critic.port}`)
+  }
+  note(lines.join('\n'), mode)
+  outro('Ctrl+C 停止')
+
+  if (ids.has('runner+web')) {
+    launch('runner', npm, ['run', script], runnerCwd)
+    launch('web', npm, ['run', script], webCwd)
+  }
+  if (ids.has('critic')) {
     launch('critic', python, [
       join(root, 'critic', 'server.py'),
-      '--host', host,
-      '--port', String(port),
+      '--host', critic.host,
+      '--port', String(critic.port),
     ], root)
   }
 }
 
-function ask(rl, prompt) {
-  return new Promise((resolve) => {
-    rl.question(prompt, resolve)
-  })
-}
-
-async function choose(rl, title, options) {
-  console.log(title)
-  for (const [index, option] of options.entries()) {
-    console.log(`  ${index + 1}  ${option.label}`)
-  }
+async function chooseServices(options) {
   for (;;) {
-    const answer = (await ask(rl, '> ')).trim().toLowerCase()
-    const hit = matchOption(answer, options)
-    if (hit) return hit
-    console.log(`输入 1 到 ${options.length}`)
+    const selected = await multiselect({
+      message: '服务',
+      required: false,
+      showInstructions: false,
+      options,
+    })
+    if (isCancel(selected)) {
+      cancel('已取消')
+      process.exit(0)
+    }
+    if (selected.length > 0) return selected
+    log.warning('至少选一个')
   }
 }
 
-async function chooseMany(rl, title, options) {
-  const picked = new Set()
-  const width = Math.max(...options.map((option) => option.label.length))
-  for (;;) {
-    console.log(`\n${title}  输入序号切换，回车确认`)
-    for (const [index, option] of options.entries()) {
-      const mark = picked.has(option.id) ? 'x' : ' '
-      console.log(`  ${index + 1}  [${mark}] ${option.label.padEnd(width)}  ${option.detail}`)
-    }
-    const answer = (await ask(rl, '> ')).trim().toLowerCase()
-    if (answer === '' || answer === 'ok' || answer === '确认') {
-      if (picked.size === 0) {
-        console.log('至少选一个')
-        continue
-      }
-      const chosen = options.filter((option) => picked.has(option.id))
-      console.log(`已选 ${chosen.map((option) => option.label).join('、')}`)
-      const confirm = (await ask(rl, '回车启动，n 返回 > ')).trim().toLowerCase()
-      if (confirm === '' || confirm === 'y' || confirm === 'yes' || confirm === 'ok' || confirm === '确认') {
-        return chosen
-      }
-      continue
-    }
-    const tokens = answer.split(/[\s,]+/).filter(Boolean)
-    const hits = []
-    let invalid = ''
-    for (const token of tokens) {
-      const option = matchOption(token, options)
-      if (!option) {
-        invalid = token
-        break
-      }
-      hits.push(option)
-    }
-    if (invalid) {
-      console.log(`没有 ${invalid}，输入 1 到 ${options.length}`)
-      continue
-    }
-    for (const option of hits) {
-      if (picked.has(option.id)) picked.delete(option.id)
-      else picked.add(option.id)
-    }
-  }
-}
-
-function matchOption(answer, options) {
-  const index = Number(answer)
-  if (Number.isInteger(index) && index >= 1 && index <= options.length) {
-    return options[index - 1]
-  }
-  return options.find((option) => option.id === answer || option.label === answer)
-}
-
-function serviceOptions() {
-  const critic = criticEndpoint()
-  return [
-    { id: 'runner+web', label: 'runner+web', detail: `Runner ${runnerPort()}，Web 3000` },
-    { id: 'critic', label: 'critic', detail: `${critic.host}:${critic.port}` },
-  ]
-}
-
-function runnerPort() {
+function readConfig() {
   try {
-    const config = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))
-    const port = config?.runner?.port
-    if (Number.isInteger(port) && port >= 1 && port <= 65535) return port
+    return JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))
   } catch {
-    return 8787
+    return null
   }
-  return 8787
+}
+
+function serviceLabel(name, detail) {
+  return `${name.padEnd(12)}${detail}`
+}
+
+function browseHost(host) {
+  if (host === '0.0.0.0' || host === '::' || host === '[::]') return '127.0.0.1'
+  return host
+}
+
+function runnerEndpoint() {
+  const runner = readConfig()?.runner
+  const host = typeof runner?.host === 'string' && runner.host.trim() !== ''
+    ? runner.host.trim()
+    : '127.0.0.1'
+  const port = Number.isInteger(runner?.port) && runner.port >= 1 && runner.port <= 65535
+    ? runner.port
+    : 8787
+  return { host, port }
 }
 
 function nodeApp(name) {
   const cwd = join(root, name)
   if (!existsSync(join(cwd, 'node_modules'))) {
-    console.error(`${name}: 先在 ${cwd} 执行 npm install`)
-    process.exit(1)
+    throw new Error(`${name}: 先在 ${cwd} 执行 npm install`)
   }
   return cwd
 }
@@ -165,21 +184,14 @@ function pythonBin() {
     ? join(root, '.venv', 'Scripts', 'python.exe')
     : join(root, '.venv', 'bin', 'python')
   if (!existsSync(bin)) {
-    console.error('critic: 先在仓库根目录创建 .venv 并安装 critic/requirements.txt')
-    process.exit(1)
+    throw new Error('critic: 先在仓库根目录创建 .venv 并安装 critic/requirements.txt')
   }
   return bin
 }
 
 function criticEndpoint() {
   const fallback = { host: '127.0.0.1', port: 8791 }
-  let config
-  try {
-    config = JSON.parse(readFileSync(join(root, 'config.json'), 'utf8'))
-  } catch {
-    return fallback
-  }
-  const critic = config?.critic
+  const critic = readConfig()?.critic
   if (!critic || typeof critic !== 'object') return fallback
   const host = typeof critic.host === 'string' && critic.host.trim() !== ''
     ? critic.host.trim()
@@ -200,11 +212,11 @@ function spawnOptions(cwd) {
 
 function launch(name, command, args, cwd) {
   const child = spawn(command, args, spawnOptions(cwd))
-  pipe(child.stdout, name)
-  pipe(child.stderr, name)
+  pipe(child.stdout, name, false)
+  pipe(child.stderr, name, true)
   child.on('exit', (code) => {
     if (stopping) return
-    console.error(`[${name}] 退出 ${code ?? 1}`)
+    process.stdout.write(`${formatLine(name, `退出 ${code ?? 1}`, true)}\n`)
     stop(code ?? 1)
   })
   children.push(child)
@@ -213,22 +225,32 @@ function launch(name, command, args, cwd) {
 
 function runOnce(name, command, args, cwd) {
   const child = spawn(command, args, spawnOptions(cwd))
-  pipe(child.stdout, name)
-  pipe(child.stderr, name)
+  pipe(child.stdout, name, false)
+  pipe(child.stderr, name, true)
   children.push(child)
   return new Promise((resolve, reject) => {
     child.on('error', (err) => reject(err))
     child.on('exit', (code) => {
       if (stopping) return
       if (code === 0) resolve()
-      else reject(new Error(`[${name}] 退出 ${code ?? 1}`))
+      else reject(new Error(`${name} 退出 ${code ?? 1}`))
     })
   })
 }
 
-function stop(code = 0) {
+function halt(code) {
+  if (children.length === 0) {
+    cancel('已取消')
+    process.exit(code)
+  }
+  stop(code, true)
+}
+
+function stop(code = 0, signal = false) {
   if (stopping) return
   stopping = true
+  const alive = children.some((child) => child.pid != null && child.exitCode == null)
+  if (signal || alive) process.stdout.write(`\n${styleText('dim', '正在停止')}\n`)
   for (const child of children) {
     if (child.pid == null || child.exitCode != null) continue
     if (process.platform === 'win32') {
@@ -244,16 +266,30 @@ function stop(code = 0) {
   setTimeout(() => process.exit(code), 300)
 }
 
-function pipe(stream, name) {
-  if (!stream) return
-  let pending = ''
-  stream.on('data', (chunk) => {
-    pending += chunk.toString()
-    const lines = pending.split(/\r?\n/)
-    pending = lines.pop() ?? ''
-    for (const line of lines) console.log(`[${name}] ${line}`)
-  })
+function formatLine(name, line, error) {
+  const tag = styleText(tags[name] ?? 'bold', name.padEnd(6))
+  const bar = styleText(error ? 'red' : 'dim', '│')
+  return `${tag} ${bar} ${line}`
 }
 
-process.on('SIGINT', () => stop(0))
-process.on('SIGTERM', () => stop(0))
+function pipe(stream, name, error) {
+  if (!stream) return
+  let pending = ''
+  const emit = (raw) => {
+    const cut = raw.lastIndexOf('\r')
+    const line = cut === -1 ? raw : raw.slice(cut + 1)
+    if (line.replace(/\u001b\[[0-9;]*m/g, '').trim() === '') return
+    process.stdout.write(`${formatLine(name, line, error)}\n`)
+  }
+  stream.on('data', (chunk) => {
+    pending += chunk.toString()
+    const lines = pending.split(/\n/)
+    pending = lines.pop() ?? ''
+    for (const line of lines) emit(line)
+  })
+  stream.on('end', () => {
+    if (pending === '') return
+    emit(pending)
+    pending = ''
+  })
+}

@@ -108,10 +108,11 @@ infra\install-shortcuts.ps1 -Startup
 在能访问 ComfyUI 的机器上执行。需要 Node.js 22.18 或更新版本。`runner/` 和 `web/` 都安装过依赖后，在仓库根目录执行：
 
 ```bash
+npm install
 node cli.js
 ```
 
-先选 `dev` 或 `deploy`，再勾选服务，回车确认后启动。可以同时选 `runner+web` 和 `critic`，Ctrl+C 一起停。`dev` 用 `npm run dev`，源码变化会重启。`deploy` 用 `npm start`，选了 `runner+web` 时 Web 会先执行 `npm run build`。Runner 听 `http://127.0.0.1:8787`，界面听 `http://127.0.0.1:3000`。`critic` 用仓库根目录的 `.venv` 启动，地址读 `config.json` 的 `critic.host` 和 `critic.port`。
+先选 `dev` 或 `deploy`，再勾选服务。方向键移动，空格勾选，回车启动。可以同时选 `runner+web` 和 `critic`，Ctrl+C 一起停。`dev` 用 `npm run dev`，源码变化会重启。`deploy` 用 `npm start`，选了 `runner+web` 时 Web 会先执行 `npm run build`。Runner 听 `http://127.0.0.1:8787`，界面听 `http://127.0.0.1:3000`。`critic` 用仓库根目录的 `.venv` 启动，地址读 `config.json` 的 `critic.host` 和 `critic.port`。
 
 只启动 Runner 时：
 
@@ -211,5 +212,7 @@ npm run dev
 ```
 
 默认打开 `http://127.0.0.1:3000`。Runner 地址用环境变量 `RUNNER_URL`，默认 `http://127.0.0.1:8787`。
+
+首次打开界面会设置 4 位 PIN。解锁后的会话到当天结束，次日需要再输入。PIN 的散列存在 `data/web-auth.json`，这个文件不进版本库。设置页可以更新 PIN 或退出。忘记 PIN 时，在 `web/` 执行 `npm run clear-pin` 后重新设置。连续输错会指数退避，最长锁定 24 小时；重启 Web 进程会清掉这次锁定。浏览器入口受 PIN 保护，Runner 的 `8787` 仍按原来的地址直接访问。
 
 顶部是 Work 和 Library。Work 是三列：进行中的任务、Work 及其已挂版本、右侧出图。右下角的对话用来多轮写出图提示词，不进入任务队列。新建和编辑 Work 都在弹窗里。Library 管理 ComfyUI 的 input 和 output，上传输入图也在这一页。同一页可以「从 ComfyUI 建立」workflow：一次选一份 JSON，新文件入库，已变化的文件覆盖当前版本，不产生新版本。打开页面不会写入。Work 页把 workflow 挂上来。点名称可以看版本图和节点图。出图时选择版本并维护这一版的 Adapter；这一版还没有时，页面沿用最近一份并标明来源。工作流页顶部可以新建版本，并在版本列表里改说明、把这一版同步到 ComfyUI。任务页轮询状态，并可以取消还没结束的任务。

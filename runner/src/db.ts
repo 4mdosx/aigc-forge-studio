@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { RunnerError } from './errors.ts'
 import { seedRollConfig } from './rollConfig.ts'
+import { seedSafetyMode } from './safetyMode.ts'
 
 const VERSION_LETTERS = 'abcdefghijklmnopqrstuvwxyz'
 const VERSION_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz'
@@ -327,6 +328,7 @@ function migrate(db: DatabaseSync): void {
   addColumn(db, 'image_assets', 'nobg_width', 'INTEGER')
   addColumn(db, 'image_assets', 'nobg_height', 'INTEGER')
   seedRollConfig(db)
+  seedSafetyMode(db)
 }
 
 // dice_fields 曾用保留字 values 作列名，后升 candidates；v3 = tiers JSON 列。

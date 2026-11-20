@@ -12,6 +12,7 @@ import { useImageAssets } from '@/components/image-assets'
 import { RollsPanel } from '@/components/rolls-panel'
 import { api } from '@/lib/api'
 import { fail, messageOf, notify } from '@/lib/notify'
+import { isSafetyHiddenRating, useSafetyMode } from '@/lib/safety-mode'
 import type { Workflow } from '@/lib/types'
 
 interface LibraryFile {
@@ -322,6 +323,7 @@ export function LibraryBoard() {
 
 function AssetLibrary() {
   const images = useImageAssets()
+  const safety = useSafetyMode()
   const datasets = useDatasets()
   const tagNonce = useRef(0)
   const [tagSeed, setTagSeed] = useState<{ tag: string; nonce: number } | null>(null)
@@ -395,6 +397,13 @@ function AssetLibrary() {
     void run.catch((err: unknown) => fail(messageOf(err)))
   }
 
+  const shown =
+    safety.ready &&
+    images.selected &&
+    !(safety.enabled && isSafetyHiddenRating(images.selected.rating))
+      ? images.selected
+      : null
+
   return (
     <div className="library-split">
       <DatasetRail
@@ -421,7 +430,7 @@ function AssetLibrary() {
         selectable
         items={images.items}
         loaded={images.loaded}
-        selectedId={images.selected?.id ?? null}
+        selectedId={shown?.id ?? null}
         onSelect={images.select}
         tagSeed={tagSeed}
         onVisible={setGalleryIds}
@@ -429,6 +438,9 @@ function AssetLibrary() {
         datasetFocus={focused ? { id: focused.id, name: focused.name, members } : null}
         datasetOnly={onlyDataset && focused !== null}
         onDatasetBatch={changeDataset}
+        safety={safety.enabled}
+        safetyReady={safety.ready}
+        onSafety={(next) => void safety.setSafety(next)}
       />
       <ImageDetail
         preview
@@ -436,8 +448,8 @@ function AssetLibrary() {
         toDice
         nearest={false}
         galleryIds={galleryIds}
-        loaded={images.loaded}
-        selected={images.selected}
+        loaded={images.loaded && safety.ready}
+        selected={shown}
         onSelect={images.select}
         onReload={reloadAll}
         onPickTag={pickTag}

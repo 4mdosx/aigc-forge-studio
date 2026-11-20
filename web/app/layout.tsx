@@ -1,7 +1,5 @@
 import type { ReactNode } from 'react'
-import Link from 'next/link'
 
-import { Nav } from '@/components/nav'
 import { Notices } from '@/components/notices'
 import { OverlayScrollbars } from '@/components/overlay-scrollbars'
 
@@ -17,15 +15,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="zh-CN">
       <body>
         <OverlayScrollbars />
-        <div className="shell">
-          <header className="top">
-            <Link className="mark" href="/">
-              AIGC<span>Runner</span>
-            </Link>
-            <Nav />
-          </header>
-          {children}
-        </div>
+        {children}
         <Notices />
       </body>
     </html>

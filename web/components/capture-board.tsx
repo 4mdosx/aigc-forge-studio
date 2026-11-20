@@ -14,6 +14,7 @@ import {
 import { NobgEraser } from "@/components/nobg-eraser";
 import { api, fileHref } from "@/lib/api";
 import { fail, messageOf, notify } from "@/lib/notify";
+import { isSafetyHiddenRating, useSafetyMode } from "@/lib/safety-mode";
 
 type DownloadState = "queued" | "active" | "done" | "failed";
 
@@ -34,9 +35,15 @@ type CutoutTask = {
 
 export function CaptureBoard() {
   const images = useImageAssets();
+  const safety = useSafetyMode();
   const items = images.items;
   const loaded = images.loaded;
-  const selected = images.selected;
+  const selected =
+    safety.ready &&
+    images.selected &&
+    !(safety.enabled && isSafetyHiddenRating(images.selected.rating))
+      ? images.selected
+      : null;
   const loadItems = images.loadItems;
   const itemsRef = images.itemsRef;
   const selectedRef = images.selectedRef;
@@ -515,6 +522,9 @@ export function CaptureBoard() {
             setErasing(false);
             images.select(id);
           }}
+          safety={safety.enabled}
+          safetyReady={safety.ready}
+          onSafety={(next) => void safety.setSafety(next)}
         />
 
         <section className="panel capture-stage">
@@ -546,7 +556,9 @@ export function CaptureBoard() {
             onDrop={takeDrop}
             onPaste={takePaste}
           >
-            {selected ? (
+            {!safety.ready ? (
+              <p className="muted">加载中…</p>
+            ) : selected ? (
               <>
                 <div
                   className={
@@ -661,7 +673,7 @@ export function CaptureBoard() {
 
         <ImageDetail
           hotkeys
-          loaded={loaded}
+          loaded={loaded && safety.ready}
           selected={selected}
           approveVersion={versionOf(currentSlide?.key)}
           erasing={erasing}

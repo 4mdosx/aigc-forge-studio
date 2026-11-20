@@ -25,7 +25,7 @@ python3.12 -m venv .venv
 .venv/bin/python critic/server.py --host 127.0.0.1 --port 8791
 ```
 
-也可以 `node cli.js`，先选 dev 或 deploy，再勾选 critic，回车确认后启动。
+也可以在仓库根目录 `npm install` 后执行 `node cli.js`，先选 dev 或 deploy，再勾选 critic，回车启动。
 
 启动时会检查「依赖」一节列出的模型文件。缺文件就退出，不监听端口。
 
