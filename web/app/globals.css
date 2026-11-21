@@ -4562,7 +4562,7 @@ button.capture-pick.active {
 
 .vram-metrics {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.4rem;
   margin: 0.7rem 0 0.5rem;
 }
@@ -4583,7 +4583,10 @@ button.capture-pick.active {
 }
 
 .vram-metric-value {
-  font-size: 0.85rem;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 table.vram-procs {

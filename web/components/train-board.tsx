@@ -97,8 +97,9 @@ const STATUS_LABEL: Record<Status, string> = {
   cancelled: '已取消',
 }
 
-// tqdm: `  1234/3280 [12:34<21:02, 1.63s/it]`
-const STEP_RE = /(\d+)\/(\d+) \[([0-9:]+)<([0-9:]+),\s*([0-9.]+\s*(?:s\/it|it\/s))\]/
+// tqdm: `steps: 16%|█▋ | 538/3280 [1:10:10<5:57:41, 7.83s/it, avr_loss=0.091]`
+// 尾巴上的 avr_loss 可有可无（第一步还没算出来），所以不锚行尾
+const STEP_RE = /(\d+)\/(\d+) \[([0-9:]+)<([0-9:]+),\s*([0-9.]+\s*(?:s\/it|it\/s))/
 
 export function TrainBoard() {
   const [system, setSystem] = useState<SystemBody | null>(null)
@@ -107,6 +108,10 @@ export function TrainBoard() {
   const [profiles, setProfiles] = useState<ProfilesBody | null>(null)
   const [datasets, setDatasets] = useState<DatasetRow[]>([])
   const [tail, setTail] = useState('')
+  // 瞬时步速：tqdm 报的是全程平均（被开局慢步污染），这里用相邻两次轮询的步差自己算
+  const [instant, setInstant] = useState<number | null>(null)
+  const lastSample = useRef<{ step: number; at: number } | null>(null)
+  const sampleJobId = useRef('')
   const [freeing, setFreeing] = useState(false)
   const [pendingId, setPendingId] = useState('')
   const [busy, setBusy] = useState(false)
@@ -130,6 +135,23 @@ export function TrainBoard() {
     }
   }, [])
 
+  const sampleSpeed = useCallback((text: string) => {
+    const parsed = parseProgress(text)
+    if (!parsed) {
+      lastSample.current = null
+      setInstant(null)
+      return
+    }
+    const now = Date.now()
+    const prev = lastSample.current
+    if (prev && parsed.step > prev.step) {
+      const perStep = (now - prev.at) / 1000 / (parsed.step - prev.step)
+      // 暂停/恢复后的第一段会被停顿污染，超过 2 分钟/步的样本直接丢
+      if (perStep > 0 && perStep < 120) setInstant(perStep)
+    }
+    lastSample.current = { step: parsed.step, at: now }
+  }, [])
+
   const loadJobs = useCallback(async () => {
     try {
       const body = await api<{ jobs: TrainJob[] }>('train/jobs')
@@ -140,12 +162,19 @@ export function TrainBoard() {
         setTail('')
         return
       }
-      setTail(await readText(`train/jobs/${active.id}/log?tail=6000`))
+      if (sampleJobId.current !== active.id) {
+        sampleJobId.current = active.id
+        lastSample.current = null
+        setInstant(null)
+      }
+      const text = await readText(`train/jobs/${active.id}/log?tail=6000`)
+      setTail(text)
+      sampleSpeed(text)
     } catch (err) {
       setJobs([])
       fail(`训练任务读取失败：${messageOf(err)}`)
     }
-  }, [])
+  }, [sampleSpeed])
 
   useEffect(() => {
     void loadSystem()
@@ -178,7 +207,7 @@ export function TrainBoard() {
     const pull = async () => {
       try {
         const text = await readText(`train/jobs/${logJob.id}/log?tail=200000`)
-        if (alive) setLogText(text)
+        if (alive) setLogText(tidyLog(text))
       } catch (err) {
         if (alive) setLogText(`读取日志失败：${messageOf(err)}`)
       }
@@ -203,11 +232,12 @@ export function TrainBoard() {
         'system/comfy/free',
         { method: 'POST' },
       )
-      const saved = body.before ? body.before.vramFree : 0
-      const gained = Math.max(0, body.after.vramFree - saved)
+      const vram = Math.max(0, body.after.vramFree - (body.before?.vramFree ?? 0))
+      const ram = Math.max(0, body.after.ramFree - (body.before?.ramFree ?? 0))
+      // 实测 VRAM 常常只降到 ComfyUI 的 torch 池，真正被还回来的是内存
       notify(
         body.before
-          ? `已卸载模型，显存空闲 +${mib(gained)}MB`
+          ? `已卸载模型：显存 +${mib(vram)}MB，内存 +${mib(ram)}MB`
           : '已通知 ComfyUI 卸载模型',
       )
       await loadSystem()
@@ -455,7 +485,14 @@ export function TrainBoard() {
                           ? paused
                             ? '已冻结'
                             : progress
-                              ? `${progress.step}/${progress.total} · ${progress.rate} · ETA ${progress.eta}`
+                              ? [
+                                  `${progress.step}/${progress.total}`,
+                                  instant ? `${instant.toFixed(1)} s/it` : progress.rate,
+                                  // 瞬时有了就用瞬时推剩余（tqdm 的 ETA 是全程平均，被开局慢步拖成假值）
+                                  instant
+                                    ? `剩 ${etaText((progress.total - progress.step) * instant)}`
+                                    : `ETA ${progress.eta}`,
+                                ].join(' · ')
                               : '等日志…'
                           : job.status === 'completed'
                             ? '已出权重'
@@ -537,6 +574,29 @@ async function readText(path: string): Promise<string> {
   return res.text()
 }
 
+// tqdm 每步都写一行 \r 刷新，原始日志里同一段进度会重复上百次。
+// 连续的一串进度行只保留最后一条，其余原样。
+const PROGRESS_LINE_RE = /\d+\/\d+ \[[0-9:]+<[0-9:]+,/
+
+function tidyLog(text: string): string {
+  const lines = text.split(/[\r\n]+/)
+  const out: string[] = []
+  let pending: string | null = null
+  for (const line of lines) {
+    if (PROGRESS_LINE_RE.test(line)) {
+      pending = line
+      continue
+    }
+    if (pending) {
+      out.push(pending)
+      pending = null
+    }
+    out.push(line)
+  }
+  if (pending) out.push(pending)
+  return out.join('\n')
+}
+
 function parseProgress(text: string): Progress | null {
   const lines = text.split(/[\r\n]+/)
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -551,6 +611,14 @@ function parseProgress(text: string): Progress | null {
     }
   }
   return null
+}
+
+function etaText(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.round((total % 3600) / 60)
+  if (hours > 0) return `${hours}h${String(minutes).padStart(2, '0')}m`
+  return `${minutes}m`
 }
 
 function toneOf(ratio: number): string {
