@@ -98,6 +98,7 @@ function testRunner(clients: ComfyClient[], dataDir: string): Runner {
     db: openDatabase(':memory:'),
     clients,
     chat: null,
+    trainerBaseURL: null,
     dataDir,
     timeoutMs: 600_000,
     now: () => new Date('2026-01-01T00:00:00.000Z'),

@@ -191,6 +191,7 @@ function testRunner(chat: Runner['chat']): Runner {
     db: openDatabase(':memory:'),
     clients: [],
     chat,
+    trainerBaseURL: null,
     dataDir: '/tmp/aigc-runner-test-data',
     timeoutMs: 60_000,
     now: () => new Date('2026-01-01T00:00:00.000Z'),
