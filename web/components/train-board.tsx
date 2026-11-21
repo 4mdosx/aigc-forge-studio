@@ -309,6 +309,8 @@ export function TrainBoard() {
   const progress = running ? parseProgress(tail) : null
   const card = system?.gpu?.gpus[0]
   const comfy = system?.comfy
+  // trainer 还是旧进程时 /gpu 与暂停/恢复都返 404：按不可用渲染，别让人点了才发现
+  const trainerStale = Boolean(system?.gpuError?.includes('HTTP 404'))
 
   return (
     <div className="train-split">
@@ -382,7 +384,9 @@ export function TrainBoard() {
               </button>
             </div>
             <p className="muted vram-hint">
-              训练期间别用 ComfyUI 出图：模型一 staged，步速会掉到 1/6。
+              {trainerStale
+                ? '暂停/恢复与逐进程显存要等训练机 trainer 重启服务后生效（重启会中断当前任务）。'
+                : '训练期间别用 ComfyUI 出图：模型一 staged，步速会掉到 1/6。'}
             </p>
           </>
         )}
@@ -509,7 +513,8 @@ export function TrainBoard() {
                           <button
                             type="button"
                             className="quiet"
-                            disabled={pendingId === job.id}
+                            disabled={pendingId === job.id || trainerStale}
+                            title={trainerStale ? '训练机 trainer 未更新，重启服务后可用' : undefined}
                             onClick={() => void act(job, paused ? 'resume' : 'pause')}
                           >
                             {paused ? '恢复' : '暂停'}

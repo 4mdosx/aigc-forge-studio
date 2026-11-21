@@ -341,7 +341,7 @@ export function mountDice(app: Hono, runner: Runner): void {
         `SELECT id, name, character_slug, pose_name, pose_id, fields_json, forms_json, created_at, updated_at
          FROM dice_templates ORDER BY updated_at DESC, rowid DESC`,
       )
-      .all() as TemplateRow[]
+      .all() as unknown as TemplateRow[]
     return c.json({ templates: rows.map(templateOf) })
   })
 
@@ -388,7 +388,7 @@ export function mountDice(app: Hono, runner: Runner): void {
         `SELECT id, name, character_slug, pose_name, pose_id, fields_json, forms_json, created_at, updated_at
          FROM dice_templates WHERE id = ?`,
       )
-      .get(id) as TemplateRow | undefined
+      .get(id) as unknown as TemplateRow | undefined
     if (!current) throw new RunnerError(`template ${id} not found`, 404)
     const name = body.name === undefined ? current.name : templateName(body.name)
     const saving =
@@ -416,7 +416,7 @@ export function mountDice(app: Hono, runner: Runner): void {
         `SELECT id, name, character_slug, pose_name, pose_id, fields_json, forms_json, created_at, updated_at
          FROM dice_templates WHERE id = ?`,
       )
-      .get(id) as TemplateRow
+      .get(id) as unknown as TemplateRow
     return c.json({ template: templateOf(row) })
   })
 
