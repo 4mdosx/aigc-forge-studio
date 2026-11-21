@@ -4,7 +4,7 @@ import { join } from 'node:path'
 
 import { branchOf, revisionById, workflowByName } from '../db.ts'
 import { RunnerError } from '../errors.ts'
-import { quickPayload, loraOverride } from '../quickGenerate.ts'
+import { quickPayload, loraOverride, workflowForPose } from '../quickGenerate.ts'
 import { readRollConfig } from '../rollConfig.ts'
 import { createTask } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
@@ -14,8 +14,6 @@ import { linkOf, readAdapterMap, resolveAdapter, workByName } from '../work/work
 import { jsonObject, taskJson } from './request.ts'
 
 const QUICK_WORK = 'baseline'
-const POSE_WORKFLOW = 'baseline_ax4z_lora_v1'
-const PLAIN_WORKFLOW = 'baseline_v1'
 
 interface PoseVariant {
   gen?: number[]
@@ -32,11 +30,12 @@ export function mountQuick(app: Hono, runner: Runner): void {
     const loraName = typeof body.loraName === 'string' ? body.loraName.trim() : ''
 
     const rollConfig = readRollConfig(runner.db)
-    const workflowName = poseId === '' ? PLAIN_WORKFLOW : POSE_WORKFLOW
-    const version = rollConfig.workflowName === workflowName ? rollConfig.version : ''
+    // 固定 prompt 取自 roll_config，但版本走各自 workflow 的 main head：
+    // roll_config.version 是 dice 的锁定版本，套到 quick 的两个工作流上会拿错版本（如旧的 batch=4）。
+    const workflowName = workflowForPose(poseId)
     const work = workByName(runner.db, QUICK_WORK)
     const workflow = workflowByName(runner.db, workflowName)
-    const revision = revisionFor(runner, workflow.id, version)
+    const revision = revisionFor(runner, workflow.id)
     const link = linkOf(runner.db, work.id, workflow.id)
     if (!link) throw new RunnerError('workflow is not in this work')
     const history = runner.db
@@ -65,7 +64,6 @@ export function mountQuick(app: Hono, runner: Runner): void {
         task: 'quick',
         workName: work.name,
         workflowName: workflow.name,
-        ...(version ? { version } : {}),
         payload,
       },
       runner.now(),
@@ -124,13 +122,6 @@ function poseVariant(runner: Runner, poseId: string): PoseVariant {
   return variant
 }
 
-function revisionFor(runner: Runner, workflowId: string, version: string) {
-  if (version === '') {
-    return revisionById(runner.db, branchOf(runner.db, workflowId, 'main').head_revision_id)
-  }
-  const row = runner.db
-    .prepare('SELECT id FROM workflow_revisions WHERE workflow_id = ? AND version = ?')
-    .get(workflowId, version) as { id: string } | undefined
-  if (!row) throw new RunnerError(`version ${version} not found`, 404)
-  return revisionById(runner.db, row.id)
+function revisionFor(runner: Runner, workflowId: string) {
+  return revisionById(runner.db, branchOf(runner.db, workflowId, 'main').head_revision_id)
 }

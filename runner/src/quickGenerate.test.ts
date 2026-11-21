@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { loraOverride, quickPayload } from './quickGenerate.ts'
+import { loraOverride, quickPayload, PLAIN_WORKFLOW, POSE_WORKFLOW, workflowForPose } from './quickGenerate.ts'
 import type { AdapterMap } from './workflow/binding.ts'
 import type { Prompt } from './workflow/graph.ts'
 
@@ -42,6 +42,14 @@ const adapter: AdapterMap = {
   },
   outputs: {},
 }
+
+test('pose routes to dual-controlnet workflow, plain text routes to the no-CN workflow', () => {
+  assert.equal(POSE_WORKFLOW, 'base_ax4z_lora_cn_1')
+  assert.equal(PLAIN_WORKFLOW, 'baseline_ax4z_lora_v1')
+  assert.equal(workflowForPose(''), PLAIN_WORKFLOW)
+  assert.equal(workflowForPose('   '), PLAIN_WORKFLOW)
+  assert.equal(workflowForPose('pose-001'), POSE_WORKFLOW)
+})
 
 test('quick payload puts the settings positive in front of the typed prompt', () => {
   const payload = quickPayload(api, adapter, '1girl, solo', {

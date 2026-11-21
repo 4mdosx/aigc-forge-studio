@@ -3,6 +3,14 @@ import { joinPrompt, type RollConfig } from './rollConfig.ts'
 import { matchNode, type AdapterMap } from './workflow/binding.ts'
 import type { Prompt } from './workflow/graph.ts'
 
+// 带姿态走双 ControlNet 工作流，纯文生图走无 CN 工作流（语义与工作流能力一致）。
+export const POSE_WORKFLOW = 'base_ax4z_lora_cn_1'
+export const PLAIN_WORKFLOW = 'baseline_ax4z_lora_v1'
+
+export function workflowForPose(poseId: string): string {
+  return poseId.trim() === '' ? PLAIN_WORKFLOW : POSE_WORKFLOW
+}
+
 // 快速出图和灵感出图同一套拼法：出图设置的正负向在前，输入的 prompt 接在正面后面。
 // 快速出图没有单独的负面输入，负面就是设置里的负面词。
 // 其余 adapter 入参取工作流节点上现有的值；带 map 的入参反查成 map 的键。seed 交给执行时随机。

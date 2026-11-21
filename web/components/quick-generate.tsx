@@ -16,8 +16,9 @@ interface PoseEntry {
   poseName?: string | string[]
 }
 
-const POSE_WORKFLOW = 'baseline_ax4z_lora_v1'
-const PLAIN_WORKFLOW = 'baseline_v1'
+// 与 runner 的 quickGenerate.ts 保持一致：带姿态走双 CN，纯文生图走无 CN。
+const POSE_WORKFLOW = 'base_ax4z_lora_cn_1'
+const PLAIN_WORKFLOW = 'baseline_ax4z_lora_v1'
 
 const GEN_STATUS_LABEL: Record<string, string> = {
   pending: '等待',
