@@ -19,10 +19,17 @@ interface PoseEntry {
   poseName?: string | string[]
   name?: string
   tags?: string[]
+  source?: string
   guide?: { view?: string[]; shot?: string[]; framing?: string[] }
   nsfw?: boolean
   enabled?: boolean
   variants?: Record<string, PoseVariant>
+}
+
+// source 展示名（未登记的 source 原样显示）
+const SOURCE_LABEL: Record<string, string> = {
+  'openpose-lib': '公开库',
+  img2pose: '自生成',
 }
 
 const GEN_STATUS_LABEL: Record<string, string> = {
@@ -96,6 +103,8 @@ export function QuickGenerate() {
   const [thumbMode, setThumbMode] = useState<ThumbMode>('depth')
   const [loraName, setLoraName] = useState('')
   const [loras, setLoras] = useState<string[]>([])
+  const [sourceFilter, setSourceFilter] = useState('')
+  const [sources, setSources] = useState<string[]>([])
   const [poses, setPoses] = useState<PoseEntry[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [busy, setBusy] = useState(false)
@@ -104,11 +113,22 @@ export function QuickGenerate() {
 
   useEffect(() => {
     let cancelled = false
-    void api<{ poses: PoseEntry[] }>('data/poses?enabled=true')
+    const sourceQuery = sourceFilter ? `&source=${encodeURIComponent(sourceFilter)}` : ''
+    void api<{ poses: PoseEntry[]; sources: string[] }>(`data/poses?enabled=true${sourceQuery}`)
       .then((body) => {
-        if (!cancelled) setPoses(body.poses)
+        if (!cancelled) {
+          setPoses(body.poses)
+          setSources(body.sources ?? [])
+        }
       })
       .catch((err: unknown) => fail(messageOf(err)))
+    return () => {
+      cancelled = true
+    }
+  }, [sourceFilter])
+
+  useEffect(() => {
+    let cancelled = false
     void api<{ loras: string[] }>('comfy/loras')
       .then((body) => {
         if (!cancelled) setLoras(body.loras)
@@ -164,6 +184,14 @@ export function QuickGenerate() {
 
   const chooseGroup = (name: string) => {
     setGroup(name)
+    setPoseId('')
+    setQuery('')
+  }
+
+  const chooseSource = (value: string) => {
+    if (value === sourceFilter) return
+    setSourceFilter(value)
+    setGroup('')
     setPoseId('')
     setQuery('')
   }
@@ -296,6 +324,28 @@ export function QuickGenerate() {
               </button>
             </div>
           </div>
+        </div>
+        <div className="pose-sources" role="group" aria-label="pose 来源">
+          <button
+            type="button"
+            className={sourceFilter === '' ? 'pose-source on' : 'pose-source'}
+            aria-pressed={sourceFilter === ''}
+            onClick={() => chooseSource('')}
+          >
+            全部来源
+          </button>
+          {sources.map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={sourceFilter === value ? 'pose-source on' : 'pose-source'}
+              aria-pressed={sourceFilter === value}
+              title={value}
+              onClick={() => chooseSource(value)}
+            >
+              {SOURCE_LABEL[value] ?? value}
+            </button>
+          ))}
         </div>
         <div className="pose-groups" role="tablist" aria-label="pose 分组">
           {groups.map(([name, count]) => (

@@ -13,6 +13,7 @@ interface ManifestEntry {
   canvases?: string[]
   poseName?: string | string[]
   compositionName?: string
+  source?: string
   [key: string]: unknown
 }
 
@@ -51,12 +52,16 @@ export function mountData(app: Hono, runner: Runner): void {
     const manifest = loadManifest()
     const poses = manifest.poses ?? []
     const canvas = c.req.query('canvas')
+    const source = c.req.query('source')
     const filtered = poses.filter(
       (p) =>
         flagMatches(p.enabled, c.req.query('enabled')) &&
-        (!canvas || (p.canvases ?? []).includes(canvas)),
+        (!canvas || (p.canvases ?? []).includes(canvas)) &&
+        (!source || p.source === source),
     )
-    return c.json({ total: filtered.length, poses: filtered })
+    // 全量 source 枚举（不受筛选影响），供展示层渲染筛选条
+    const sources = [...new Set(poses.map((p) => p.source).filter((s): s is string => !!s))].sort()
+    return c.json({ total: filtered.length, poses: filtered, sources })
   })
 
   app.get('/data/compositions', (c) => {

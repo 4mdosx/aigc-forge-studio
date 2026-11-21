@@ -702,6 +702,36 @@ button.graph-node.picked {
   color: #f7f3ea;
 }
 
+.pose-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.55rem;
+  border-bottom: 1px dashed #ddd2c2;
+}
+
+.pose-source {
+  border: 1px solid #d8cec0;
+  background: #fffdf8;
+  color: #5c564e;
+  border-radius: 999px;
+  padding: 0.2rem 0.7rem;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.pose-source:hover {
+  border-color: #0c5c49;
+}
+
+.pose-source.on {
+  background: #0c5c49;
+  border-color: #0c5c49;
+  color: #f7f3ea;
+}
+
 .pose-groups {
   display: flex;
   flex-wrap: wrap;
