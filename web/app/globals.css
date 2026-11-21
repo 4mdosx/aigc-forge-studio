@@ -573,6 +573,249 @@ button.graph-node.picked {
   background: #e7f0ec;
 }
 
+/* ── 首页快速生图（新链路 /generate/base + /generate/cn） ── */
+.home {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.quick-gen {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(15rem, 0.8fr) minmax(0, 1.5fr) minmax(13rem, 0.85fr);
+  gap: 0.75rem;
+  height: 24rem;
+  min-height: 0;
+}
+
+.quick-gen .column {
+  height: 100%;
+}
+
+.quick-gen-form {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.quick-gen-poses {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.quick-gen-results {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.quick-gen-form .dice-hero-roll {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 1rem;
+  font-size: 0.9rem;
+}
+
+.quick-gen-row {
+  display: grid;
+  grid-template-columns: 5rem 1fr;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.quick-gen-pose-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.85rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #d8cec0;
+  border-radius: 8px;
+  background: #fffdf8;
+  font-size: 0.85rem;
+}
+
+.quick-gen-pose-tag {
+  border-radius: 999px;
+  padding: 0.05rem 0.5rem;
+  font-size: 0.7rem;
+  background: #e7f0ec;
+  color: #0c5c49;
+}
+
+.quick-gen-note {
+  margin: 0.55rem 0 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 0.78rem;
+}
+
+.quick-gen-note code {
+  font-size: 0.75rem;
+  background: #efe7da;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+}
+
+.quick-gen-task-id {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.quick-gen-results .dice-gen-thumbs img {
+  height: 150px;
+}
+
+/* pose 分组 + 缩略图网格 */
+.pose-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.6rem;
+}
+
+.pose-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid #d8cec0;
+  background: #fffdf8;
+  color: #5c564e;
+  border-radius: 999px;
+  padding: 0.25rem 0.6rem;
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.pose-group:hover {
+  border-color: #0c5c49;
+}
+
+.pose-group.on {
+  background: #0c5c49;
+  border-color: #0c5c49;
+  color: #f7f3ea;
+}
+
+.pose-group-count {
+  font-size: 0.68rem;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+
+.pose-search {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+  color: #8a8175;
+}
+
+.pose-search input {
+  flex: 1;
+}
+
+.pose-empty {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100%;
+  gap: 0.2rem;
+}
+
+.pose-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 0.5rem;
+  align-content: start;
+}
+
+.pose-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  border: 1px solid #d8cec0;
+  border-radius: 8px;
+  background: #fffdf8;
+  padding: 0.25rem;
+  font: inherit;
+  font-size: 0.7rem;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.pose-card:hover {
+  border-color: #0c5c49;
+}
+
+.pose-card.on {
+  border-color: #0c5c49;
+  box-shadow: inset 0 0 0 1px #0c5c49;
+  background: #e7f0ec;
+}
+
+.pose-card-thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background: #efe7da;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.pose-card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.pose-card-noimg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #a89d8f;
+}
+
+.pose-card-nsfw {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: #a04030;
+  color: #f7f3ea;
+  border-radius: 3px;
+  padding: 0 0.3rem;
+  font-size: 0.62rem;
+}
+
+.pose-card-id {
+  display: block;
+  margin-top: 0.25rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #5c564e;
+}
+
+.pose-card-size {
+  display: block;
+  color: #a89d8f;
+  font-size: 0.62rem;
+}
+
 .board {
   flex: 1;
   min-height: 0;
@@ -1255,14 +1498,19 @@ button.task-pick.current {
     grid-row: 1;
   }
 
-  .quick-gen-results {
+  .quick-gen-poses {
     grid-column: 1;
     grid-row: 2;
   }
 
+  .quick-gen-results {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
   .quick-gen .column {
     height: auto;
-    max-height: 16rem;
+    max-height: 20rem;
   }
 
   .board {
