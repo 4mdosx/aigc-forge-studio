@@ -72,17 +72,81 @@ function Get-ListeningProcessIds {
     }
 }
 
+function Wait-ProcessGone {
+    param([int]$ProcessId, [int]$TimeoutSeconds = 10)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) { return $true }
+        Start-Sleep -Milliseconds 200
+    }
+    return (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue))
+}
+
+function Get-ProcessSnapshot {
+    param([int]$ProcessId)
+    $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    if (-not $proc) { return $null }
+    $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue).CommandLine
+    return [pscustomobject]@{ Id = $ProcessId; Name = $proc.ProcessName; CommandLine = $cmd }
+}
+
+function Invoke-TaskKill {
+    # PS 5.1 坑：EAP=Stop 时对原生命令做 2>&1 会把 stderr 变成 ErrorRecord 直接终止脚本，
+    # 而 taskkill 失败（进程已退）恰恰就是写 stderr。所以这里临时降级 EAP。
+    param([int]$ProcessId, [switch]$Tree)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        if ($Tree) {
+            & taskkill.exe /PID $ProcessId /T /F 2>&1 | Out-Null
+        } else {
+            & taskkill.exe /PID $ProcessId /F 2>&1 | Out-Null
+        }
+    } catch {
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 function Stop-ProcessTree {
     param([int]$ProcessId, [switch]$KillChildren)
+
+    if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) { return }
+
     if ($KillChildren) {
-        & taskkill.exe /PID $ProcessId /T /F | Out-Null
+        Invoke-TaskKill -ProcessId $ProcessId -Tree
+        if (Wait-ProcessGone -ProcessId $ProcessId -TimeoutSeconds 10) { return }
     } else {
         # 软停：只杀 node 自己。训练子进程继续跑，新 trainer 起来会 re-attach。
-        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+        # 坑：TerminateProcess 是异步的，Stop-Process 返回后进程还要几十~几百毫秒才从进程表
+        # 消失，紧接着 Get-Process 会误判「停不掉」。所以这里必须等，并且把真实异常打出来
+        # （原来 SilentlyContinue 把它吞了，只剩一句 Failed to stop PID）。
+        try {
+            Stop-Process -Id $ProcessId -Force -ErrorAction Stop
+        } catch {
+            Write-Warning "Stop-Process 报错：$($_.Exception.Message)（改用 taskkill /F 重试）"
+        }
+        if (Wait-ProcessGone -ProcessId $ProcessId -TimeoutSeconds 5) { return }
+        # 不跟 /T：软停语义是「留训练进程」。只对 node 自己补一刀。
+        Invoke-TaskKill -ProcessId $ProcessId
+        if (Wait-ProcessGone -ProcessId $ProcessId -TimeoutSeconds 10) { return }
     }
-    if (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
-        throw "Failed to stop PID $ProcessId"
+
+    # 到这儿进程还在。两种可能：真杀不动，或者 PID 已经被系统复用给了别的进程。
+    if (-not (Test-OurTrainer -ProcessId $ProcessId)) {
+        Write-Warning "PID $ProcessId 已不是我们的 trainer（疑似 PID 复用），原进程应已退出"
+        return
     }
+
+    $snap = Get-ProcessSnapshot -ProcessId $ProcessId
+    $detail = if ($snap) { "$($snap.Name) / $($snap.CommandLine)" } else { "unknown" }
+    Write-Host "Failed to stop PID $ProcessId ($detail)" -ForegroundColor Red
+    Write-Host "可能需要管理员权限（进程被提权启动）或有别的进程持有句柄。手工排查："
+    Write-Host "  Get-Process -Id $ProcessId | Select-Object Id,ProcessName,StartTime,Path"
+    Write-Host "  Stop-Process -Id $ProcessId -Force"
+    Write-Host "  taskkill.exe /PID $ProcessId /T /F"
+    Write-Host "都失败就用管理员 PowerShell 重跑本脚本。"
+    throw "Failed to stop PID $ProcessId"
 }
 
 function Read-PidFile {
@@ -165,10 +229,19 @@ function Invoke-Stop {
         throw "Port $Port is used by PID $($foreign -join ', '), which is not our trainer. Not stopping it."
     }
 
-    # 端口查不到（已挂/半死）时退回 pid 文件
+    # 端口查不到（已挂/半死）时退回 pid 文件；但 pid 文件可能是历史遗留、PID 已被系统复用，
+    # 所以先确认那个 pid 确实是我们的 trainer，否则只清文件、不杀进程。
     $filePid = Read-PidFile
     $targets = @($ours)
-    if ($targets.Count -eq 0 -and $filePid) { $targets = @($filePid) }
+    if ($targets.Count -eq 0 -and $filePid) {
+        if (Test-OurTrainer -ProcessId $filePid) {
+            $targets = @($filePid)
+        } else {
+            Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+            if (-not $Quiet) { Write-Host "Already stopped, skipping." -ForegroundColor Green }
+            return
+        }
+    }
 
     if ($targets.Count -eq 0) {
         Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
