@@ -16,6 +16,7 @@ import { mountJobs } from './jobs.ts'
 import { mountOutputGallery } from './output-gallery.ts'
 import { mountPoses } from './poses.ts'
 import { mountPosePending } from './pose-pending.ts'
+import { mountPromptStudio } from './promptStudio.ts'
 import { mountRecommend } from './recommend.ts'
 import { mountSystem } from './system.ts'
 import { mountTag } from './tag.ts'
@@ -45,6 +46,7 @@ export function createApp(
   mountData(app, runner)
   mountPoses(app, runner)
   mountPosePending(app, runner)
+  mountPromptStudio(app, runner)
   mountCapture(app, runner)
   mountCaptureLive(app, live)
   mountDatasets(app, runner)

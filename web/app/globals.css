@@ -618,6 +618,135 @@ button.graph-node.picked {
   font-size: 0.9rem;
 }
 
+/* 首页 prompt 工作台：平铺 → 四组 → 双模式并行重组 */
+.prompt-studio {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding: 0.6rem;
+  border: 1px solid #d8cec0;
+  border-radius: 10px;
+  background: #fdfbf6;
+}
+
+.prompt-studio-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.prompt-studio-head .muted,
+.prompt-studio-result-head .muted {
+  font-size: 0.72rem;
+}
+
+.prompt-studio-flat,
+.prompt-studio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+}
+
+.prompt-studio-group > span {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-weight: 600;
+}
+
+.prompt-studio-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.2rem;
+  height: 1.1rem;
+  padding: 0 0.25rem;
+  border-radius: 0.5rem;
+  background: #e9e2d5;
+  color: #6b6358;
+  font-size: 0.68rem;
+  font-weight: 500;
+}
+
+.prompt-studio textarea {
+  width: 100%;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.prompt-studio-groups {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+}
+
+button.prompt-studio-btn {
+  align-self: flex-start;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid #c9bda9;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: #4a4239;
+  font-size: 0.76rem;
+}
+
+button.prompt-studio-btn:hover:not(:disabled) {
+  background: #f1eadb;
+}
+
+button.prompt-studio-btn.primary {
+  background: #0c6b53;
+  border-color: #0c6b53;
+  color: #fff;
+}
+
+button.prompt-studio-btn.primary:hover:not(:disabled) {
+  background: #095241;
+}
+
+.prompt-studio-results {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem;
+}
+
+.prompt-studio-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.45rem;
+  border: 1px dashed #cdbfa8;
+  border-radius: 8px;
+}
+
+.prompt-studio-result-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.prompt-studio-result-text {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.prompt-studio-error {
+  color: #a13b34;
+}
+
+.prompt-studio-adopted {
+  font-size: 0.72rem;
+}
+
 .quick-gen-row {
   display: grid;
   grid-template-columns: 5rem 1fr;
@@ -2259,6 +2388,12 @@ dialog.image-lightbox .dialog-head {
 
 .capture-tag-picks .capture-filters {
   margin-bottom: 0;
+}
+
+.capture-tag-toggles {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 button.capture-tag-edit {

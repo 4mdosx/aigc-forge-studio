@@ -13,7 +13,9 @@ export type TagGroupKey =
   | "design"
   | "identity"
   | "clothing"
+  | "scene"
   | "pose"
+  | "camera"
   | "background"
   | "quality"
   | "artist"
@@ -41,12 +43,27 @@ const DESIGN_TAGS = new Set([
   "science_fiction", "futuristic", "technology", "power_armor", "exoskeleton",
 ]);
 
-// 姿势/构图前缀（对齐 runner captionTiers.POSE_PREFIXES）
+// 姿势/构图前缀（对齐 runner captionTiers.POSE_PREFIXES；景别镜头词已拆到 CAMERA）
 const POSE_PREFIXES = [
-  "sitting", "standing", "looking_at", "looking_to", "from_", "cowboy_shot",
-  "full_body", "upper_body", "close-up", "close_up", "portrait", "arms_",
+  "sitting", "standing", "looking_at", "looking_to", "arms_",
   "arm_up", "crossed_legs", "lying", "kneeling", "one_eye_closed",
 ];
+
+// 场景物件：酒杯/吧台/室内这类道具，跟服装分开，避免「服装与题材」变垃圾桶
+const SCENE = new Set([
+  "bar", "bar_(place)", "indoors", "outdoors", "inside", "outside",
+  "room", "restaurant", "cafe", "bedroom", "classroom", "street", "alley",
+  "drinking_glass", "wine_glass", "cocktail_glass", "cup", "bottle",
+  "wine_bottle", "beer_bottle", "alcohol", "drink", "bar_stool", "stool",
+  "chair", "table", "counter", "bartender", "liquor", "glass", "plate",
+]);
+
+// 构图/镜头语言：景别、视角、机位，跟身体姿势分开
+const CAMERA = new Set([
+  "dutch_angle", "cowboy_shot", "close-up", "close_up", "portrait",
+  "full_body", "upper_body", "mid_shot", "wide_shot", "long_shot",
+]);
+const CAMERA_PREFIXES = ["from_", "camera_", "view_from", "perspective"];
 
 // 人物身份细节（对齐 runner captionTiers.IDENTITY_HINT）
 const IDENTITY_HINT = /(?:^|_)(eyes?|hair|iris|pupils?|expression|smile|blush|mouth|ears?|tail|horns?|skin|breasts?|ass|thighs?|clavicle|eyebrows?)$/;
@@ -72,7 +89,9 @@ const GROUP_META: Record<TagGroupKey, { label: string; tier: TagGroup["tier"] }>
   design: { label: "机械与设计", tier: "T1" },
   identity: { label: "外貌与身份", tier: "T3" },
   clothing: { label: "服装与题材", tier: "T2" },
-  pose: { label: "姿势与构图", tier: null },
+  scene: { label: "场景物件", tier: null },
+  pose: { label: "姿势与动作", tier: null },
+  camera: { label: "构图与镜头", tier: null },
   background: { label: "背景", tier: null },
   quality: { label: "画质与噪声", tier: null },
   artist: { label: "画师", tier: null },
@@ -89,14 +108,17 @@ function keyOf(detail: TagDetail): TagGroupKey {
   if (BACKGROUND.has(lc)) return "background";
   if (QUALITY.has(lc)) return "quality";
   if (DESIGN_TAGS.has(lc)) return "design";
+  // 镜头词优先于姿势：full_body / cowboy_shot 这类景别不再混进姿势组
+  if (CAMERA.has(lc) || CAMERA_PREFIXES.some((prefix) => lc.startsWith(prefix))) return "camera";
+  if (SCENE.has(lc)) return "scene";
   if (POSE_PREFIXES.some((prefix) => lc.startsWith(prefix))) return "pose";
   if (SUBJECT.test(lc) || IDENTITY_HINT.test(lc)) return "identity";
   return "clothing";
 }
 
 const ORDER: TagGroupKey[] = [
-  "character", "design", "identity", "clothing", "pose",
-  "background", "quality", "artist", "copyright", "other",
+  "character", "design", "identity", "clothing", "scene",
+  "pose", "camera", "background", "quality", "artist", "copyright", "other",
 ];
 
 export function groupTags(details: TagDetail[]): TagGroup[] {

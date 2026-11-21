@@ -4,6 +4,7 @@ import { Search, Sparkles, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { api, fileHref } from '@/lib/api'
+import { PromptStudio } from './prompt-studio'
 import { ZoomImage } from './zoom-image'
 import { fail, messageOf, notify } from '@/lib/notify'
 import { terminal, type Task } from '@/lib/types'
@@ -239,13 +240,14 @@ export function QuickGenerate() {
             {busy ? '提交中…' : '生成图片'}
           </button>
         </div>
+        <PromptStudio onPrompt={setPrompt} />
         <label>
-          正面 prompt
+          生成用 prompt（四组拼装 / 重组采用结果）
           <textarea
             className="prose"
-            rows={3}
+            rows={2}
             value={prompt}
-            placeholder="角色、服装、场景… 质量词由工作流固定段自动加"
+            placeholder="在上方工作台拆四组或写重组结果；也可直接粘贴"
             onChange={(event) => setPrompt(event.target.value)}
           />
         </label>

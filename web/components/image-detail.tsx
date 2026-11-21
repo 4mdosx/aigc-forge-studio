@@ -24,6 +24,12 @@ import { fail, messageOf, notify } from "@/lib/notify";
 
 type NearestOrder = "near" | "far";
 
+// tag 按钮 hover 提示：有置信度就显示百分比，没有则只显示 tag 名。
+function titleOfTag(name: string, details: readonly TagDetail[]): string {
+  const score = details.find((detail) => detail.name === name)?.score ?? 0;
+  return score > 0 ? `${name} · ${(score * 100).toFixed(1)}%` : name;
+}
+
 interface NearestImage {
   id: string;
   cosine: number;
@@ -90,6 +96,7 @@ export function ImageDetail({
   const [neighbors, setNeighbors] = useState<NearestImage[] | null>(null);
   const [tagDetails, setTagDetails] = useState<TagDetail[]>([]);
   const [tagsGrouped, setTagsGrouped] = useState(true);
+  const [flatOrder, setFlatOrder] = useState<"confidence" | "group">("confidence");
   const [nearestCount, setNearestCount] = useState("10");
   const [nearestOrder, setNearestOrder] = useState<NearestOrder>("near");
   const nearestRequest = useRef(0);
@@ -412,6 +419,15 @@ export function ImageDetail({
     return groupTags(details);
   }, [selected, tagDetails]);
 
+  // 平铺排序：confidence = DB 原顺序（置信度降序）；group = 按分组优先级展平，组内仍降序
+  const flatTags = useMemo(() => {
+    if (!selected) return [];
+    if (flatOrder === "group" && tagGroups.length > 0) {
+      return tagGroups.flatMap((group) => group.tags.map((tag) => tag.name));
+    }
+    return selected.tags;
+  }, [selected, tagGroups, flatOrder]);
+
   const browseIndex = selected ? galleryIds.indexOf(selected.id) : -1;
 
   function stepGallery(delta: number) {
@@ -652,29 +668,50 @@ export function ImageDetail({
                     {selected.tags.length === 0 ? (
                       <span className="muted">空</span>
                     ) : tagGroups.length > 0 && tagsGrouped ? (
-                      <TagGroupList groups={tagGroups} onPickTag={onPickTag} />
+                      <TagGroupList groups={tagGroups} onPickTag={onPickTag} details={tagDetails} />
                     ) : (
                       <div className="capture-filters" role="group" aria-label="图片标签">
-                        {selected.tags.map((tag, index) => (
-                          <button
-                            key={`${tag}-${index}`}
-                            type="button"
-                            onClick={() => onPickTag(tag)}
-                          >
-                            {tag}
-                          </button>
-                        ))}
+                        {flatTags.length === 0 ? (
+                          <span className="muted">空</span>
+                        ) : (
+                          flatTags.map((tag, index) => (
+                            <button
+                              key={`${tag}-${index}`}
+                              type="button"
+                              title={titleOfTag(tag, tagDetails)}
+                              onClick={() => onPickTag(tag)}
+                            >
+                              {tag}
+                            </button>
+                          ))
+                        )}
                       </div>
                     )}
                     {tagGroups.length > 0 ? (
-                      <button
-                        type="button"
-                        className="capture-tag-toggle"
-                        onClick={() => setTagsGrouped((value) => !value)}
-                        title="切换分组/平铺显示"
-                      >
-                        {tagsGrouped ? "平铺" : "分组"}
-                      </button>
+                      <div className="capture-tag-toggles">
+                        <button
+                          type="button"
+                          className="capture-tag-toggle"
+                          onClick={() => setTagsGrouped((value) => !value)}
+                          title="切换分组/平铺显示"
+                        >
+                          {tagsGrouped ? "平铺" : "分组"}
+                        </button>
+                        {!tagsGrouped ? (
+                          <button
+                            type="button"
+                            className="capture-tag-toggle"
+                            onClick={() =>
+                              setFlatOrder((value) =>
+                                value === "confidence" ? "group" : "confidence",
+                              )
+                            }
+                            title="平铺排序：置信度降序 / 按分组优先级展平"
+                          >
+                            {flatOrder === "confidence" ? "按分组排" : "按置信度排"}
+                          </button>
+                        ) : null}
+                      </div>
                     ) : null}
                     <button
                       type="button"
@@ -897,9 +934,11 @@ export function ImageDetail({
 function TagGroupList({
   groups,
   onPickTag,
+  details,
 }: {
   groups: ReturnType<typeof groupTags>;
   onPickTag: (tag: string) => void;
+  details: readonly TagDetail[];
 }) {
   return (
     <div className="capture-tag-groups" role="group" aria-label="图片标签（分组）">
@@ -919,7 +958,7 @@ function TagGroupList({
               <button
                 key={detail.name}
                 type="button"
-                title={detail.score > 0 ? `${detail.name} · ${(detail.score * 100).toFixed(1)}%` : detail.name}
+                title={titleOfTag(detail.name, details)}
                 onClick={() => onPickTag(detail.name)}
               >
                 {detail.name}

@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "theme": "bunny-girl-bar",
+  "note": "换题材维护这一个文件：drop 直接丢弃；rules 命中后输出规范词/合成词组；order 决定输出顺序；tokenBudget 控制长度。示例题材=兔女郎酒吧场景，目标是把 61 个 WD14 tag 压成约 12 个词组的生产 prompt。",
+  "tokenBudget": 15,
+  "order": [
+    "trigger",
+    "identity",
+    "theme",
+    "ears",
+    "outfit",
+    "legwear",
+    "gloves",
+    "shoes",
+    "hair",
+    "pose",
+    "gaze",
+    "other"
+  ],
+  "drop": [
+    "bar", "bar_(place)", "indoors", "room", "drinking_glass", "wine_glass",
+    "cocktail_glass", "cup", "bottle", "wine_bottle", "beer_bottle", "alcohol",
+    "drink", "bar_stool", "stool", "chair", "table", "counter", "holding",
+    "holding_cup", "breasts", "large_breasts", "huge_breasts", "cleavage",
+    "thighs", "legs", "thick_thighs", "lips", "parted_lips", "sideboob",
+    "skindentation", "thigh_strap", "armlet", "dutch_angle", "off_shoulder",
+    "detached_collar", "bare_shoulders", "fur_trim", "fur-trimmed_coat",
+    "hair_ornament", "coat", "black_coat", "multicolored_hair",
+    "yellow_eyes", "red_eyes", "solo"
+  ],
+  "rules": [
+    { "slot": "theme", "match": ["playboy_bunny", "bunny_girl", "bunny"], "output": "playboy bunny" },
+    {
+      "slot": "ears",
+      "match": ["animal_ears", "rabbit_ears", "fake_animal_ears", "ears"],
+      "compose": {
+        "template": "{type} ears",
+        "parts": {
+          "type": {
+            "map": { "rabbit_ears": "rabbit", "animal_ears": "rabbit", "fake_animal_ears": "rabbit" },
+            "default": "rabbit"
+          }
+        }
+      }
+    },
+    {
+      "slot": "outfit",
+      "match": ["leotard", "black_leotard", "highleg_leotard", "strapless_leotard", "highleg", "strapless"],
+      "compose": {
+        "template": "{color} {cut} leotard",
+        "parts": {
+          "color": { "map": { "black_leotard": "black", "black": "black" }, "default": "black" },
+          "cut": { "map": { "highleg_leotard": "highleg", "highleg": "highleg" }, "default": "highleg" }
+        }
+      }
+    },
+    { "slot": "legwear", "match": ["pantyhose", "black_pantyhose"], "output": "black pantyhose" },
+    { "slot": "gloves", "match": ["gloves", "black_gloves"], "output": "black gloves" },
+    { "slot": "shoes", "match": ["high_heels", "black_footwear", "heels"], "output": "high heels" },
+    {
+      "slot": "hair",
+      "match": ["long_hair", "very_long_hair", "purple_hair", "black_hair", "hair"],
+      "compose": {
+        "template": "long multicolored hair",
+        "parts": {}
+      }
+    },
+    { "slot": "pose", "match": ["full_body", "standing"], "output": "full body" },
+    { "slot": "gaze", "match": ["looking_at_viewer"], "output": "looking at viewer" }
+  ]
+}
