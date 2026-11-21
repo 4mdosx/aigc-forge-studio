@@ -25,5 +25,5 @@
     ],
     "loras": []
   },
-  "modelPathsYaml": "aigc_shared:\n  base_path: C:/AIGC/models\n  checkpoints: checkpoints\n  diffusion_models: diffusion_models\n  text_encoders: text_encoders\n  vae: vae\n  loras: loras\n  controlnet: controlnet\n  upscale_models: upscale_models\n"
+  "modelPathsYaml": "aigc_shared:\n  base_path: C:/AIGC/models\n  checkpoints: checkpoints\n  diffusion_models: diffusion_models\n  text_encoders: text_encoders\n  vae: vae\n  loras: loras\n  controlnet: controlnet\n  upscale_models: upscale_models\n  clip_vision: clip_vision\n  ipadapter: ipadapter\n"
 }
