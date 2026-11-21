@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   created_at TEXT NOT NULL,
   started_at TEXT,
   completed_at TEXT,
-  paused_at TEXT
+  paused_at TEXT,
+  pid INTEGER
 );
 `
 
@@ -46,8 +47,10 @@ export function openDatabase(path: string): DatabaseSync {
 
 // 暂停不新增状态值（status 有 CHECK 约束，改它要重建表），
 // 只用 paused_at 标记：status 仍是 running，单任务锁天然继续生效。
+// pid 同理不改进程管理语义，只是让 trainer 重启后能 re-attach 还活着的训练进程。
 function migrate(db: DatabaseSync): void {
   ensureColumn(db, 'train_jobs', 'paused_at', 'TEXT')
+  ensureColumn(db, 'train_jobs', 'pid', 'INTEGER')
 }
 
 function ensureColumn(

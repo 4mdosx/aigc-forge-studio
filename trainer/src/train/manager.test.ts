@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { writeFileSync } from 'node:fs'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { mkdirSync } from 'node:fs'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -12,6 +13,7 @@ import type { Trainer } from '../download/manager.ts'
 import {
   cancelTrainJob,
   createTrainJob,
+  isProcessAlive,
   listTrainJobs,
   pauseTrainJob,
   recoverTrainJobs,
@@ -111,6 +113,8 @@ test('train job completes and writes tomls + log', async () => {
 
   const done = rowOf(row.id)
   assert.equal(done.exit_code, 0)
+  // pid 落库：trainer 重启后靠它判断训练进程还活不活
+  assert.ok(Number(done.pid) > 0)
   // TOML 落盘
   assert.match(String(done.dataset_toml), /config[\\/]dataset\.toml$/)
   assert.match(String(done.train_toml), /config[\\/]train\.toml$/)
@@ -149,8 +153,16 @@ test('cancel kills the child process tree', async () => {
     baseModel: 'checkpoints/pd.safetensors',
   })
   await waitUntil(row.id, 'running')
+  // 等子进程先吐几行：stdio 直指日志文件，说明输出不经过 node 管道
+  const logFile = join(tmp, 'logs', `${row.id}.log`)
+  const started = Date.now()
+  while (Date.now() - started < 3000) {
+    if (readFileSync(logFile, 'utf8').includes('step 1/3000')) break
+    await new Promise((ok) => setTimeout(ok, 30))
+  }
   const cancelled = await cancelTrainJob(trainer, row.id)
   assert.equal(cancelled.status, 'cancelled')
+  assert.match(readTrainLog(trainer.train, row.id), /step 1\/3000/)
 })
 
 test('single running job enforced', async () => {
@@ -248,7 +260,9 @@ test('pause/resume 挂起进程树但状态仍是 running', async () => {
     calls.push(`pause:${pid}`)
     suspendedPid = pid
   }
-  trainer.train!.resume = async (pid) => calls.push(`resume:${pid}`)
+  trainer.train!.resume = async (pid) => {
+    calls.push(`resume:${pid}`)
+  }
 
   const row = createTrainJob(trainer, {
     name: 'style-v1',
@@ -294,4 +308,125 @@ test('pause 拒绝非 running 任务', async () => {
     .run()
   await assert.rejects(() => pauseTrainJob(trainer, 'j2'), /cannot pause a completed job/)
   await assert.rejects(() => pauseTrainJob(trainer, 'nope'), /train job not found/)
+})
+
+// ---------- 重启不杀训练：pid 存活则 re-attach ----------
+
+// 模拟「trainer 重启前 spawn 的、现在还活着的」训练进程
+function spawnForeign(): ChildProcess {
+  return spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    stdio: 'ignore',
+  })
+}
+
+function insertRunning(id: string, pid: number | null, logText = ''): void {
+  trainer.db
+    .prepare(
+      `INSERT INTO train_jobs (id, name, status, params, created_at, started_at, pid)
+       VALUES (?, 'style-v1', 'running', '{}', '2026-01-01', '2026-01-01', ?)`,
+    )
+    .run(id, pid)
+  if (logText) writeFileSync(join(tmp, 'logs', `${id}.log`), logText)
+}
+
+async function waitStatus(id: string, status: string, timeoutMs = 5000): Promise<void> {
+  const start = Date.now()
+  for (;;) {
+    const row = trainer.db
+      .prepare('SELECT status FROM train_jobs WHERE id = ?')
+      .get(id) as { status: string } | undefined
+    if (row?.status === status) return
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`timeout waiting ${status}, got ${row?.status ?? 'gone'}`)
+    }
+    await new Promise((ok) => setTimeout(ok, 20))
+  }
+}
+
+test('pid 存活的 running 任务在重启后保留并 re-attach 收尾', async () => {
+  trainer.train!.watchPollMs = 20
+  const child = spawnForeign()
+  try {
+    insertRunning(
+      'j3',
+      child.pid!,
+      'steps:  50%|███       | 1500/3000 [10:00<10:00, 0.4s/it]\n' +
+        'steps: 100%|██████████| 3000/3000 [20:00<00:00, 0.4s/it]\n',
+    )
+    recoverTrainJobs(trainer)
+    // 进程还活着：不标 failed，也不丢单任务锁
+    assert.equal(listTrainJobs(trainer.db, 'running').length, 1)
+    await new Promise((ok) => setTimeout(ok, 60))
+    assert.equal(rowOf('j3').status, 'running')
+
+    child.kill()
+    await waitStatus('j3', 'completed')
+    const done = rowOf('j3')
+    assert.equal(done.exit_code, null)
+    assert.match(readTrainLog(trainer.train, 'j3'), /re-attach: process exited after 3000\/3000/)
+  } finally {
+    child.kill()
+  }
+})
+
+test('re-attach 后进程没跑完就消失 → failed 并说明停在哪', async () => {
+  trainer.train!.watchPollMs = 20
+  const child = spawnForeign()
+  try {
+    insertRunning('j4', child.pid!, 'steps:  17%|█         | 100/3000 [1:00<29:00, 0.6s/it]\n')
+    recoverTrainJobs(trainer)
+    child.kill()
+    await waitStatus('j4', 'failed')
+    const row = rowOf('j4')
+    assert.match(String(row.error), /停在 100\/3000/)
+    assert.match(String(row.error), /退出码未知/)
+  } finally {
+    child.kill()
+  }
+})
+
+test('re-attach 的任务能被取消（按库里的 pid 杀树）', async () => {
+  const child = spawnForeign()
+  try {
+    insertRunning('j5', child.pid!)
+    recoverTrainJobs(trainer)
+    const cancelled = await cancelTrainJob(trainer, 'j5')
+    assert.equal(cancelled.status, 'cancelled')
+    assert.equal(isProcessAlive(child.pid!), false)
+  } finally {
+    child.kill()
+  }
+})
+
+test('re-attach 的任务能暂停/恢复（pid 来自库里）', async () => {
+  const child = spawnForeign()
+  const calls: string[] = []
+  trainer.train!.suspend = async (pid) => {
+    calls.push(`pause:${pid}`)
+  }
+  trainer.train!.resume = async (pid) => {
+    calls.push(`resume:${pid}`)
+  }
+  try {
+    insertRunning('j6', child.pid!)
+    recoverTrainJobs(trainer)
+    const paused = await pauseTrainJob(trainer, 'j6')
+    assert.ok(paused.paused_at)
+    const resumed = await resumeTrainJob(trainer, 'j6')
+    assert.equal(resumed.paused_at, null)
+    assert.deepEqual(calls, [`pause:${child.pid}`, `resume:${child.pid}`])
+  } finally {
+    child.kill()
+    await waitStatus('j6', 'running').catch(() => {})
+    await cancelTrainJob(trainer, 'j6').catch(() => {})
+  }
+})
+
+test('pid 已消失的 running 任务仍按老规矩标 failed', () => {
+  // 取一个必然不存在的 pid：先起再杀，避免撞到别的进程
+  insertRunning('j7', 999_999)
+  recoverTrainJobs(trainer)
+  const row = rowOf('j7')
+  assert.equal(row.status, 'failed')
+  assert.match(String(row.error), /interrupted by trainer restart/)
 })

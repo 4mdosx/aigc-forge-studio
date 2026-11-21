@@ -1,13 +1,15 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   writeFileSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 import type { DatabaseSync } from 'node:sqlite'
@@ -26,9 +28,12 @@ import {
 } from './toml.ts'
 
 // 训练 job 管理器。与 download 管理器同一套纪律：
-//   POST 建任务即刻返回 pending，单实例单 running，进程退出落终态，
-//   重启恢复把 running 标 failed。区别是这里跑的是 sd-scripts 子进程，
-//   日志逐行落 <logsDir>/<id>.log，产物由 save_every_n_epochs 写进 output_dir。
+//   POST 建任务即刻返回 pending，单实例单 running，进程退出落终态。
+//   区别是这里跑的是 sd-scripts 子进程，产物由 save_every_n_epochs 写进 output_dir。
+//
+// 重启语义（2026-11-21 改）：子进程 stdout/stderr 直接重定向到 <logsDir>/<id>.log，
+//   不再走 node 管道 —— trainer 进程死了训练照样跑、日志照样写。pid 落库，
+//   启动时 pid 还活着就 re-attach 轮询（而非一刀切标 failed），进程没了才落终态。
 
 export interface TrainConfig {
   /** sd-scripts 仓库根（含 train_network.py 与 venv） */
@@ -41,6 +46,8 @@ export interface TrainConfig {
   /** 测试注入：进程树挂起/恢复（缺省走 pause.ts） */
   suspend?: (pid: number) => Promise<void>
   resume?: (pid: number) => Promise<void>
+  /** re-attach 轮询间隔（缺省 5s；测试里调小） */
+  watchPollMs?: number
 }
 
 export interface TrainRun {
@@ -64,6 +71,7 @@ export interface TrainJobRow {
   started_at: string | null
   completed_at: string | null
   paused_at?: string | null
+  pid?: number | null
 }
 
 export interface TrainJobJson {
@@ -80,6 +88,8 @@ export interface TrainJobJson {
   startedAt: string | null
   completedAt: string | null
   pausedAt: string | null
+  /** 子进程 pid（re-attach 与 nvidia-smi 逐进程对照用；终态仍保留最后值） */
+  pid: number | null
 }
 
 export function trainJobJson(row: TrainJobRow): TrainJobJson {
@@ -98,6 +108,7 @@ export function trainJobJson(row: TrainJobRow): TrainJobJson {
     completedAt: row.completed_at,
     // 终态不留暂停痕迹：paused_at 只在 running 时有意义
     pausedAt: row.status === 'running' ? (row.paused_at ?? null) : null,
+    pid: row.pid ?? null,
   }
 }
 
@@ -273,18 +284,28 @@ function start(
     .run(trainer.now().toISOString(), id)
   appendLog(config, id, `[trainer] spawn ${plan.executable} ${plan.args.join(' ')}\n`)
 
+  // 日志直接由子进程写文件：trainer 挂掉时管道会断（python 的 tqdm 写已关闭的
+  // stdout 直接抛错），换成 fd 重定向后训练与日志都不再依赖本进程存活。
+  const logFile = logPath(config, id)
+  mkdirSync(dirname(logFile), { recursive: true })
+  const logFd = openSync(logFile, 'a')
   const child = spawn(plan.executable, plan.args, {
     cwd: config.sdScriptsRoot,
     env: { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: ['ignore', logFd, logFd],
     // posix 下脱离进程组好整树杀；Windows 用 taskkill /T
     detached: process.platform !== 'win32',
     windowsHide: true,
   })
+  // 子进程已继承句柄，父进程这份可以关掉（Windows 上亦然）
+  closeSync(logFd)
+  if (child.pid) {
+    trainer.db
+      .prepare('UPDATE train_jobs SET pid = ? WHERE id = ?')
+      .run(child.pid, id)
+  }
 
   const promise = new Promise<void>((resolve) => {
-    child.stdout?.on('data', (chunk: Buffer) => appendLog(config, id, chunk.toString()))
-    child.stderr?.on('data', (chunk: Buffer) => appendLog(config, id, chunk.toString()))
     child.on('error', (err) => {
       appendLog(config, id, `[trainer] spawn error: ${err.message}\n`)
       trainer.db
@@ -331,20 +352,157 @@ function start(
   return { child, promise }
 }
 
-// 重启恢复：进程没了，pending/running 标 failed
-export function recoverTrainJobs(trainer: TrainerConfig): void {
+// 进程存活判断：Windows 上 process.kill(pid, 0) 走 OpenProcess，够用。
+// EPERM 说明进程在但不是我们的，也算活。
+export function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+// 杀整棵进程树（Windows: taskkill /T /F；posix: 进程组 SIGTERM）
+function killTree(pid: number): void {
+  if (process.platform === 'win32') {
+    spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true })
+    return
+  }
+  try {
+    process.kill(-pid, 'SIGTERM')
+  } catch {
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      // 已经没了
+    }
+  }
+}
+
+async function waitUntilDead(pid: number, timeoutMs = 15_000): Promise<boolean> {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    if (!isProcessAlive(pid)) return true
+    await new Promise((ok) => setTimeout(ok, 100))
+  }
+  return !isProcessAlive(pid)
+}
+
+// tqdm: `steps:  21%|██        | 682/3280 [1:35:07<6:02:23, 8.37s/it, avr_loss=...]`
+const PROGRESS_RE = /steps:\s*\d+%\|[^|]*\|\s*(\d+)\/(\d+)/g
+
+function lastProgress(text: string): { step: number; total: number } | null {
+  let last: { step: number; total: number } | null = null
+  for (const match of text.matchAll(PROGRESS_RE)) {
+    last = { step: Number(match[1]), total: Number(match[2]) }
+  }
+  return last
+}
+
+const orphanTimers = new Map<string, ReturnType<typeof setInterval>>()
+
+// re-attach：进程不是我们 spawn 的，拿不到 exit code，只能等 pid 消失后按日志收尾
+function watchOrphan(trainer: TrainerConfig, id: string, pid: number): void {
+  if (orphanTimers.has(id)) return
+  const poll = trainer.train?.watchPollMs ?? 5000
+  const timer = setInterval(() => {
+    const row = rowOf(trainer.db, id)
+    if (!row || row.status !== 'running') {
+      stop()
+      return
+    }
+    if (isProcessAlive(pid)) return
+    stop()
+    finalizeOrphan(trainer, id)
+  }, poll)
+  timer.unref()
+  orphanTimers.set(id, timer)
+
+  function stop(): void {
+    clearInterval(timer)
+    orphanTimers.delete(id)
+  }
+}
+
+function finalizeOrphan(trainer: TrainerConfig, id: string): void {
+  const config = trainer.train
+  let tail = ''
+  if (config) {
+    try {
+      tail = readTrainLog(config, id, 400_000)
+    } catch {
+      tail = ''
+    }
+  }
+  const progress = lastProgress(tail)
+  const at = trainer.now().toISOString()
+  if (progress && progress.step >= progress.total) {
+    trainer.db
+      .prepare(
+        `UPDATE train_jobs SET status = 'completed', exit_code = NULL, error = NULL, completed_at = ?
+         WHERE id = ? AND status = 'running'`,
+      )
+      .run(at, id)
+    if (config) {
+      appendLog(
+        config,
+        id,
+        `\n[trainer] re-attach: process exited after ${progress.step}/${progress.total}, 按日志判定完成\n`,
+      )
+    }
+    return
+  }
+  const detail = progress ? `停在 ${progress.step}/${progress.total}` : '日志里没有进度行'
   trainer.db
     .prepare(
-      `UPDATE train_jobs
-       SET status = 'failed', error = 'interrupted by trainer restart', completed_at = ?
-       WHERE status IN ('pending','running')`,
+      `UPDATE train_jobs SET status = 'failed', error = ?, completed_at = ?
+       WHERE id = ? AND status = 'running'`,
     )
-    .run(trainer.now().toISOString())
+    .run(`sd-scripts 在 trainer 未 attach 期间退出（${detail}，退出码未知）`, at, id)
+  if (config) appendLog(config, id, `\n[trainer] re-attach: process gone (${detail})\n`)
+}
+
+// 重启恢复：pid 还活着的 running 保留并 re-attach，其余（含 pending）标 failed
+export function recoverTrainJobs(trainer: TrainerConfig): void {
+  const rows = [
+    ...listTrainJobs(trainer.db, 'running'),
+    ...listTrainJobs(trainer.db, 'pending'),
+  ]
+  for (const row of rows) {
+    if (row.status === 'running' && row.pid && isProcessAlive(row.pid)) {
+      if (trainer.train) {
+        appendLog(
+          trainer.train,
+          row.id,
+          `\n[trainer] re-attach pid=${row.pid}（trainer 重启，训练进程仍在跑）\n`,
+        )
+      }
+      watchOrphan(trainer, row.id, row.pid)
+      continue
+    }
+    trainer.db
+      .prepare(
+        `UPDATE train_jobs
+         SET status = 'failed', error = 'interrupted by trainer restart', completed_at = ?
+         WHERE id = ? AND status IN ('pending','running')`,
+      )
+      .run(trainer.now().toISOString(), row.id)
+  }
 }
 
 // 显式取消登记：Windows taskkill /F 杀出的 close 事件是 code=1/signal=null，
 // 不能靠 signal 辨别取消，落库前先查这个集合。
 const cancelledIds = new Set<string>()
+
+function markCancelled(trainer: TrainerConfig, id: string): void {
+  trainer.db
+    .prepare(
+      `UPDATE train_jobs SET status = 'cancelled', error = 'cancelled by request', completed_at = ?
+       WHERE id = ? AND status IN ('pending','running')`,
+    )
+    .run(trainer.now().toISOString(), id)
+}
 
 // 取消：杀进程树（Windows: taskkill /T /F；posix: 进程组 SIGTERM），等状态落库
 export async function cancelTrainJob(
@@ -358,26 +516,16 @@ export async function cancelTrainJob(
   const run = runsOf(trainer).get(id)
   if (run?.child.pid) {
     cancelledIds.add(id)
-    if (process.platform === 'win32') {
-      spawn('taskkill', ['/PID', String(run.child.pid), '/T', '/F'], {
-        windowsHide: true,
-      })
-    } else {
-      try {
-        process.kill(-run.child.pid, 'SIGTERM')
-      } catch {
-        run.child.kill('SIGTERM')
-      }
-    }
+    killTree(run.child.pid)
     await run.promise
+  } else if (row.pid && isProcessAlive(row.pid)) {
+    // re-attach 的任务：进程不是本进程 spawn 的，收不到 close，自己等死后落库
+    killTree(row.pid)
+    await waitUntilDead(row.pid)
+    markCancelled(trainer, id)
   } else {
     // 无进程可杀（pending 一瞬或 spawn 失败）：直接落 cancelled
-    trainer.db
-      .prepare(
-        `UPDATE train_jobs SET status = 'cancelled', error = 'cancelled by request', completed_at = ?
-         WHERE id = ? AND status IN ('pending','running')`,
-      )
-      .run(trainer.now().toISOString(), id)
+    markCancelled(trainer, id)
   }
   const next = rowOf(trainer.db, id)
   if (!next) throw new TrainerError('train job vanished', 500)
@@ -401,7 +549,9 @@ async function setPaused(
 
   const config = requireConfig(trainer)
   const run = runsOf(trainer).get(id)
-  if (!run?.child.pid) {
+  // re-attach 的任务没有 ChildProcess，只能靠库里 pid（活着才可用）
+  const pid = run?.child.pid ?? (row.pid && isProcessAlive(row.pid) ? row.pid : 0)
+  if (!pid) {
     throw new TrainerError(
       `training process is not attached (trainer restarted?); cannot ${paused ? 'pause' : 'resume'}`,
       409,
@@ -409,7 +559,7 @@ async function setPaused(
   }
   const call = paused ? (config.suspend ?? suspendProcessTree) : (config.resume ?? resumeProcessTree)
   try {
-    await call(run.child.pid)
+    await call(pid)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     throw new TrainerError(`${paused ? 'pause' : 'resume'} failed: ${message}`, 500)

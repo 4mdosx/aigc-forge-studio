@@ -26,6 +26,7 @@ interface TrainJob {
   startedAt: string | null
   completedAt: string | null
   pausedAt: string | null
+  pid: number | null
 }
 
 interface GpuCard {
@@ -477,7 +478,10 @@ export function TrainBoard() {
                       <td>
                         <span className="mono">{job.name}</span>
                         <span className="muted job-url">{summaryOf(job.params)}</span>
-                        <span className="muted job-url">{job.id}</span>
+                        <span className="muted job-url">
+                          {job.id}
+                          {job.pid ? ` · pid ${job.pid}` : ''}
+                        </span>
                       </td>
                       <td>
                         <span className={`status ${paused ? 'paused' : job.status}`}>

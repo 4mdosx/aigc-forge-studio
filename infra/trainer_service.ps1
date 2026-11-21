@@ -1,8 +1,13 @@
 # Trainer (Node :8788) process control. ComfyUI 的 service.ps1 只管 ComfyUI，
 # trainer 单独一个脚本——训练时它要活、ComfyUI 要停，两者互不掺和。
 #   infra\trainer_service.ps1 status
-#   infra\trainer_service.ps1 restart
+#   infra\trainer_service.ps1 restart        # 只重启 trainer，正在跑的 sd-scripts 保留
+#   infra\trainer_service.ps1 stop           # 同上：只停 trainer
+#   infra\trainer_service.ps1 stop -KillChildren   # 连训练进程一起杀
 #   infra\trainer_service.ps1 start [-Foreground]
+#
+# 训练进程是 trainer spawn 的，但 pid 已落库（train_jobs.pid）、日志由子进程直写文件，
+# 所以 trainer 重启/升级不再中断训练：新进程起来后 re-attach，等进程消失再按日志收尾。
 
 param(
     [Parameter(Position = 0)]
@@ -11,7 +16,10 @@ param(
 
     [string]$Root = "C:\AIGC",
 
-    [switch]$Foreground
+    [switch]$Foreground,
+
+    # 只在显式 stop -KillChildren 时连训练子进程一起杀
+    [switch]$KillChildren
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,9 +68,14 @@ function Get-ListeningProcessIds {
 }
 
 function Stop-ProcessTree {
-    param([int]$ProcessId)
-    & taskkill.exe /PID $ProcessId /T /F | Out-Null
-    if ((Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) -and $LASTEXITCODE -ne 0) {
+    param([int]$ProcessId, [switch]$KillChildren)
+    if ($KillChildren) {
+        & taskkill.exe /PID $ProcessId /T /F | Out-Null
+    } else {
+        # 软停：只杀 node 自己。训练子进程继续跑，新 trainer 起来会 re-attach。
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    if (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue) {
         throw "Failed to stop PID $ProcessId"
     }
 }
@@ -138,7 +151,7 @@ function Invoke-Start {
 }
 
 function Invoke-Stop {
-    param([switch]$Quiet)
+    param([switch]$Quiet, [switch]$KillChildren)
     $listeners = @(Get-ListeningProcessIds -Port $Port)
     $ours = @($listeners | Where-Object { Test-OurTrainer -ProcessId $_ })
     $foreign = @($listeners | Where-Object { -not (Test-OurTrainer -ProcessId $_) })
@@ -158,9 +171,13 @@ function Invoke-Stop {
         return
     }
 
-    foreach ($pid_ in $targets) { Stop-ProcessTree -ProcessId $pid_ }
+    foreach ($pid_ in $targets) { Stop-ProcessTree -ProcessId $pid_ -KillChildren:$KillChildren }
     Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
-    Write-Host "Trainer stopped." -ForegroundColor Green
+    if ($KillChildren) {
+        Write-Host "Trainer stopped (training process tree killed)." -ForegroundColor Green
+    } else {
+        Write-Host "Trainer stopped. 训练进程若在跑会继续，下次 start 自动 re-attach。" -ForegroundColor Green
+    }
 }
 
 function Invoke-Status {
@@ -178,10 +195,10 @@ function Invoke-Status {
 if ($MyInvocation.InvocationName -ne '.') {
     switch ($Action) {
         "start" { Invoke-Start }
-        "stop" { Invoke-Stop }
+        "stop" { Invoke-Stop -KillChildren:$KillChildren }
         "status" { Invoke-Status }
         "restart" {
-            Invoke-Stop -Quiet
+            Invoke-Stop -Quiet -KillChildren:$KillChildren
             Start-Sleep -Seconds 1
             Invoke-Start
         }
