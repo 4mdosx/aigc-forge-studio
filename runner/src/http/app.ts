@@ -11,10 +11,10 @@ import { mountChats } from './chats.ts'
 import { mountData } from './data.ts'
 import { mountDatasets } from './datasets.ts'
 import { mountFiles } from './files.ts'
+import { mountGenerate } from './generate.ts'
 import { mountJobs } from './jobs.ts'
 import { mountPoses } from './poses.ts'
 import { mountPosePending } from './pose-pending.ts'
-import { mountQuick } from './quick.ts'
 import { mountRecommend } from './recommend.ts'
 import { mountTag } from './tag.ts'
 import { mountTasks } from './tasks.ts'
@@ -46,7 +46,7 @@ export function createApp(
   mountCaptureLive(app, live)
   mountDatasets(app, runner)
   mountDice(app, runner)
-  mountQuick(app, runner)
+  mountGenerate(app, runner)
   mountConfig(app, runner)
   mountTag(app, runner)
   mountRecommend(app, runner)

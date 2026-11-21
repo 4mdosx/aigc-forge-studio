@@ -297,6 +297,17 @@ CREATE TABLE IF NOT EXISTS dataset_assets (
 );
 
 CREATE INDEX IF NOT EXISTS dataset_assets_by_asset ON dataset_assets (asset_id);
+
+-- 生产配方：结构化入参（prompt/repeat/loraName/poseName）与生成 job 单独关联，
+-- 不进 jobs.input_json（那里只放 applyAdapter 后的最终值）。
+CREATE TABLE IF NOT EXISTS recipes (
+  job_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  input_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS recipes_by_kind ON recipes (kind, created_at);
 `
 
 export interface WorkRow {
