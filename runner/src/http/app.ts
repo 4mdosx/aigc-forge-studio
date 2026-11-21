@@ -11,6 +11,7 @@ import { mountChats } from './chats.ts'
 import { mountData } from './data.ts'
 import { mountDatasets } from './datasets.ts'
 import { mountFiles } from './files.ts'
+import { mountJobs } from './jobs.ts'
 import { mountPoses } from './poses.ts'
 import { mountPosePending } from './pose-pending.ts'
 import { mountRecommend } from './recommend.ts'
@@ -34,6 +35,7 @@ export function createApp(
   mountWorks(app, runner)
   mountWorkflows(app, runner)
   mountTasks(app, runner)
+  mountJobs(app, runner)
   mountChats(app, runner)
   mountFiles(app, runner)
   mountData(app, runner)

@@ -751,6 +751,64 @@ table.jobs .job-error {
   text-overflow: ellipsis;
 }
 
+.jobs-filters {
+  margin-bottom: 0.5rem;
+}
+
+.jobs-filter-label {
+  font-size: 0.8rem;
+  color: #746c63;
+  margin-right: 0.2rem;
+}
+
+.chip-count {
+  margin-left: 0.4rem;
+  font-size: 0.72rem;
+  opacity: 0.7;
+}
+
+.job-kind {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 5px;
+  background: #ece5d9;
+  color: #5c564e;
+}
+
+.job-kind.kind-generate {
+  background: #e4e9f2;
+  color: #2f4c7a;
+}
+
+.job-kind.kind-capture-process {
+  background: #e7f0ec;
+  color: #0c5c49;
+}
+
+.job-kind.kind-download {
+  background: #f4e6cf;
+  color: #8a5a12;
+}
+
+.job-kind.kind-nobg {
+  background: #efe4ef;
+  color: #7a3b6b;
+}
+
+.job-times {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.8rem;
+}
+
+.jobs-pager {
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 0.9rem;
+}
+
 button.text-button {
   background: transparent;
   color: #0c5c49;
