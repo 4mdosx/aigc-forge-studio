@@ -1034,13 +1034,26 @@ table.jobs .job-error {
   gap: 0.55rem;
 }
 
+.job-thumb-slot {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .job-thumb {
+  display: block;
   width: 36px;
   height: 36px;
   object-fit: cover;
   border-radius: 6px;
   background: #e4dacd;
-  flex: none;
+}
+
+.job-asset-text {
+  min-width: 0;
 }
 
 .job-url {

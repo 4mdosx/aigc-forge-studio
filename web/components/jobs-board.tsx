@@ -203,10 +203,12 @@ export function JobsBoard() {
                   </td>
                   <td>
                     <span className="job-asset">
-                      {thumbHref(job) ? (
-                        <img className="job-thumb" src={thumbHref(job)!} alt="" />
-                      ) : null}
-                      <span>
+                      <span className="job-thumb-slot">
+                        {thumbHref(job) ? (
+                          <img className="job-thumb" src={thumbHref(job)!} alt="" />
+                        ) : null}
+                      </span>
+                      <span className="job-asset-text">
                         <span className="mono">{job.label}</span>
                         {job.detail ? <span className="muted job-url">{job.detail}</span> : null}
                         <span className="muted job-url">{job.id}</span>
