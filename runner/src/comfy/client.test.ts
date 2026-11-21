@@ -5,6 +5,7 @@ import {
   ComfyClient,
   assertSuccess,
   filesFromHistory,
+  loraNamesFrom,
   pollUntilDone,
   type HistoryEntry,
 } from './client.ts'
@@ -216,4 +217,15 @@ test('upload sends bytes to the ComfyUI input directory', async () => {
   const client = new ComfyClient('http://127.0.0.1:8188', { fetch: fetchImpl })
   await client.uploadBytes(Uint8Array.from([1, 2, 3]), 'face.png', 'jobs')
   assert.equal(seen, 'http://127.0.0.1:8188/upload/image')
+})
+
+test('lora names come from the LoraLoader combo list', () => {
+  assert.deepEqual(
+    loraNamesFrom({
+      LoraLoader: {
+        input: { required: { lora_name: [['None', 'style.safetensors']] } },
+      },
+    }),
+    ['None', 'style.safetensors'],
+  )
 })

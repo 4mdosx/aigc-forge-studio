@@ -14,6 +14,7 @@ import { mountFiles } from './files.ts'
 import { mountJobs } from './jobs.ts'
 import { mountPoses } from './poses.ts'
 import { mountPosePending } from './pose-pending.ts'
+import { mountQuick } from './quick.ts'
 import { mountRecommend } from './recommend.ts'
 import { mountTag } from './tag.ts'
 import { mountTasks } from './tasks.ts'
@@ -45,6 +46,7 @@ export function createApp(
   mountCaptureLive(app, live)
   mountDatasets(app, runner)
   mountDice(app, runner)
+  mountQuick(app, runner)
   mountConfig(app, runner)
   mountTag(app, runner)
   mountRecommend(app, runner)

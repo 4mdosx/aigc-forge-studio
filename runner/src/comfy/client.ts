@@ -38,6 +38,36 @@ export function workflowName(name: string): string {
   return name
 }
 
+export function loraNamesFrom(info: unknown): string[] {
+  if (!info || typeof info !== 'object' || Array.isArray(info)) {
+    throw new RunnerError('ComfyUI lora list is invalid')
+  }
+  const node = (info as Record<string, unknown>).LoraLoader
+  if (!node || typeof node !== 'object' || Array.isArray(node)) {
+    throw new RunnerError('ComfyUI lora list is invalid')
+  }
+  const input = (node as Record<string, unknown>).input
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new RunnerError('ComfyUI lora list is invalid')
+  }
+  const required = (input as Record<string, unknown>).required
+  if (!required || typeof required !== 'object' || Array.isArray(required)) {
+    throw new RunnerError('ComfyUI lora list is invalid')
+  }
+  const combo = (required as Record<string, unknown>).lora_name
+  if (!Array.isArray(combo) || !Array.isArray(combo[0])) {
+    throw new RunnerError('ComfyUI lora list is invalid')
+  }
+  const names: string[] = []
+  for (const item of combo[0]) {
+    if (typeof item !== 'string' || item.trim() === '') {
+      throw new RunnerError('ComfyUI lora list has an invalid entry')
+    }
+    names.push(item)
+  }
+  return names
+}
+
 export class ComfyClient {
   readonly baseURL: string
   private readonly deps: ComfyDeps
@@ -114,6 +144,11 @@ export class ComfyClient {
       throw new RunnerError('ComfyUI file list is not an array')
     }
     return body.map((item) => listedName(item, type))
+  }
+
+  async loraNames(signal?: AbortSignal): Promise<string[]> {
+    const res = await this.request('/object_info/LoraLoader', { signal })
+    return loraNamesFrom(await res.json())
   }
 
   async uploadBytes(

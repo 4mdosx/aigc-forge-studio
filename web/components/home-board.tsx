@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Dialog } from '@/components/dialog'
 import { PromptChat } from '@/components/prompt-chat'
+import { QuickGenerate } from '@/components/quick-generate'
 import { TaskDock } from '@/components/task-dock'
 import { WorkDetail } from '@/components/work-detail'
 import { api } from '@/lib/api'
@@ -152,7 +153,9 @@ export function HomeBoard({ initialWork = null }: { initialWork?: string | null 
 
   return (
     <>
-      <div className="board">
+      <div className="home">
+        <QuickGenerate />
+        <div className="board">
         <section className="column">
           <div className="column-head">
             <h2>Work</h2>
@@ -205,6 +208,7 @@ export function HomeBoard({ initialWork = null }: { initialWork?: string | null 
             </section>
           </>
         )}
+        </div>
       </div>
       <WorkDialog
         open={creating}

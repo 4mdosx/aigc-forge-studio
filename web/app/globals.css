@@ -568,6 +568,61 @@ button.graph-node.picked {
   padding: 0.75rem;
 }
 
+.home {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.quick-gen {
+  flex: none;
+  display: grid;
+  grid-template-columns: minmax(16rem, 0.9fr) minmax(0, 1.35fr);
+  gap: 0.75rem;
+  height: 17.5rem;
+  min-height: 0;
+}
+
+.quick-gen .column {
+  height: 100%;
+}
+
+.quick-gen-form {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.quick-gen-results {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.quick-gen-pick {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-bottom: 0.55rem;
+}
+
+.quick-gen-note {
+  margin: 0.55rem 0 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.dice-roll-row.on {
+  border-color: #0c5c49;
+  background: #e7f0ec;
+}
+
+.quick-gen-results .dice-gen-thumbs img {
+  height: 132px;
+}
+
 .board {
   flex: 1;
   min-height: 0;
@@ -1238,6 +1293,26 @@ button.task-pick.current {
 @media (max-width: 960px) {
   .shell:has(.board) {
     height: auto;
+  }
+
+  .quick-gen {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .quick-gen-form {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .quick-gen-results {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .quick-gen .column {
+    height: auto;
+    max-height: 16rem;
   }
 
   .board {

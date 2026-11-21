@@ -25,6 +25,11 @@ import {
 import { editor, jsonObject, stringField, taskJson } from './request.ts'
 
 export function mountWorkflows(app: Hono, runner: Runner): void {
+  app.get('/comfy/loras', async (c) => {
+    const loras = await editor(runner).loraNames()
+    return c.json({ loras })
+  })
+
   app.get('/comfy/workflows', async (c) => {
     const client = editor(runner)
     const paths = await client.workflows()
