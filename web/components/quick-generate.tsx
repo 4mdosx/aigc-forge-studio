@@ -345,7 +345,7 @@ export function QuickGenerate() {
                         <span className="pose-card-thumb">
                           {thumb ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={fileHref(thumb.src)} alt="" loading="lazy" />
+                            <img src={fileHref(`data/pose-file/${thumb.src}`)} alt="" loading="lazy" />
                           ) : (
                             <span className="pose-card-noimg">无图</span>
                           )}
