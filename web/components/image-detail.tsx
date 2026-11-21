@@ -919,6 +919,7 @@ function TagGroupList({
               <button
                 key={detail.name}
                 type="button"
+                title={detail.score > 0 ? `${detail.name} · ${(detail.score * 100).toFixed(1)}%` : detail.name}
                 onClick={() => onPickTag(detail.name)}
               >
                 {detail.name}
