@@ -51,10 +51,14 @@ const OUTDIR = values.out
   : resolve(REPO, '..', 'experiments', 'runs', `HEMI-TRIGGER-PROBE-${DAY}`)
 
 // 实验的唯一自变量：prompt 首段。其余（风格词 / 底词 / 主体 / seed / LoRA / 强度）全部锁死。
+// loraoff 是对照组：prompt 与 zxxstyle 完全相同，只把 LoRA 强度调到 0——
+// 它回答的是「没有 LoRA 时画风差多少」，用来判断「触发词无差异」到底是
+// 「LoRA 学得泛」还是「整个 LoRA 就没起作用」。
 const VARIANTS = [
-  { key: 'zxxstyle', prefix: 'zxxstyle', label: 'zxxstyle（训练触发词）' },
-  { key: 'zxstyle', prefix: 'zxstyle', label: 'zxstyle（少一个 x）' },
+  { key: 'loraoff', prefix: 'zxxstyle', label: 'zxxstyle / LoRA OFF', strength: 0 },
   { key: 'none', prefix: '', label: '无触发词' },
+  { key: 'zxstyle', prefix: 'zxstyle', label: 'zxstyle（少一个 x）' },
+  { key: 'zxxstyle', prefix: 'zxxstyle', label: 'zxxstyle（训练触发词）' },
 ]
 const STYLE_WORDS = 'semi-realistic illustration, painterly rendering'
 const BODY =
@@ -98,13 +102,13 @@ function must(api, cls, title) {
   return hit[1]
 }
 
-function patch(api, { mode, positive, negative, seed, width, height, pose }) {
+function patch(api, { mode, positive, negative, seed, width, height, pose, strength = STRENGTH }) {
   must(api, 'CLIPTextEncode', mode === 't2i' ? 'Positive Prompt' : 'Positive').inputs.text = positive
   must(api, 'CLIPTextEncode', mode === 't2i' ? 'Negative Prompt' : 'Negative').inputs.text = negative
   const lora = must(api, 'LoraLoader')
   lora.inputs.lora_name = LORA
-  lora.inputs.strength_model = STRENGTH
-  lora.inputs.strength_clip = STRENGTH
+  lora.inputs.strength_model = strength
+  lora.inputs.strength_clip = strength
   const ks = must(api, 'KSampler')
   ks.inputs.seed = seed
   const latent = must(api, 'EmptyLatentImage', 'Empty Latent')
@@ -245,6 +249,7 @@ for (const mode of ['t2i', 'cn']) {
         width,
         height,
         pose,
+        strength: v.strength ?? STRENGTH,
       })
       const image = await runPrompt(api, `${mode}/${v.key}/s${seed}`)
       await download(image, dst)
