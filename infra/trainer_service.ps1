@@ -1,4 +1,4 @@
-# Trainer (Node :8788) process control. ComfyUI 的 service.ps1 只管 ComfyUI，
+﻿# Trainer (Node :8788) process control. ComfyUI 的 service.ps1 只管 ComfyUI，
 # trainer 单独一个脚本——训练时它要活、ComfyUI 要停，两者互不掺和。
 #   infra\trainer_service.ps1 status
 #   infra\trainer_service.ps1 restart        # 只重启 trainer，正在跑的 sd-scripts 保留
@@ -8,6 +8,11 @@
 #
 # 训练进程是 trainer spawn 的，但 pid 已落库（train_jobs.pid）、日志由子进程直写文件，
 # 所以 trainer 重启/升级不再中断训练：新进程起来后 re-attach，等进程消失再按日志收尾。
+#
+# !! 本文件必须保存为 UTF-8 with BOM。PS 5.1 读无 BOM 的 .ps1 会按 cp936 解码，
+#    双引号里的中文（如全角句号 U+3002 = E3 80 82）会被拆成两个 GBK 字节，
+#    尾字节 0x82 把结尾的 " 当成第二个字节吃掉 → 报「字符串缺少终止符」。
+#    编辑后请确认文件头是 EF BB BF：xxd -l 3 infra/trainer_service.ps1
 
 param(
     [Parameter(Position = 0)]
