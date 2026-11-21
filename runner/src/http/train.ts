@@ -72,6 +72,9 @@ async function proxy(
   runner: Runner,
   path: string,
   init?: RequestInit,
+  // trainer 路由不存在时（旧进程）404 会把「没这条路由」和「查不到这条记录」混在一起，
+  // 调用方只能靠 body 区分：路由缺失是 {"error":"not found"}，记录缺失会带业务措辞。
+  staleHint?: string,
 ): Promise<Response> {
   const base = trainerOf(runner)
   let res: Response
@@ -84,6 +87,9 @@ async function proxy(
     )
   }
   const text = await res.text()
+  if (staleHint && res.status === 404 && text.includes('"not found"')) {
+    return Response.json({ error: staleHint }, { status: 503 })
+  }
   return new Response(text, {
     status: res.status,
     headers: { 'content-type': res.headers.get('content-type') ?? 'application/json' },
@@ -173,7 +179,12 @@ export function mountTrain(
 
   for (const action of ['pause', 'resume'] as const) {
     app.post(`/train/jobs/:id/${action}`, (c) =>
-      proxy(runner, `/train/jobs/${c.req.param('id')}/${action}`, { method: 'POST' }),
+      proxy(
+        runner,
+        `/train/jobs/${c.req.param('id')}/${action}`,
+        { method: 'POST' },
+        `训练机 trainer 没有 ${action} 路由（进程仍是旧版本）：在训练机执行 git pull 后 infra\\trainer_service.ps1 restart`,
+      ),
     )
   }
 

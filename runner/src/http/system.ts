@@ -58,11 +58,14 @@ async function readTrainerGpu(
     if (!res.ok) {
       const body = await res.text()
       // 404 基本等于「训练机上的 trainer 进程还是旧代码」：路由已提交，但没重启
-      const hint =
-        res.status === 404
-          ? '（训练机 trainer 是旧版本，需 git pull + infra\\trainer_service.ps1 restart）'
-          : ''
-      return { data: null, error: `trainer /gpu: HTTP ${res.status}${hint} ${body}`.trim() }
+      if (res.status === 404) {
+        return {
+          data: null,
+          error:
+            'trainer /gpu: HTTP 404（训练机 trainer 是旧版本，需 git pull + infra\\trainer_service.ps1 restart）',
+        }
+      }
+      return { data: null, error: `trainer /gpu: HTTP ${res.status} ${body}` }
     }
     return { data: (await res.json()) as TrainerGpuBody, error: null }
   } catch (err) {

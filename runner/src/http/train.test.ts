@@ -238,6 +238,29 @@ test('POST /train/jobs/:id/pause|resume proxy', async () => {
   })
 })
 
+test('POST /train/jobs/:id/pause 提示 trainer 未部署（缺路由的 404）', async () => {
+  // 旧版 trainer：只有 /train/jobs 系列，没有 pause/resume
+  const stale = new Hono()
+  stale.all('*', (c) => c.json({ error: 'not found' }, 404))
+  const server = serve({ fetch: stale.fetch, hostname: '127.0.0.1', port: 0 })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('listening', resolve)
+      server.once('error', reject)
+    })
+    const addr = server.address()
+    if (addr === null || typeof addr === 'string') throw new Error('no port')
+    const app = appWithTrain(runnerWithTrainer(`http://127.0.0.1:${addr.port}`))
+    const res = await app.request('/train/jobs/abc/pause', { method: 'POST' })
+    assert.equal(res.status, 503)
+    const body = (await res.json()) as { error: string }
+    assert.match(body.error, /trainer 没有 pause 路由/)
+    assert.match(body.error, /trainer_service\.ps1 restart/)
+  } finally {
+    server.close()
+  }
+})
+
 test('POST /train/jobs frees ComfyUI VRAM before creating the job', async () => {
   await withStubTrainer(async (base) => {
     freeCalls = 0
