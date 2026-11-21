@@ -11,6 +11,11 @@ import { join } from 'node:path'
 import type { ImageAsset } from '../capture/asset.ts'
 import type { Dataset } from '../dataset/records.ts'
 import { RunnerError } from '../errors.ts'
+import {
+  captionFor,
+  normalizeTier,
+  type TierName,
+} from './captionTiers.ts'
 
 // 「选数据集 → 导出 → 推训练机 → 建 job」的服务端版本。
 // 对照实现：scripts_and_tools/export_dataset.mjs（导出规则）+ train_animagine.mjs（profile 合并、上传、建 job）。
@@ -83,15 +88,27 @@ export function pickDataset(
   return hits.length === 1 ? hits[0] : null
 }
 
+// 旧签名兼容（辅助脚本/测试直接调）；新调用走 captionFor。
 export function captionOf(tags: readonly string[], trigger: string): string {
-  const word = trigger.trim()
-  return `${word ? `${word}, ` : ''}${tags.join(',')},`
+  return captionFor(tags, { trigger, tier: null, styleTags: [], charNames: new Set() })
+}
+
+export type BuildPairsOpts = {
+  dataDir: string
+  trigger: string
+  characters?: ReadonlySet<string>
+  // caption 过滤档位；留空 = 旧行为（trigger + 全量 tag）
+  tier?: string | null
+  // 恒定风格词，每张图都写进 caption（T0/T1 必填）
+  styleTags?: readonly string[]
 }
 
 export function buildPairs(
   assets: readonly ImageAsset[],
-  opts: { dataDir: string; trigger: string; characters?: ReadonlySet<string> },
+  opts: BuildPairsOpts,
 ): { pairs: ExportPair[]; skipped: string[] } {
+  const tier = normalizeTier(opts.tier ?? null)
+  const styleTags = opts.styleTags ?? []
   const chars = opts.characters ?? new Set<string>()
   const pairs: ExportPair[] = []
   const skipped: string[] = []
@@ -111,21 +128,23 @@ export function buildPairs(
       skipped.push(`${asset.id}: 图片不存在 (${image.path})`)
       continue
     }
-    const kept = chars.size ? tags.filter((tag) => !chars.has(tag)) : tags
-    pairs.push({
-      id: asset.id,
-      source,
-      caption: captionOf(kept, opts.trigger),
-      rating: asset.rating,
+    const caption = captionFor(tags, {
+      trigger: opts.trigger,
+      tier,
+      styleTags,
+      charNames: chars,
     })
+    pairs.push({ id: asset.id, source, caption, rating: asset.rating })
   }
   return { pairs, skipped }
 }
 
 // WD14 词表里 category=4 是角色名；导出风格 LoRA 时要剥掉，免得把角色先验写进 caption。
-export function characterNames(dataDir: string): Set<string> {
+// strict=false：词表缺失时返回空集（测试/无 tagger 环境不阻塞训练）。
+export function characterNames(dataDir: string, strict = true): Set<string> {
   const csv = join(dataDir, ...TAGGER_CSV)
   if (!existsSync(csv)) {
+    if (!strict) return new Set<string>()
     throw new RunnerError(`找不到 WD14 词表：${csv}`, 400)
   }
   const names = new Set<string>()

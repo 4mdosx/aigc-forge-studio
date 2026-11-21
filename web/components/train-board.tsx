@@ -71,10 +71,18 @@ interface ProfileRow {
   params: Record<string, unknown>
 }
 
+interface CaptionTier {
+  key: string
+  name: string
+  desc: string
+  styleRequired: boolean
+}
+
 interface ProfilesBody {
   profiles: ProfileRow[]
   preset: Record<string, unknown>
   defaultBaseModel: string
+  captionTiers: CaptionTier[]
 }
 
 interface DatasetRow {
@@ -120,6 +128,8 @@ export function TrainBoard() {
 
   const [dataset, setDataset] = useState('')
   const [trigger, setTrigger] = useState('')
+  const [tier, setTier] = useState('')
+  const [styleTags, setStyleTags] = useState('')
   const [profile, setProfile] = useState('seed')
   const [jobName, setJobName] = useState('')
 
@@ -280,6 +290,8 @@ export function TrainBoard() {
         body: JSON.stringify({
           dataset,
           ...(trigger.trim() ? { trigger: trigger.trim() } : {}),
+          ...(tier ? { tier } : {}),
+          ...(styleTags.trim() ? { styleTags: styleTags.trim() } : {}),
           profile,
           ...(jobName.trim() ? { name: jobName.trim() } : {}),
           dryRun: dry,
@@ -288,6 +300,7 @@ export function TrainBoard() {
       const lines = [
         `${dry ? '试算' : '已开训'}：${String(body.dataset ?? dataset)}`,
         `${String(body.images ?? '?')} 图 · ${String(body.steps ?? '?')} 步 · profile ${String(body.profile ?? profile)}`,
+        `caption 档位 ${String(body.tier ?? 'raw')}${body.sample ? ` · 样例「${String(body.sample)}」` : ''}`,
         String(body.name ?? ''),
       ]
       if (body.warn) lines.push(`⚠ ${String(body.warn)}`)
@@ -416,6 +429,28 @@ export function TrainBoard() {
             />
           </label>
           <label>
+            Caption 档位
+            <select value={tier} onChange={(event) => setTier(event.target.value)}>
+              <option value="">原样（触发词 + 全部 tag）</option>
+              {(profiles?.captionTiers ?? []).map((item) => (
+                <option key={item.key} value={item.key}>
+                  {item.key} · {item.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {tier && tier !== 'T2' && tier !== 'T3' ? (
+            <label>
+              恒定风格词
+              <input
+                value={styleTags}
+                placeholder="painterly, dark cinematic lighting, black-gold armor"
+                onChange={(event) => setStyleTags(event.target.value)}
+                required
+              />
+            </label>
+          ) : null}
+          <label>
             Profile
             <select value={profile} onChange={(event) => setProfile(event.target.value)}>
               {(profiles?.profiles ?? []).map((item) => (
@@ -436,6 +471,10 @@ export function TrainBoard() {
         </div>
         {profiles ? (
           <p className="muted train-profile-desc">
+            {tier
+              ? (profiles.captionTiers.find((item) => item.key === tier)?.desc ?? '')
+              : '原样档：caption = 触发词 + 全部 WD14 tag（仅剥角色名、背景与画质噪声）。'}
+            <br />
             {profiles.profiles.find((item) => item.name === profile)?.desc ?? ''}
             <br />
             底模 {profiles.defaultBaseModel.replace(/^.*\//, '').replace(/\.safetensors$/, '')}

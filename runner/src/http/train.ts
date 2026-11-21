@@ -19,6 +19,7 @@ import {
   type ProfileBook,
   type TrainProfile,
 } from '../train/fromDataset.ts'
+import { TIERS, normalizeTier } from '../train/captionTiers.ts'
 import { jsonObject } from './request.ts'
 
 // 训练发起台：
@@ -203,14 +204,34 @@ export function mountTrain(
       })),
       preset: STABLE_PRESET,
       defaultBaseModel: DEFAULT_BASE_MODEL,
+      captionTiers: Object.values(TIERS),
     })
   })
 
-  // body: { dataset, trigger?, profile?, stripCharacters?, baseModel?, params?, dryRun?, concurrency?, name? }
+  // body: { dataset, trigger?, profile?, tier?, styleTags?, stripCharacters?, baseModel?, params?, dryRun?, concurrency?, name? }
+  // tier = T0 纯风格 / T1 设计语言 / T2 概念题材 / T3 角色身份；留空 = 原样（旧行为）。
   app.post('/train/start', async (c) => {
     const body = await jsonObject(c.req)
     if (typeof body.dataset !== 'string' || body.dataset.trim() === '') {
       throw new RunnerError('dataset is required')
+    }
+    let tier: ReturnType<typeof normalizeTier>
+    try {
+      tier = normalizeTier(body.tier)
+    } catch (err) {
+      throw new RunnerError(err instanceof Error ? err.message : String(err))
+    }
+    if (tier && TIERS[tier].styleRequired) {
+      const words = typeof body.styleTags === 'string'
+        ? body.styleTags.split(',').map((s) => s.trim()).filter(Boolean)
+        : Array.isArray(body.styleTags)
+          ? body.styleTags.map((s) => String(s).trim()).filter(Boolean)
+          : []
+      if (words.length === 0) {
+        throw new RunnerError(
+          `${TIERS[tier].name}档必须给恒定风格词（styleTags）：这批 tag 全删，没有风格词就训不出东西`,
+        )
+      }
     }
     const trigger = typeof body.trigger === 'string' ? body.trigger.trim() : ''
     const profileName =
@@ -243,15 +264,23 @@ export function mountTrain(
       throw new RunnerError(`数据集 ${dataset.name} 是空的`)
     }
 
-    const characters =
-      body.stripCharacters === true ? characterNames(runner.dataDir) : undefined
+    // 角色名始终剥：除非在训角色 LoRA（那种用触发词指定身份，不靠 tag）。
+    // 词表缺失时降级为空集，别让无 tagger 的环境建不了 job。
+    const characters = characterNames(runner.dataDir, false)
+    const styleTags = typeof body.styleTags === 'string'
+      ? body.styleTags.split(',').map((s) => s.trim()).filter(Boolean)
+      : Array.isArray(body.styleTags)
+        ? body.styleTags.map((s) => String(s).trim()).filter(Boolean)
+        : []
     const assets = dataset.assetIds
       .map((id) => assetById(runner.db, id))
       .filter((asset): asset is ImageAsset => asset !== null)
     const { pairs, skipped } = buildPairs(assets, {
       dataDir: runner.dataDir,
       trigger,
-      ...(characters ? { characters } : {}),
+      tier,
+      styleTags,
+      characters,
     })
     if (pairs.length === 0) {
       throw new RunnerError(
@@ -291,6 +320,8 @@ export function mountTrain(
         steps,
         name,
         params,
+        tier: tier ?? 'raw',
+        styleTags,
         sample: pairs[0]?.caption.slice(0, 200) ?? null,
       })
     }
@@ -330,6 +361,7 @@ export function mountTrain(
         dataset: dataset.name,
         dirName,
         profile: profileName,
+        tier: tier ?? 'raw',
         images: pairs.length,
         pushed,
         skipped,

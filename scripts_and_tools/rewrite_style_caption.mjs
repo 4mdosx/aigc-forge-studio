@@ -38,7 +38,7 @@ import {
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
-import { tierOf, loadCharacterNames, keepTag } from './caption_tiers.mjs'
+import { tierOf, loadCharacterNames, keepTag, ALWAYS_DROP } from './caption_tiers.mjs'
 
 const { values } = parseArgs({
   options: {
@@ -106,10 +106,12 @@ for (const file of txtFiles) {
     // 剥触发词本身；其余按档位规则过滤
     const triggerLc = trigger.toLowerCase()
     content = original.filter((tag) => {
-      if (tag.toLowerCase() === triggerLc) return false
+      const lc = tag.toLowerCase()
+      if (lc === triggerLc) return false
       if (tier) return keepTag(tag, values.tier.trim().toUpperCase(), CHAR_NAMES, stripExtra)
-      // 未指定档位：沿用内置 ALWAYS_DROP（背景/画质）+ 角色名 + strip
-      return keepTag(tag, 'T3', CHAR_NAMES, stripExtra)
+      // 未指定档位：原样——只剥背景/画质/角色名/strip，保留姿势与身份
+      if (ALWAYS_DROP.has(lc) || CHAR_NAMES.has(tag) || stripExtra.has(tag)) return false
+      return true
     })
   }
   // 恒定部分：触发词永远第一个（SDXL 对 token 位置敏感），后面跟固定风格词
