@@ -13,8 +13,10 @@ import {
   cancelTrainJob,
   createTrainJob,
   listTrainJobs,
+  pauseTrainJob,
   recoverTrainJobs,
   readTrainLog,
+  resumeTrainJob,
   type TrainConfig,
 } from './manager.ts'
 
@@ -219,4 +221,77 @@ test('recoverTrainJobs marks running/pending as failed', () => {
 
 test('readTrainLog 404s for unknown log', () => {
   assert.throws(() => readTrainLog(trainer.train, 'nope'), /log not found/)
+})
+
+test('readTrainLog 只返回尾巴', async () => {
+  const row = createTrainJob(trainer, {
+    name: 'style-v1',
+    datasetRoot: 'training',
+    datasetPath: 'style-v1/img',
+    baseModel: 'checkpoints/pd.safetensors',
+  })
+  await waitUntil(row.id, 'completed')
+  const full = readTrainLog(trainer.train, row.id)
+  const tail = readTrainLog(trainer.train, row.id, 24)
+  assert.equal(tail.length, 24)
+  assert.ok(full.endsWith(tail))
+})
+
+test('pause/resume 挂起进程树但状态仍是 running', async () => {
+  trainer.train!.spawnOverride = {
+    executable: process.execPath,
+    args: [script, '0', '0', 'loop'],
+  }
+  const calls: string[] = []
+  let suspendedPid = 0
+  trainer.train!.suspend = async (pid) => {
+    calls.push(`pause:${pid}`)
+    suspendedPid = pid
+  }
+  trainer.train!.resume = async (pid) => calls.push(`resume:${pid}`)
+
+  const row = createTrainJob(trainer, {
+    name: 'style-v1',
+    datasetRoot: 'training',
+    datasetPath: 'style-v1/img',
+    baseModel: 'checkpoints/pd.safetensors',
+  })
+  await waitUntil(row.id, 'running')
+
+  const paused = await pauseTrainJob(trainer, row.id)
+  assert.equal(paused.status, 'running')
+  assert.ok(paused.paused_at)
+  assert.equal(calls[0], `pause:${suspendedPid}`)
+  assert.ok(suspendedPid > 0)
+  // 暂停中仍占着单任务锁
+  assert.throws(
+    () =>
+      createTrainJob(trainer, {
+        name: 'style-v2',
+        datasetRoot: 'training',
+        datasetPath: 'style-v1/img',
+        baseModel: 'checkpoints/pd.safetensors',
+      }),
+    /single job only/,
+  )
+  // 重复暂停幂等，不再调挂起
+  await pauseTrainJob(trainer, row.id)
+  assert.equal(calls.filter((c) => c.startsWith('pause:')).length, 1)
+
+  const resumed = await resumeTrainJob(trainer, row.id)
+  assert.equal(resumed.paused_at, null)
+  assert.equal(calls.at(-1), `resume:${suspendedPid}`)
+
+  await cancelTrainJob(trainer, row.id)
+})
+
+test('pause 拒绝非 running 任务', async () => {
+  trainer.db
+    .prepare(
+      `INSERT INTO train_jobs (id, name, status, params, created_at)
+       VALUES ('j2', 'style-v1', 'completed', '{}', '2026-01-01')`,
+    )
+    .run()
+  await assert.rejects(() => pauseTrainJob(trainer, 'j2'), /cannot pause a completed job/)
+  await assert.rejects(() => pauseTrainJob(trainer, 'nope'), /train job not found/)
 })

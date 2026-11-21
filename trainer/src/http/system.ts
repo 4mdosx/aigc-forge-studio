@@ -1,0 +1,18 @@
+import type { Hono } from 'hono'
+
+import { TrainerError } from '../errors.ts'
+import { readGpu } from '../system/gpu.ts'
+
+// GET /gpu：训练机上的 nvidia-smi 快照（整卡 + 逐进程）。
+// 训练页要靠它区分「显存被 ComfyUI 占着」和「训练自己吃满」。
+export function mountSystem(app: Hono): void {
+  app.get('/gpu', async (c) => {
+    try {
+      const report = await readGpu()
+      return c.json({ checkedAt: new Date().toISOString(), ...report })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      throw new TrainerError(`nvidia-smi failed: ${message.slice(0, 300)}`, 502)
+    }
+  })
+}

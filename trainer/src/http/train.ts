@@ -6,7 +6,9 @@ import {
   cancelTrainJob,
   createTrainJob,
   listTrainJobs,
+  pauseTrainJob,
   readTrainLog,
+  resumeTrainJob,
   trainJobJson,
   type TrainJobRow,
 } from '../train/manager.ts'
@@ -113,7 +115,20 @@ export function mountTrain(app: Hono, trainer: Trainer): void {
       .prepare('SELECT id FROM train_jobs WHERE id = ?')
       .get(c.req.param('id')) as { id: string } | undefined
     if (!row) throw new TrainerError('train job not found', 404)
-    return c.text(readTrainLog(trainer.train, row.id))
+    const tail = Number(c.req.query('tail') ?? '')
+    return c.text(
+      readTrainLog(trainer.train, row.id, Number.isFinite(tail) ? tail : undefined),
+    )
+  })
+
+  app.post('/train/jobs/:id/pause', async (c) => {
+    const row = await pauseTrainJob(trainer, c.req.param('id'))
+    return c.json({ job: trainJobJson(row) })
+  })
+
+  app.post('/train/jobs/:id/resume', async (c) => {
+    const row = await resumeTrainJob(trainer, c.req.param('id'))
+    return c.json({ job: trainJobJson(row) })
   })
 
   app.delete('/train/jobs/:id', async (c) => {

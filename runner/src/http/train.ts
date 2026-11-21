@@ -165,9 +165,17 @@ export function mountTrain(
     proxy(runner, `/train/jobs/${c.req.param('id')}`),
   )
 
-  app.get('/train/jobs/:id/log', (c) =>
-    proxy(runner, `/train/jobs/${c.req.param('id')}/log`),
-  )
+  app.get('/train/jobs/:id/log', (c) => {
+    // tail 等查询参数原样透传（训练页只拉日志尾巴算进度）
+    const search = new URL(c.req.url).search
+    return proxy(runner, `/train/jobs/${c.req.param('id')}/log${search}`)
+  })
+
+  for (const action of ['pause', 'resume'] as const) {
+    app.post(`/train/jobs/:id/${action}`, (c) =>
+      proxy(runner, `/train/jobs/${c.req.param('id')}/${action}`, { method: 'POST' }),
+    )
+  }
 
   app.delete('/train/jobs/:id', (c) =>
     proxy(runner, `/train/jobs/${c.req.param('id')}`, { method: 'DELETE' }),

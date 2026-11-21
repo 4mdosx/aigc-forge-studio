@@ -14,6 +14,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { TrainerError } from '../errors.ts'
 import type { RootRegistry } from '../roots.ts'
+import { resumeProcessTree, suspendProcessTree } from './pause.ts'
 import {
   buildDatasetToml,
   buildTrainToml,
@@ -37,6 +38,9 @@ export interface TrainConfig {
   logsDir?: string
   /** 测试注入：跳过 accelerate/python 组装，直接给定可执行与参数 */
   spawnOverride?: { executable: string; args: string[] }
+  /** 测试注入：进程树挂起/恢复（缺省走 pause.ts） */
+  suspend?: (pid: number) => Promise<void>
+  resume?: (pid: number) => Promise<void>
 }
 
 export interface TrainRun {
@@ -59,6 +63,7 @@ export interface TrainJobRow {
   created_at: string
   started_at: string | null
   completed_at: string | null
+  paused_at?: string | null
 }
 
 export interface TrainJobJson {
@@ -74,6 +79,7 @@ export interface TrainJobJson {
   createdAt: string
   startedAt: string | null
   completedAt: string | null
+  pausedAt: string | null
 }
 
 export function trainJobJson(row: TrainJobRow): TrainJobJson {
@@ -90,6 +96,8 @@ export function trainJobJson(row: TrainJobRow): TrainJobJson {
     createdAt: row.created_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
+    // 终态不留暂停痕迹：paused_at 只在 running 时有意义
+    pausedAt: row.status === 'running' ? (row.paused_at ?? null) : null,
   }
 }
 
@@ -376,9 +384,74 @@ export async function cancelTrainJob(
   return next
 }
 
-export function readTrainLog(config: TrainConfig | undefined, id: string): string {
+// 暂停/恢复：挂起整棵进程树，status 保持 running（单任务锁 continues to hold），
+// 只有 paused_at 记录时间戳。恢复不重放任何状态，纯粹让线程继续跑。
+async function setPaused(
+  trainer: TrainerConfig,
+  id: string,
+  paused: boolean,
+): Promise<TrainJobRow> {
+  const row = rowOf(trainer.db, id)
+  if (!row) throw new TrainerError('train job not found', 404)
+  if (row.status !== 'running') {
+    throw new TrainerError(`cannot ${paused ? 'pause' : 'resume'} a ${row.status} job`, 409)
+  }
+  const already = Boolean(row.paused_at)
+  if (already === paused) return row
+
+  const config = requireConfig(trainer)
+  const run = runsOf(trainer).get(id)
+  if (!run?.child.pid) {
+    throw new TrainerError(
+      `training process is not attached (trainer restarted?); cannot ${paused ? 'pause' : 'resume'}`,
+      409,
+    )
+  }
+  const call = paused ? (config.suspend ?? suspendProcessTree) : (config.resume ?? resumeProcessTree)
+  try {
+    await call(run.child.pid)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new TrainerError(`${paused ? 'pause' : 'resume'} failed: ${message}`, 500)
+  }
+
+  trainer.db
+    .prepare(`UPDATE train_jobs SET paused_at = ? WHERE id = ? AND status = 'running'`)
+    .run(paused ? trainer.now().toISOString() : null, id)
+  appendLog(
+    config,
+    id,
+    `\n[trainer] ${paused ? 'paused' : 'resumed'} at ${trainer.now().toISOString()}\n`,
+  )
+  const next = rowOf(trainer.db, id)
+  if (!next) throw new TrainerError('train job vanished', 500)
+  return next
+}
+
+export async function pauseTrainJob(
+  trainer: TrainerConfig,
+  id: string,
+): Promise<TrainJobRow> {
+  return setPaused(trainer, id, true)
+}
+
+export async function resumeTrainJob(
+  trainer: TrainerConfig,
+  id: string,
+): Promise<TrainJobRow> {
+  return setPaused(trainer, id, false)
+}
+
+// tail 给的是字符数，用于前端只看进度尾巴（训练日志跑两小时能到几百 KB）
+export function readTrainLog(
+  config: TrainConfig | undefined,
+  id: string,
+  tail?: number,
+): string {
   if (!config) throw new TrainerError('training stack not configured')
   const path = logPath(config, id)
   if (!existsSync(path)) throw new TrainerError('log not found', 404)
-  return readFileSync(path, 'utf8')
+  const text = readFileSync(path, 'utf8')
+  if (!tail || tail <= 0 || text.length <= tail) return text
+  return text.slice(text.length - tail)
 }

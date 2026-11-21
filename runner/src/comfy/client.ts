@@ -18,6 +18,17 @@ export interface HistoryEntry {
   }
 }
 
+export interface ComfySystemStats {
+  deviceName: string
+  /** 字节；0 表示 ComfyUI 没报这个字段 */
+  ramTotal: number
+  ramFree: number
+  vramTotal: number
+  vramFree: number
+  torchVramTotal: number
+  torchVramFree: number
+}
+
 export interface ComfyDeps {
   fetch?: typeof fetch
   sleep?: (ms: number) => Promise<void>
@@ -85,6 +96,23 @@ export class ComfyClient {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ unload_models: true, free_memory: true }),
     })
+  }
+
+  // ComfyUI 视角的机器水位：vram 是整卡（含训练进程），torch_vram 是 ComfyUI 自己占的。
+  async systemStats(): Promise<ComfySystemStats> {
+    const res = await this.request('/system_stats')
+    const body = (await res.json()) as Record<string, unknown>
+    const system = asRecord(body.system)
+    const device = Array.isArray(body.devices) ? asRecord(body.devices[0]) : {}
+    return {
+      deviceName: typeof device.name === 'string' ? device.name : 'unknown',
+      ramTotal: asNumber(system.ram_total),
+      ramFree: asNumber(system.ram_free),
+      vramTotal: asNumber(device.vram_total),
+      vramFree: asNumber(device.vram_free),
+      torchVramTotal: asNumber(device.torch_vram_total),
+      torchVramFree: asNumber(device.torch_vram_free),
+    }
   }
 
   async workflows(signal?: AbortSignal): Promise<string[]> {
@@ -436,4 +464,13 @@ function listedName(item: unknown, type: 'input' | 'output'): string {
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  return value as Record<string, unknown>
+}
+
+function asNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }

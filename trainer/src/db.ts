@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS train_jobs (
   error TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
-  completed_at TEXT
+  completed_at TEXT,
+  paused_at TEXT
 );
 `
 
@@ -39,5 +40,25 @@ export function openDatabase(path: string): DatabaseSync {
   mkdirSync(path.replace(/[/\\][^/\\]+$/, ''), { recursive: true })
   const db = new DatabaseSync(path)
   db.exec(SCHEMA)
+  migrate(db)
   return db
+}
+
+// 暂停不新增状态值（status 有 CHECK 约束，改它要重建表），
+// 只用 paused_at 标记：status 仍是 running，单任务锁天然继续生效。
+function migrate(db: DatabaseSync): void {
+  ensureColumn(db, 'train_jobs', 'paused_at', 'TEXT')
+}
+
+function ensureColumn(
+  db: DatabaseSync,
+  table: string,
+  column: string,
+  type: string,
+): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string
+  }>
+  if (columns.some((entry) => entry.name === column)) return
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
 }

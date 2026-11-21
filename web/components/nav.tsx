@@ -9,6 +9,7 @@ export function Nav() {
   const poses = path.startsWith('/poses')
   const capture = path.startsWith('/capture')
   const jobs = path.startsWith('/jobs')
+  const train = path.startsWith('/train')
   const dice = path.startsWith('/dice')
   const library = path.startsWith('/library') || path.startsWith('/workflows')
   const settings = path.startsWith('/settings')
@@ -25,6 +26,9 @@ export function Nav() {
       </Link>
       <Link className={jobs ? 'active' : ''} href="/jobs">
         Jobs
+      </Link>
+      <Link className={train ? 'active' : ''} href="/train">
+        训练
       </Link>
       <Link className={dice ? 'active' : ''} href="/dice">
         🎲 Dice

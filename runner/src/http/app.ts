@@ -17,6 +17,7 @@ import { mountOutputGallery } from './output-gallery.ts'
 import { mountPoses } from './poses.ts'
 import { mountPosePending } from './pose-pending.ts'
 import { mountRecommend } from './recommend.ts'
+import { mountSystem } from './system.ts'
 import { mountTag } from './tag.ts'
 import { mountTasks } from './tasks.ts'
 import { mountTrain } from './train.ts'
@@ -52,6 +53,7 @@ export function createApp(
   mountConfig(app, runner)
   mountTag(app, runner)
   mountRecommend(app, runner)
+  mountSystem(app, runner)
   mountTrain(app, runner)
   return app
 }

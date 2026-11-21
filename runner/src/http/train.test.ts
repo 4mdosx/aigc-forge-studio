@@ -25,10 +25,18 @@ stub.post('/train/jobs', async (c) => {
 stub.get('/train/jobs', (c) => c.json({ jobs: [] }))
 stub.get('/train/jobs/:id', (c) => c.json({ job: { id: c.req.param('id') } }))
 stub.get('/train/jobs/:id/log', (c) =>
-  c.text(`line 1 of ${c.req.param('id')}\nline 2\n`),
+  c.text(
+    `line 1 of ${c.req.param('id')}\nline 2\ntail=${c.req.query('tail') ?? 'none'}\n`,
+  ),
 )
 stub.delete('/train/jobs/:id', (c) =>
   c.json({ job: { id: c.req.param('id'), status: 'cancelled' } }),
+)
+stub.post('/train/jobs/:id/pause', (c) =>
+  c.json({ job: { id: c.req.param('id'), status: 'running', pausedAt: '2026-01-01' } }),
+)
+stub.post('/train/jobs/:id/resume', (c) =>
+  c.json({ job: { id: c.req.param('id'), status: 'running', pausedAt: null } }),
 )
 stub.post('/upload', async (c) => {
   const bytes = await c.req.arrayBuffer()
@@ -204,6 +212,29 @@ test('GET/DELETE /train/jobs/:id proxy passthrough', async () => {
     assert.equal(res4.status, 200)
     assert.match(res4.headers.get('content-type') ?? '', /text\/plain/)
     assert.match(await res4.text(), /line 1 of abc/)
+    // ?tail= 原样透传给 trainer
+    const res5 = await app.request('/train/jobs/abc/log?tail=2048')
+    assert.match(await res5.text(), /tail=2048/)
+  })
+})
+
+test('POST /train/jobs/:id/pause|resume proxy', async () => {
+  await withStubTrainer(async (base) => {
+    const app = appWithTrain(runnerWithTrainer(base))
+    const paused = await app.request('/train/jobs/abc/pause', { method: 'POST' })
+    assert.equal(paused.status, 200)
+    const pausedBody = (await paused.json()) as {
+      job: { id: string; pausedAt: string | null }
+    }
+    assert.equal(pausedBody.job.id, 'abc')
+    assert.ok(pausedBody.job.pausedAt)
+
+    const resumed = await app.request('/train/jobs/abc/resume', { method: 'POST' })
+    assert.equal(resumed.status, 200)
+    const resumedBody = (await resumed.json()) as {
+      job: { pausedAt: string | null }
+    }
+    assert.equal(resumedBody.job.pausedAt, null)
   })
 })
 
