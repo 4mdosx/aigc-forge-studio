@@ -85,7 +85,7 @@ export function TaskDetail({ id, embedded = false }: { id: string; embedded?: bo
                 <>
                   {' '}
                   ·{' '}
-                  <Link href={`/?work=${encodeURIComponent(task.workName)}`}>
+                  <Link href={`/library?work=${encodeURIComponent(task.workName)}`}>
                     {task.workName}
                   </Link>
                 </>

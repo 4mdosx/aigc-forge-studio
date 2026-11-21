@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation'
 
 export function Nav() {
   const path = usePathname()
-  const work = path === '/' || path.startsWith('/tasks')
+  const home = path === '/' || path.startsWith('/tasks')
   const poses = path.startsWith('/poses')
   const capture = path.startsWith('/capture')
   const jobs = path.startsWith('/jobs')
@@ -14,8 +14,8 @@ export function Nav() {
   const settings = path.startsWith('/settings')
   return (
     <nav>
-      <Link className={work ? 'active' : ''} href="/">
-        Work
+      <Link className={home ? 'active' : ''} href="/">
+        生图
       </Link>
       <Link className={poses ? 'active' : ''} href="/poses">
         Pose

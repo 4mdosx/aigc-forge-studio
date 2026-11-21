@@ -10,6 +10,7 @@ import { ImageDetail } from '@/components/image-detail'
 import { ImageGallery } from '@/components/image-gallery'
 import { useImageAssets } from '@/components/image-assets'
 import { RollsPanel } from '@/components/rolls-panel'
+import { WorkBoard } from '@/components/work-board'
 import { api } from '@/lib/api'
 import { fail, messageOf, notify } from '@/lib/notify'
 import { isSafetyHiddenRating, useSafetyMode } from '@/lib/safety-mode'
@@ -26,7 +27,7 @@ interface ComfyWorkflow {
   status: 'new' | 'updated' | 'unchanged'
 }
 
-export function LibraryBoard() {
+export function LibraryBoard({ initialWork = null }: { initialWork?: string | null }) {
   const [workflows, setWorkflows] = useState<Workflow[]>([])
   const [remote, setRemote] = useState<ComfyWorkflow[]>([])
   const [picked, setPicked] = useState('')
@@ -36,7 +37,9 @@ export function LibraryBoard() {
   const [filePath, setFilePath] = useState('')
   const [busy, setBusy] = useState(false)
   const [view, setView] = useState<'list' | 'grid'>('list')
-  const [tab, setTab] = useState<'gallery' | 'inspiration' | 'input' | 'output' | 'workflow'>('gallery')
+  const [tab, setTab] = useState<'gallery' | 'inspiration' | 'input' | 'output' | 'workflow' | 'work'>(
+    initialWork ? 'work' : 'gallery',
+  )
 
   async function load() {
     const [library, inputFiles, outputFiles] = await Promise.all([
@@ -141,6 +144,7 @@ export function LibraryBoard() {
               ['input', 'Input'],
               ['output', 'Output'],
               ['workflow', 'Workflow'],
+              ['work', 'Work'],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -155,7 +159,7 @@ export function LibraryBoard() {
             </button>
           ))}
         </div>
-        {tab === 'workflow' || tab === 'inspiration' || tab === 'gallery' ? null : (
+        {tab === 'workflow' || tab === 'inspiration' || tab === 'gallery' || tab === 'work' ? null : (
           <button
             type="button"
             className="quiet"
@@ -243,7 +247,7 @@ export function LibraryBoard() {
                       : workflow.works.map((workName, index) => (
                           <span key={workName}>
                             {index > 0 ? '、' : null}
-                            <Link href={`/?work=${encodeURIComponent(workName)}`}>{workName}</Link>
+                            <Link href={`/library?work=${encodeURIComponent(workName)}`}>{workName}</Link>
                           </span>
                         ))}
                   </td>
@@ -267,6 +271,7 @@ export function LibraryBoard() {
         </table>
       </section>
       ) : null}
+      {tab === 'work' ? <WorkBoard initialWork={initialWork} /> : null}
       <Dialog
         open={open}
         title="从 ComfyUI 建立"

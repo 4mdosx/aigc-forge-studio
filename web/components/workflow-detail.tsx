@@ -68,7 +68,7 @@ export function WorkflowDetail({ name }: { name: string }) {
               {workflow.works.map((workName, index) => (
                 <span key={workName}>
                   {index > 0 ? '、' : null}
-                  <Link href={`/?work=${encodeURIComponent(workName)}`}>{workName}</Link>
+                  <Link href={`/library?work=${encodeURIComponent(workName)}`}>{workName}</Link>
                 </span>
               ))}
             </>

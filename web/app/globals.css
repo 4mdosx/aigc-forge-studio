@@ -1673,11 +1673,20 @@ button.task-pick.current {
   overflow: hidden;
 }
 
-.shell:has(.library-split) .library-frame {
+.shell:has(.library-split) .library-frame,
+.shell:has(.work-board) .library-frame {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.work-board {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
 }
 
 .library-frame > .column-head {
