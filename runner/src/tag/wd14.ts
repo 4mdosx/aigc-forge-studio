@@ -61,12 +61,23 @@ export interface TagOptions {
   excludeTags?: string[]
 }
 
-export interface TagResult {
-  tags: string[]
-  rating: string
+// 带 category 的单个检出标签（展示/分组用，不进 caption）
+export interface TagDetail {
+  name: string
+  category: number
+  score: number
 }
 
-// 输出向量与 entries 逐一对应；rating 取最高分的 rating 类标签，其余按阈值筛选、按置信度降序
+export interface TagResult {
+  // 进 caption 的 tag：general（过阈值）+ character（过阈值），artist/copyright/rating 剔除
+  tags: string[]
+  rating: string
+  // 全量检出（含 artist/copyright/rating），按置信度降序，供页面结构化分组
+  details: TagDetail[]
+}
+
+// 输出向量与 entries 逐一对应；rating 取最高分的 rating 类标签，其余按阈值筛选、按置信度降序。
+// details 与 tags 分开：tags 是 caption 真相源（保持既有行为不变），details 是展示真相源。
 export function selectTags(
   scores: ArrayLike<number>,
   entries: TagEntry[],
@@ -83,29 +94,44 @@ export function selectTags(
 
   let rating = ''
   let ratingScore = -1
-  const picked: Array<{ name: string; score: number }> = []
+  const picked: TagDetail[] = []
+  const details: TagDetail[] = []
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index] as TagEntry
     const score = scores[index] ?? 0
+    const detail: TagDetail = { name: entry.name, category: entry.category, score }
     if (entry.category === CATEGORY.rating) {
+      details.push(detail)
       if (score > ratingScore) {
         rating = entry.name
         ratingScore = score
       }
       continue
     }
+    // artist / copyright 进 details 展示，但不进 caption（画师名污染风格数据集）
+    if (entry.category === CATEGORY.artist || entry.category === CATEGORY.copyright) {
+      if (score >= generalThreshold) details.push(detail)
+      continue
+    }
     if (exclude.has(normalizeTagName(entry.name))) continue
     if (entry.category === CATEGORY.character) {
-      if (score >= characterThreshold) picked.push({ name: entry.name, score })
+      if (score >= characterThreshold) {
+        picked.push(detail)
+        details.push(detail)
+      } else if (score >= generalThreshold) {
+        details.push(detail)
+      }
       continue
     }
     if (entry.category === CATEGORY.general && score >= generalThreshold) {
-      picked.push({ name: entry.name, score })
+      picked.push(detail)
+      details.push(detail)
     }
-    // artist / copyright 不进 caption（画师名污染风格数据集）
   }
-  picked.sort((a, b) => b.score - a.score)
-  return { tags: picked.map((item) => item.name), rating }
+  const byScore = (a: TagDetail, b: TagDetail) => b.score - a.score
+  picked.sort(byScore)
+  details.sort(byScore)
+  return { tags: picked.map((item) => item.name), rating, details }
 }
 
 // exclude 匹配宽松化：大小写、下划线/空格等价（与 TK WD14 node 同约定）
@@ -197,6 +223,23 @@ export function isModelLoaded(modelId: Wd14ModelId): boolean {
 export function isModelCached(modelsDir: string, modelId: Wd14ModelId): boolean {
   const dir = modelDirOf(modelsDir, modelId)
   return existsSync(join(dir, 'model.onnx')) && existsSync(join(dir, 'selected_tags.csv'))
+}
+
+// 只读 CSV 的 category 查表，不加载 ONNX 会话（老数据补 category 用）。进程内按目录缓存。
+const categoryMaps = new Map<string, Map<string, number>>()
+
+export function loadCategoryMap(modelsDir: string, modelId: Wd14ModelId): Map<string, number> {
+  const dir = modelDirOf(modelsDir, modelId)
+  const cached = categoryMaps.get(dir)
+  if (cached) return cached
+  const csv = join(dir, 'selected_tags.csv')
+  if (!existsSync(csv)) return new Map()
+  const map = new Map<string, number>()
+  for (const entry of parseTagsCsv(readFileSync(csv, 'utf8'))) {
+    map.set(entry.name, entry.category)
+  }
+  categoryMaps.set(dir, map)
+  return map
 }
 
 export function loadSession(

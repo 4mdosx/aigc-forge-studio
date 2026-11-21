@@ -8,12 +8,15 @@ import {
   WD14_MODELS,
   isModelCached,
   isModelLoaded,
+  loadCategoryMap,
   loadSession,
   tagFile,
+  type TagDetail,
   type TagOptions,
   type Wd14ModelId,
 } from '../tag/wd14.ts'
 import { RunnerError } from '../errors.ts'
+import { assetById } from '../capture/asset.ts'
 import type { Runner } from '../task/queue.ts'
 import { readMeta, writeMeta } from './capture.ts'
 import { jsonObject, stringField } from './request.ts'
@@ -109,6 +112,42 @@ function isItemId(id: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id)
 }
 
+// sidecar 里带 category 的详情；结构不符返回 null 让调用方走 CSV 补全
+function detailsFromMeta(
+  meta: Record<string, unknown> | null,
+  tags: string[],
+): TagDetail[] | null {
+  const raw = meta?.tagDetails
+  if (!Array.isArray(raw)) return null
+  const details: TagDetail[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Record<string, unknown>
+    if (typeof row.name !== 'string' || typeof row.category !== 'number') continue
+    details.push({
+      name: row.name,
+      category: row.category,
+      score: typeof row.score === 'number' ? row.score : 0,
+    })
+  }
+  if (details.length === 0) return null
+  // 手动编辑过 txt 时，以 txt 为真相源：保留已有分类，新增 tag 归 general
+  const byName = new Map(details.map((item) => [item.name, item]))
+  const merged = tags.map(
+    (tag) => byName.get(tag) ?? { name: tag, category: 0, score: 0 },
+  )
+  return merged
+}
+
+// 老数据没有 tagDetails 时，按 CSV 词表查 category；查不到归 general
+function detailsFromCsv(tags: string[], categoryMap: Map<string, number>): TagDetail[] {
+  return tags.map((name) => ({
+    name,
+    category: categoryMap.get(name) ?? 0,
+    score: 0,
+  }))
+}
+
 // 单图打标：推理 → 写 image/<id>.txt → 更新 sidecar meta
 async function tagOne(
   runner: Runner,
@@ -129,6 +168,7 @@ async function tagOne(
     tagger: modelId,
     tagThreshold: options.generalThreshold ?? 0.35,
     tagCharThreshold: options.characterThreshold ?? 0.85,
+    tagDetails: result.details,
     tagError: null,
     taggedAt: runner.now().toISOString(),
   })
@@ -250,17 +290,32 @@ export function mountTag(app: Hono, runner: Runner): void {
     return c.json({ id, tags: result.tags, rating: result.rating })
   })
 
-  // 读取单图标签（image/<id>.txt 为真相源；没打过标返回空数组，便于直接手动编辑）
+  // 读取单图标签（image/<id>.txt 为真相源；没有时回退 DB image_assets.tags_json）。
+  // details 供页面分组：优先 sidecar tagDetails（新打标），否则按 tags + CSV 查表补全。
   app.get('/tag/item', (c) => {
     const id = c.req.query('id') ?? ''
     if (!isItemId(id)) throw new RunnerError('invalid id')
     const dir = captureDirOf(runner)
     const txtFile = join(dir, 'image', `${id}.txt`)
     const meta = readMeta(dir, id)
-    const tags = existsSync(txtFile) ? parseTagText(readFileSync(txtFile, 'utf8')) : []
+    let tags = existsSync(txtFile) ? parseTagText(readFileSync(txtFile, 'utf8')) : []
+    if (tags.length === 0) {
+      // capture 是 folder/<id>.jpg 结构，tagger 那套根 image/ 在部分部署下取不到 txt；
+      // 页面显示的真相源是 DB，这里回退保证分组始终有数据。
+      tags = assetById(runner.db, id)?.tags ?? []
+    }
+    let details = detailsFromMeta(meta, tags)
+    if (details === null) {
+      const modelId =
+        typeof meta?.tagger === 'string' && Object.hasOwn(WD14_MODELS, meta.tagger)
+          ? (meta.tagger as Wd14ModelId)
+          : DEFAULT_WD14_MODEL
+      details = detailsFromCsv(tags, loadCategoryMap(modelsDirOf(runner), modelId))
+    }
     return c.json({
       id,
       tags,
+      details,
       rating: typeof meta?.tagRating === 'string' ? meta.tagRating : null,
       tagger: typeof meta?.tagger === 'string' ? meta.tagger : null,
       edited: meta?.tagSource === 'manual',
@@ -281,9 +336,15 @@ export function mountTag(app: Hono, runner: Runner): void {
       throw new RunnerError(`image not found: ${id}`, 404)
     }
     const meta = readMeta(dir, id) ?? { id }
+    const modelId =
+      typeof meta.tagger === 'string' && Object.hasOwn(WD14_MODELS, meta.tagger)
+        ? (meta.tagger as Wd14ModelId)
+        : DEFAULT_WD14_MODEL
+    const categoryMap = loadCategoryMap(modelsDirOf(runner), modelId)
     writeMeta(dir, id, {
       ...meta,
       tags,
+      tagDetails: detailsFromCsv(tags, categoryMap),
       tagSource: 'manual',
       tagEditedAt: runner.now().toISOString(),
     })

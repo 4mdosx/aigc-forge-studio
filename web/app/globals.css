@@ -2274,6 +2274,57 @@ button.capture-tag-edit:hover:not(:disabled) {
   color: #0c5c49;
 }
 
+button.capture-tag-toggle {
+  padding: 0.1rem 0.35rem;
+  background: transparent;
+  color: #746c63;
+  border: 0;
+  font-size: 0.75rem;
+}
+
+button.capture-tag-toggle:hover:not(:disabled) {
+  background: transparent;
+  color: #0c5c49;
+}
+
+.capture-tag-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+}
+
+.capture-tag-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.capture-tag-group-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.74rem;
+  color: #746c63;
+}
+
+.capture-tag-group-count {
+  color: #a0988c;
+}
+
+.capture-tag-group-tier {
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  background: #e5f1eb;
+  color: #0c5c49;
+  font-size: 0.68rem;
+}
+
+.capture-tag-group-tier.drop {
+  background: #f0ede7;
+  color: #8a8177;
+}
+
 .capture-gallery-body.gallery-grouped {
   display: flex;
   flex-direction: column;

@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { parseTagsCsv, selectTags } from './wd14.ts'
+import { loadCategoryMap, parseTagsCsv, selectTags } from './wd14.ts'
 
 function entriesOf(rows: Array<[string, number]>): Array<{ name: string; category: number }> {
   return rows.map(([name, category]) => ({ name, category }))
@@ -43,6 +46,16 @@ test('selectTags filters by category thresholds and sorts by confidence', () => 
   // character: 0.95 入选，0.84 低于阈值淘汰
   assert.deepEqual(result.tags, ['character', 'general', 'long_hair', '1girl'])
   assert.equal(result.rating, 'rating_explicit')
+  // details 含 artist/copyright/rating 及低分 character，按分降序
+  assert.deepEqual(
+    result.details.map((item) => item.name),
+    [
+      'character', 'general', 'rating_explicit', 'another_char',
+      'copyright', 'artist', 'watermark', 'long_hair', '1girl', 'general',
+    ],
+  )
+  assert.equal(result.details.find((item) => item.name === 'artist')?.category, 1)
+  assert.equal(result.details.find((item) => item.name === 'rating_explicit')?.category, 9)
 })
 
 test('selectTags excludeTags matches case and underscores loosely', () => {
@@ -52,8 +65,29 @@ test('selectTags excludeTags matches case and underscores loosely', () => {
   })
   assert.deepEqual(result.tags, ['1girl'])
   assert.equal(result.rating, 'rating_explicit')
+  // exclude 的 general(cat0) 不进 details；rating 类(cat9) 都进 details（只是不进 caption）
+  assert.deepEqual(result.details.map((item) => item.name), [
+    '1girl', 'rating_explicit', 'general', 'watermark',
+  ])
 })
 
 test('selectTags throws when output size mismatches csv rows', () => {
   assert.throws(() => selectTags([0.1, 0.2], sampleEntries), /output size 2/)
+})
+
+test('loadCategoryMap reads csv without loading onnx, caches by dir', () => {
+  const root = mkdtempSync(join(tmpdir(), 'wd14-map-'))
+  const dir = join(root, 'wd14', 'wd-eva02-large-tagger-v3')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'selected_tags.csv'),
+    'tag_id,name,category,count\n0,1girl,0,100\n1,hatsune_miku,4,50\n2,solo,0,90\n',
+    'utf8',
+  )
+  const map = loadCategoryMap(root, 'wd-eva02-large-tagger-v3')
+  assert.equal(map.get('1girl'), 0)
+  assert.equal(map.get('hatsune_miku'), 4)
+  assert.equal(map.get('solo'), 0)
+  assert.equal(map.get('missing'), undefined)
+  assert.equal(loadCategoryMap(root, 'wd-eva02-large-tagger-v3'), map) // 同一引用=命中缓存
 })

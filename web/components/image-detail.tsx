@@ -17,6 +17,7 @@ import {
   type SlideKey,
 } from "@/components/image-assets";
 import { isStyleVector, StyleRadar } from "@/components/style-radar";
+import { type TagDetail, groupTags } from "@/components/tag-groups";
 import { api, fileHref } from "@/lib/api";
 import { ZoomImage } from "@/components/zoom-image";
 import { fail, messageOf, notify } from "@/lib/notify";
@@ -87,6 +88,8 @@ export function ImageDetail({
   const [nearestLoading, setNearestLoading] = useState(false);
   const [nearestError, setNearestError] = useState<string | null>(null);
   const [neighbors, setNeighbors] = useState<NearestImage[] | null>(null);
+  const [tagDetails, setTagDetails] = useState<TagDetail[]>([]);
+  const [tagsGrouped, setTagsGrouped] = useState(true);
   const [nearestCount, setNearestCount] = useState("10");
   const [nearestOrder, setNearestOrder] = useState<NearestOrder>("near");
   const nearestRequest = useRef(0);
@@ -107,7 +110,25 @@ export function ImageDetail({
     setEditing(null);
     setConfirmDelete(false);
     setSlide("image");
+    setTagDetails([]);
     if (!selectedId) setZoom(false);
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    let stop = false;
+    void api<{ details?: TagDetail[] }>(
+      `tag/item?id=${encodeURIComponent(selectedId)}`,
+    )
+      .then((body) => {
+        if (!stop) setTagDetails(Array.isArray(body.details) ? body.details : []);
+      })
+      .catch(() => {
+        if (!stop) setTagDetails([]);
+      });
+    return () => {
+      stop = true;
+    };
   }, [selectedId]);
 
   function beginEdit(field: EditField, value: string) {
@@ -381,6 +402,16 @@ export function ImageDetail({
     return () => window.removeEventListener("keydown", onKey);
   }, [hotkeys]);
 
+  // 分组以 DB tags（页面看到的真相源）为准，details 只提供 category；查不到归 general。
+  const tagGroups = useMemo(() => {
+    if (!selected || tagDetails.length === 0) return [];
+    const catByName = new Map(tagDetails.map((detail) => [detail.name, detail]));
+    const details = selected.tags.map(
+      (tag) => catByName.get(tag) ?? { name: tag, category: 0, score: 0 },
+    );
+    return groupTags(details);
+  }, [selected, tagDetails]);
+
   const browseIndex = selected ? galleryIds.indexOf(selected.id) : -1;
 
   function stepGallery(delta: number) {
@@ -620,6 +651,8 @@ export function ImageDetail({
                   <div className="capture-tag-picks">
                     {selected.tags.length === 0 ? (
                       <span className="muted">空</span>
+                    ) : tagGroups.length > 0 && tagsGrouped ? (
+                      <TagGroupList groups={tagGroups} onPickTag={onPickTag} />
                     ) : (
                       <div className="capture-filters" role="group" aria-label="图片标签">
                         {selected.tags.map((tag, index) => (
@@ -633,6 +666,16 @@ export function ImageDetail({
                         ))}
                       </div>
                     )}
+                    {tagGroups.length > 0 ? (
+                      <button
+                        type="button"
+                        className="capture-tag-toggle"
+                        onClick={() => setTagsGrouped((value) => !value)}
+                        title="切换分组/平铺显示"
+                      >
+                        {tagsGrouped ? "平铺" : "分组"}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="capture-tag-edit"
@@ -848,6 +891,43 @@ export function ImageDetail({
         </div>
       </Dialog>
     </section>
+  );
+}
+
+function TagGroupList({
+  groups,
+  onPickTag,
+}: {
+  groups: ReturnType<typeof groupTags>;
+  onPickTag: (tag: string) => void;
+}) {
+  return (
+    <div className="capture-tag-groups" role="group" aria-label="图片标签（分组）">
+      {groups.map((group) => (
+        <div className="capture-tag-group" key={group.key}>
+          <div className="capture-tag-group-head">
+            <span>{group.label}</span>
+            <span className="capture-tag-group-count">{group.tags.length}</span>
+            {group.tier ? (
+              <span className="capture-tag-group-tier">{group.tier} 保留</span>
+            ) : (
+              <span className="capture-tag-group-tier drop">各档剥除</span>
+            )}
+          </div>
+          <div className="capture-filters" role="group" aria-label={group.label}>
+            {group.tags.map((detail) => (
+              <button
+                key={detail.name}
+                type="button"
+                onClick={() => onPickTag(detail.name)}
+              >
+                {detail.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 
