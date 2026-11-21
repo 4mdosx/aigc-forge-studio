@@ -77,6 +77,16 @@ export class ComfyClient {
     this.deps = deps
   }
 
+  // 训练前腾显存：ComfyUI 的 dynamic VRAM 会把 checkpoints/controlnet 常驻在
+  // VRAM+RAM 里，与同卡的 trainer 抢资源时步速会掉到 1/6（实测 15s/it vs 2.3s/it）。
+  async freeMemory(): Promise<void> {
+    await this.request('/free', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ unload_models: true, free_memory: true }),
+    })
+  }
+
   async workflows(signal?: AbortSignal): Promise<string[]> {
     const res = await this.request(
       '/userdata',

@@ -110,17 +110,37 @@ function profileOf(
   return profile
 }
 
-// 稳定档 + 调用方覆盖 → trainer 请求体。
+// 稳定档 + 调用方覆盖 → trainer 请求体。建 job 前先让 ComfyUI 交还显存：
+// 同一块 3080 上 ComfyUI 常驻模型会把训练挤进共享内存（慢 6 倍）。
 async function postTrainJob(
   runner: Runner,
   body: Record<string, unknown>,
 ): Promise<Response> {
+  const freed = await freeComfyMemory(runner)
   const merged = { ...STABLE_PRESET, ...body }
-  return proxy(runner, '/train/jobs', {
+  const res = await proxy(runner, '/train/jobs', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(merged),
   })
+  const copy = new Response(res.body, {
+    status: res.status,
+    headers: new Headers(res.headers),
+  })
+  copy.headers.set('x-comfy-free', freed)
+  return copy
+}
+
+async function freeComfyMemory(runner: Runner): Promise<string> {
+  const client = runner.clients[0]
+  if (!client) return 'no-comfy'
+  try {
+    await client.freeMemory()
+    return 'freed'
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return `skip: ${message.slice(0, 120)}`
+  }
 }
 
 export function mountTrain(
@@ -298,6 +318,7 @@ export function mountTrain(
         steps,
         staging: stagingDir,
         params,
+        comfyFree: res.headers.get('x-comfy-free') ?? 'unknown',
       },
       201,
     )

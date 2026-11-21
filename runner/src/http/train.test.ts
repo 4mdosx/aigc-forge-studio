@@ -7,6 +7,7 @@ import { Hono } from 'hono'
 import { test } from 'node:test'
 
 import { openDatabase } from '../db.ts'
+import { ComfyClient } from '../comfy/client.ts'
 import { RunnerError } from '../errors.ts'
 import type { Runner } from '../task/queue.ts'
 import { parseProfiles } from '../train/fromDataset.ts'
@@ -34,6 +35,11 @@ stub.post('/upload', async (c) => {
   const entry = { path: c.req.query('path') ?? '', size: bytes.byteLength }
   uploads.push(entry)
   return c.json(entry)
+})
+let freeCalls = 0
+stub.post('/free', (c) => {
+  freeCalls += 1
+  return c.json({})
 })
 
 // 与 createApp 同款错误映射：RunnerError → status
@@ -201,8 +207,44 @@ test('GET/DELETE /train/jobs/:id proxy passthrough', async () => {
   })
 })
 
-test('GET /train/profiles exposes profile table and preset', async () => {
-  const app = appWithTrain(runnerWithTrainer('http://stub.invalid'), {
+test('POST /train/jobs frees ComfyUI VRAM before creating the job', async () => {
+  await withStubTrainer(async (base) => {
+    freeCalls = 0
+    const runner = {
+      ...runnerWithTrainer(base),
+      clients: [new ComfyClient(base)],
+    }
+    const app = appWithTrain(runner)
+    const res = await app.request('/train/jobs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'grp-c', datasetPath: 'grp-c/img' }),
+    })
+    assert.equal(res.status, 201)
+    assert.equal(freeCalls, 1)
+    assert.equal(res.headers.get('x-comfy-free'), 'freed')
+  })
+})
+
+test('POST /train/jobs still creates the job when ComfyUI is unreachable', async () => {
+  await withStubTrainer(async (base) => {
+    const runner = {
+      ...runnerWithTrainer(base),
+      // 关掉的端口：/free 必失败，但不能拦住建 job
+      clients: [new ComfyClient('http://127.0.0.1:1')],
+    }
+    const app = appWithTrain(runner)
+    const res = await app.request('/train/jobs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'grp-d', datasetPath: 'grp-d/img' }),
+    })
+    assert.equal(res.status, 201)
+    assert.match(res.headers.get('x-comfy-free') ?? '', /^skip: /)
+  })
+})
+
+test('GET /train/profiles exposes profile table and preset', async () => {  const app = appWithTrain(runnerWithTrainer('http://stub.invalid'), {
     profiles: PROFILES,
   })
   const res = await app.request('/train/profiles')
