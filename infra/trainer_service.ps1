@@ -165,10 +165,21 @@ function Test-OurTrainer {
     return ($cmd -and $cmd.ToLower().Contains($Entry.ToLower()))
 }
 
+function Assert-TrainerDeps {
+    # trainer 有自己的 package.json/node_modules，不走根目录依赖。
+    # 缺依赖时 node 只会吐 ERR_MODULE_NOT_FOUND 的栈，先在这里拦成一句人话。
+    $dep = Join-Path $TrainerDir "node_modules\@hono\node-server\package.json"
+    if (Test-Path -LiteralPath $dep) { return }
+    $pkg = Join-Path $TrainerDir "package.json"
+    if (-not (Test-Path -LiteralPath $pkg)) { throw "trainer package.json not found: $pkg (git pull first?)" }
+    throw "trainer 依赖未安装（缺 $dep）。先装依赖再启动：cd $TrainerDir  然后  npm install"
+}
+
 function Invoke-Start {
     if (-not (Test-Path -LiteralPath $Entry)) {
         throw "trainer entry not found: $Entry (git pull first?)"
     }
+    Assert-TrainerDeps
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
     $listeners = @(Get-ListeningProcessIds -Port $Port)
@@ -205,8 +216,12 @@ function Invoke-Start {
     $deadline = (Get-Date).AddSeconds(30)
     while ((Get-Date) -lt $deadline) {
         if ($proc.HasExited) {
+            # ExitCode 在 Start-Process 返回的对象上常常读不到（要 Refresh 才回填），
+            # 否则会打印成「exited with code .」这种没头没尾的东西。
+            $proc.Refresh()
+            $code = if ($null -ne $proc.ExitCode) { $proc.ExitCode } else { "unknown" }
             $errTail = if (Test-Path $ErrLog) { (Get-Content $ErrLog -Tail 20) -join "`n" } else { "" }
-            throw "trainer exited with code $($proc.ExitCode).`n$errTail"
+            throw "trainer exited with code $code.`n$errTail"
         }
         if (@(Get-ListeningProcessIds -Port $Port).Count -gt 0) {
             Write-Host "Trainer started." -ForegroundColor Green
