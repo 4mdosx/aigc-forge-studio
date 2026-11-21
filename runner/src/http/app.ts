@@ -13,6 +13,7 @@ import { mountDatasets } from './datasets.ts'
 import { mountFiles } from './files.ts'
 import { mountGenerate } from './generate.ts'
 import { mountJobs } from './jobs.ts'
+import { mountOutputGallery } from './output-gallery.ts'
 import { mountPoses } from './poses.ts'
 import { mountPosePending } from './pose-pending.ts'
 import { mountRecommend } from './recommend.ts'
@@ -37,6 +38,7 @@ export function createApp(
   mountWorkflows(app, runner)
   mountTasks(app, runner)
   mountJobs(app, runner)
+  mountOutputGallery(app, runner)
   mountChats(app, runner)
   mountFiles(app, runner)
   mountData(app, runner)

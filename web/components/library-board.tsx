@@ -9,6 +9,7 @@ import { Dialog } from '@/components/dialog'
 import { ImageDetail } from '@/components/image-detail'
 import { ImageGallery } from '@/components/image-gallery'
 import { useImageAssets } from '@/components/image-assets'
+import { OutputGallery } from '@/components/output-gallery'
 import { RollsPanel } from '@/components/rolls-panel'
 import { WorkBoard } from '@/components/work-board'
 import { api } from '@/lib/api'
@@ -33,7 +34,6 @@ export function LibraryBoard({ initialWork = null }: { initialWork?: string | nu
   const [picked, setPicked] = useState('')
   const [open, setOpen] = useState(false)
   const [inputs, setInputs] = useState<LibraryFile[]>([])
-  const [outputs, setOutputs] = useState<LibraryFile[]>([])
   const [filePath, setFilePath] = useState('')
   const [busy, setBusy] = useState(false)
   const [view, setView] = useState<'list' | 'grid'>('list')
@@ -42,14 +42,12 @@ export function LibraryBoard({ initialWork = null }: { initialWork?: string | nu
   )
 
   async function load() {
-    const [library, inputFiles, outputFiles] = await Promise.all([
+    const [library, inputFiles] = await Promise.all([
       api<{ workflows: Workflow[] }>('workflows'),
       api<{ files: LibraryFile[] }>('files?type=input'),
-      api<{ files: LibraryFile[] }>('files?type=output'),
     ])
     setWorkflows(library.workflows)
     setInputs(inputFiles.files)
-    setOutputs(outputFiles.files)
   }
 
   useEffect(() => {
@@ -139,10 +137,10 @@ export function LibraryBoard({ initialWork = null }: { initialWork?: string | nu
         <div className="tabs" role="tablist">
           {(
             [
-              ['gallery', '图库'],
+              ['gallery', '采集图库'],
               ['inspiration', '灵感'],
               ['input', 'Input'],
-              ['output', 'Output'],
+              ['output', '产出图库'],
               ['workflow', 'Workflow'],
               ['work', 'Work'],
             ] as const
@@ -159,7 +157,7 @@ export function LibraryBoard({ initialWork = null }: { initialWork?: string | nu
             </button>
           ))}
         </div>
-        {tab === 'workflow' || tab === 'inspiration' || tab === 'gallery' || tab === 'work' ? null : (
+        {tab === 'workflow' || tab === 'inspiration' || tab === 'gallery' || tab === 'work' || tab === 'output' ? null : (
           <button
             type="button"
             className="quiet"
@@ -199,11 +197,7 @@ export function LibraryBoard({ initialWork = null }: { initialWork?: string | nu
         <FileGrid view={view} files={inputs} empty="input 里还没有文件。" />
       </section>
       ) : null}
-      {tab === 'output' ? (
-      <section className="panel">
-        <FileGrid view={view} files={outputs} empty="output 里还没有文件。" />
-      </section>
-      ) : null}
+      {tab === 'output' ? <OutputGallery /> : null}
       {tab === 'workflow' ? (
       <section className="panel">
         <div className="column-head">

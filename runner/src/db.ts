@@ -308,6 +308,21 @@ CREATE TABLE IF NOT EXISTS recipes (
   FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS recipes_by_kind ON recipes (kind, created_at);
+
+-- 产出图库：项目生成图的审核状态。条目从 jobs 的生成输出惰性同步（幂等 INSERT OR IGNORE），
+-- 通过时把 ComfyUI 上的图复制到本地 data/output/<原相对路径>，原件保留不动。
+CREATE TABLE IF NOT EXISTS output_assets (
+  id TEXT PRIMARY KEY,
+  path TEXT NOT NULL UNIQUE,
+  job_id TEXT,
+  workflow_name TEXT NOT NULL DEFAULT '',
+  task TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  local_path TEXT,
+  created_at INTEGER NOT NULL,
+  reviewed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS output_assets_by_status ON output_assets (status, created_at);
 `
 
 export interface WorkRow {
