@@ -58,15 +58,20 @@ function poseGroup(pose: PoseEntry): string {
   return value?.trim() || '未分组'
 }
 
-// 取一个可用变体做缩略图；优先竖版（肖像生图更常见），否则取第一个带 bone 的。
-function poseThumb(pose: PoseEntry): { bone: string; gen: number[]; aspect: string } | null {
-  const variants = Object.values(pose.variants ?? {}).filter((v) => v?.bone)
+type ThumbMode = 'depth' | 'bone'
+
+// 取一个可用变体做缩略图；优先竖版（肖像生图更常见），否则取第一个。
+// mode 决定缩略图用深度图还是骨架图；某个 pose 缺该图时 fallback 到另一张。
+function poseThumb(pose: PoseEntry, mode: ThumbMode): { src: string; gen: number[] } | null {
+  const variants = Object.values(pose.variants ?? {}).filter((v) => v?.bone || v?.depth)
   if (variants.length === 0) return null
   const pick =
     variants.find((v) => v.gen && v.gen[1] > v.gen[0]) ??
     variants.find((v) => v.gen) ??
     variants[0]
-  return { bone: pick.bone!, gen: pick.gen ?? [], aspect: pick.aspect ?? '' }
+  const src = mode === 'depth' ? (pick.depth ?? pick.bone) : (pick.bone ?? pick.depth)
+  if (!src) return null
+  return { src, gen: pick.gen ?? [] }
 }
 
 function outputPaths(value: string | null | undefined): string[] {
@@ -88,6 +93,7 @@ export function QuickGenerate() {
   const [poseId, setPoseId] = useState('')
   const [group, setGroup] = useState('')
   const [query, setQuery] = useState('')
+  const [thumbMode, setThumbMode] = useState<ThumbMode>('depth')
   const [loraName, setLoraName] = useState('')
   const [loras, setLoras] = useState<string[]>([])
   const [poses, setPoses] = useState<PoseEntry[]>([])
@@ -269,7 +275,27 @@ export function QuickGenerate() {
       <div className="column quick-gen-poses">
         <div className="column-head">
           <h2>Pose</h2>
-          <span className="muted">{group ? `${visiblePoses.length} / ${poses.length}` : `${poses.length} 个`}</span>
+          <div className="pose-head-right">
+            <span className="muted">{group ? `${visiblePoses.length} / ${poses.length}` : `${poses.length} 个`}</span>
+            <div className="pose-thumb-switch" role="group" aria-label="缩略图类型">
+              <button
+                type="button"
+                className={thumbMode === 'depth' ? 'on' : ''}
+                aria-pressed={thumbMode === 'depth'}
+                onClick={() => setThumbMode('depth')}
+              >
+                深度
+              </button>
+              <button
+                type="button"
+                className={thumbMode === 'bone' ? 'on' : ''}
+                aria-pressed={thumbMode === 'bone'}
+                onClick={() => setThumbMode('bone')}
+              >
+                骨架
+              </button>
+            </div>
+          </div>
         </div>
         <div className="pose-groups" role="tablist" aria-label="pose 分组">
           {groups.map(([name, count]) => (
@@ -307,7 +333,7 @@ export function QuickGenerate() {
             ) : (
               <ul className="pose-grid">
                 {visiblePoses.map((pose) => {
-                  const thumb = poseThumb(pose)
+                  const thumb = poseThumb(pose, thumbMode)
                   return (
                     <li key={pose.id}>
                       <button
@@ -319,7 +345,7 @@ export function QuickGenerate() {
                         <span className="pose-card-thumb">
                           {thumb ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={fileHref(thumb.bone)} alt="" loading="lazy" />
+                            <img src={fileHref(thumb.src)} alt="" loading="lazy" />
                           ) : (
                             <span className="pose-card-noimg">无图</span>
                           )}
