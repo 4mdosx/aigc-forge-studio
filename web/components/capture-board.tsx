@@ -13,6 +13,7 @@ import {
 } from "@/components/image-assets";
 import { NobgEraser } from "@/components/nobg-eraser";
 import { api, fileHref } from "@/lib/api";
+import { ZoomImage } from "@/components/zoom-image";
 import { connectCaptureLive } from "@/lib/capture-live";
 import { fail, messageOf, notify } from "@/lib/notify";
 import { isSafetyHiddenRating, useSafetyMode } from "@/lib/safety-mode";
@@ -400,7 +401,11 @@ export function CaptureBoard() {
                       }}
                     />
                   ) : currentSlide ? (
-                    <img src={fileHref(currentSlide.href)} alt={selected.id} />
+                    <ZoomImage
+                      src={fileHref(currentSlide.href)}
+                      alt={selected.id}
+                      caption={selected.id}
+                    />
                   ) : (
                     <span className="capture-missing">
                       {selected.status === "collected" ? "处理中…" : "无图"}

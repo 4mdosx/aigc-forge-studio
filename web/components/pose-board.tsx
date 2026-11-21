@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 
 import { api } from '@/lib/api'
+import { ZoomImage } from './zoom-image'
 import { fail, messageOf, notify } from '@/lib/notify'
 
 interface PoseGuide {
@@ -478,13 +479,17 @@ function PendingCard({
               target="_blank"
               rel="noreferrer"
             >
-              <img src={runnerHref(entry.fileUrls[name])} alt={`${name}`} loading="lazy" />
+              <ZoomImage
+                src={runnerHref(entry.fileUrls[name])}
+                alt={`${name}`}
+                caption={`${entry.id ?? ''} ${name}`.trim()}
+              />
               <span>{name}</span>
             </a>
           ))}
         {dual?.image && dualDone && dual.status === 'completed' ? (
           <a href={fileView(dual.taskId, dual.image)} target="_blank" rel="noreferrer">
-            <img src={fileView(dual.taskId, dual.image)} alt="dual test" loading="lazy" />
+            <ZoomImage src={fileView(dual.taskId, dual.image)} alt="dual test" caption="dual 测试图" />
             <span>dual 测试图</span>
           </a>
         ) : null}

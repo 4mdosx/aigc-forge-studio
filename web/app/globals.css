@@ -4671,3 +4671,134 @@ table.vram-procs td {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ---------- 图片放大（全站统一） ---------- */
+
+img.zoomable {
+  cursor: zoom-in;
+}
+
+img.zoomable:focus-visible {
+  outline: 2px solid #0c5c49;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.zoom-broken {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 2px;
+  border: 1px dashed #d8cec0;
+  border-radius: 6px;
+  background: #efe8dc;
+  color: #8a8076;
+  font-size: 0.62rem;
+  line-height: 1.2;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+dialog.lightbox {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  max-width: none;
+  max-height: none;
+  color: inherit;
+}
+
+dialog.lightbox[open] {
+  inset: 0;
+  top: 0;
+  left: 0;
+  transform: none;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+dialog.lightbox::backdrop {
+  background: rgba(24, 20, 16, 0.82);
+}
+
+.lightbox-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem 1.5rem 0.5rem;
+  cursor: zoom-out;
+}
+
+.lightbox-stage img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #fffdf8;
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.5);
+  cursor: zoom-out;
+}
+
+.lightbox-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 auto 1rem;
+  padding: 0.35rem 0.5rem 0.35rem 0.85rem;
+  border-radius: 999px;
+  background: rgba(36, 31, 26, 0.72);
+  color: #f7f3ea;
+  font-size: 0.78rem;
+  max-width: min(760px, calc(100vw - 2rem));
+}
+
+.lightbox-caption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lightbox-link {
+  color: #f7f3ea;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
+.lightbox-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(247, 243, 234, 0.16);
+  color: #f7f3ea;
+  cursor: pointer;
+}
+
+.lightbox-close:hover {
+  background: rgba(247, 243, 234, 0.3);
+}
+
+@media (max-width: 640px) {
+  .lightbox-stage {
+    padding: 0.75rem 0.75rem 0.35rem;
+  }
+
+  .lightbox-bar {
+    font-size: 0.72rem;
+    gap: 0.5rem;
+  }
+}

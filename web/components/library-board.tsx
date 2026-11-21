@@ -13,6 +13,7 @@ import { OutputGallery } from '@/components/output-gallery'
 import { RollsPanel } from '@/components/rolls-panel'
 import { WorkBoard } from '@/components/work-board'
 import { api } from '@/lib/api'
+import { ZoomImage } from './zoom-image'
 import { fail, messageOf, notify } from '@/lib/notify'
 import { isSafetyHiddenRating, useSafetyMode } from '@/lib/safety-mode'
 import type { Workflow } from '@/lib/types'
@@ -497,7 +498,7 @@ function FileGrid({
       {files.map((file) => (
         <a key={file.path} href={mediaHref(file.path)} target="_blank" rel="noreferrer">
           {isImage(file.name) ? (
-            <img src={mediaHref(file.path)} alt={file.name} loading="lazy" />
+            <ZoomImage src={mediaHref(file.path)} alt={file.name} caption={file.name} />
           ) : (
             <span className="file-fallback">文件</span>
           )}

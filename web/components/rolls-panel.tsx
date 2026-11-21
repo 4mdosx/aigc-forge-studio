@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { api, fileHref } from '@/lib/api'
+import { ZoomImage } from './zoom-image'
 import { fail, messageOf } from '@/lib/notify'
 
 const ROLLS_PAGE_SIZE = 20
@@ -126,7 +127,7 @@ export function RollsPanel() {
                 >
                   {url ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img className="dice-roll-thumb" src={url} alt="" loading="lazy" />
+                    <ZoomImage className="dice-roll-thumb" src={url} alt="" zoomOn="double" />
                   ) : (
                     <span className="dice-roll-thumb dice-roll-thumb-empty" />
                   )}
@@ -289,11 +290,10 @@ function RollDetail({
                     <span className="dice-gen-thumbs">
                       {item.outputs.map((path) => (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img
+                        <ZoomImage
                           key={path}
                           src={fileHref(`tasks/${item.taskId}/files/${path}`)}
                           alt="生成结果"
-                          loading="lazy"
                         />
                       ))}
                     </span>
@@ -309,7 +309,11 @@ function RollDetail({
         </div>
         {thumb ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img className="dice-pose-result-img" src={thumb} alt={`pose ${record.poseName ?? ''}`} />
+          <ZoomImage
+            className="dice-pose-result-img"
+            src={thumb}
+            alt={`pose ${record.poseName ?? ''}`}
+          />
         ) : null}
         <div className="dice-roll-detail-block">
           <div className="dice-roll-detail-label">

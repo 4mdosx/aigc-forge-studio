@@ -4,6 +4,7 @@ import { ImagePlus, Paperclip, Send } from 'lucide-react'
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
 
 import { api } from '@/lib/api'
+import { ZoomImage } from './zoom-image'
 import { applyPatch, modelSystem, parseReply, type CreativeIntent } from '@/lib/intent'
 import { fail, messageOf, tell } from '@/lib/notify'
 import { readPromptTemplates } from '@/lib/prompt-templates'
@@ -331,7 +332,7 @@ export function PromptChat({ onUsePrompt }: { onUsePrompt: (text: string) => voi
           <div className="chat-image-row">
             {images.map((url, index) => (
               <div className="chat-image-thumb" key={`${index}-${url.slice(-12)}`}>
-                <img src={url} alt={`附件 ${index + 1}`} />
+                <ZoomImage src={url} alt={`附件 ${index + 1}`} />
                 <button
                   type="button"
                   aria-label="移除图片"

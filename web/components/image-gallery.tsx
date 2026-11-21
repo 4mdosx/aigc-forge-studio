@@ -16,6 +16,7 @@ import {
 } from "@/components/image-assets";
 import { SafetySwitch } from "@/components/safety-switch";
 import { api, fileHref } from "@/lib/api";
+import { ZoomImage } from "@/components/zoom-image";
 import { fail, messageOf, notify } from "@/lib/notify";
 import { isSafetyHiddenRating } from "@/lib/safety-mode";
 
@@ -1384,7 +1385,7 @@ function GalleryTile({
         </span>
       ) : null}
       {src && near ? (
-        <img src={src} alt="" decoding="async" draggable={false} />
+        <ZoomImage src={src} alt={label} zoomOn="double" draggable={false} />
       ) : src ? (
         <span className="capture-tile-pending" />
       ) : (

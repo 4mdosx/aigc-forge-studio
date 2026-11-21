@@ -18,6 +18,7 @@ import {
 } from "@/components/image-assets";
 import { isStyleVector, StyleRadar } from "@/components/style-radar";
 import { api, fileHref } from "@/lib/api";
+import { ZoomImage } from "@/components/zoom-image";
 import { fail, messageOf, notify } from "@/lib/notify";
 
 type NearestOrder = "near" | "far";
@@ -500,7 +501,8 @@ export function ImageDetail({
               <img src={fileHref(currentSlide.href)} alt={selected.id} />
             </button>
           ) : currentSlide ? (
-            <img src={fileHref(currentSlide.href)} alt={selected.id} />
+            // 非浏览态没有大图翻页，直接用统一放大组件
+            <ZoomImage src={fileHref(currentSlide.href)} alt={selected.id} eager />
           ) : (
             <span className="capture-missing">
               {selected.status === "collected" ? "处理中…" : "无图"}
@@ -806,7 +808,7 @@ export function ImageDetail({
                   onClick={() => chooseNeighbor(item.id)}
                 >
                   {thumb ? (
-                    <img src={fileHref(thumb)} alt="" />
+                    <ZoomImage src={fileHref(thumb)} alt={item.id} zoomOn="double" />
                   ) : (
                     <span className="nearest-missing">无图</span>
                   )}

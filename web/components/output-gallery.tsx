@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { api, fileHref } from '@/lib/api'
+import { ZoomImage } from './zoom-image'
 import { fail, messageOf, notify } from '@/lib/notify'
 
 type Status = 'pending' | 'approved' | 'rejected'
@@ -189,7 +190,12 @@ export function OutputGallery() {
                 onClick={() => setSelectedId(item.id)}
                 title={`${item.path}\n${STATUS_LABEL[item.status]}`}
               >
-                <img src={fileHref(`output/image/${encodeURIComponent(item.id)}`)} alt="" loading="lazy" />
+                <ZoomImage
+                  src={fileHref(`output/image/${encodeURIComponent(item.id)}`)}
+                  alt={item.fileName}
+                  caption={item.fileName}
+                  zoomOn="double"
+                />
                 <span className="output-thumb-bar">
                   <span className={`output-badge ${item.status}`}>{STATUS_LABEL[item.status]}</span>
                   <span className="output-thumb-name">{item.fileName}</span>
@@ -211,10 +217,12 @@ export function OutputGallery() {
                 {STATUS_LABEL[detail.item.status]}
               </span>
             </div>
-            <img
+            <ZoomImage
               className="output-preview"
               src={fileHref(`output/image/${encodeURIComponent(detail.item.id)}`)}
               alt={detail.item.fileName}
+              caption={detail.item.fileName}
+              eager
             />
             <div className="row output-actions">
               <button

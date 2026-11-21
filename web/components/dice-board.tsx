@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Dialog } from '@/components/dialog'
 import { TaskDetail } from '@/components/task-detail'
 import { api } from '@/lib/api'
+import { ZoomImage } from './zoom-image'
 import { initialIntent, type CreativeIntent } from '@/lib/intent'
 import { fail, messageOf, notify } from '@/lib/notify'
 
@@ -1052,7 +1053,7 @@ export function DiceBoard({ role }: { role: unknown }) {
               >
                 {url ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={url} alt={name} />
+                  <ZoomImage src={url} alt={name} zoomOn="double" />
                 ) : (
                   <span className="muted">无图</span>
                 )}
@@ -1369,7 +1370,7 @@ function PoseGroup({
             >
               {url ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={url} alt={`${pose.poseName} ${pose.id}`} loading="lazy" />
+                <ZoomImage src={url} alt={`${pose.poseName} ${pose.id}`} zoomOn="double" />
               ) : (
                 <span className="muted">无图</span>
               )}

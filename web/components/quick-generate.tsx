@@ -4,6 +4,7 @@ import { Search, Sparkles, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { api, fileHref } from '@/lib/api'
+import { ZoomImage } from './zoom-image'
 import { fail, messageOf, notify } from '@/lib/notify'
 import { terminal, type Task } from '@/lib/types'
 
@@ -395,7 +396,12 @@ export function QuickGenerate() {
                         <span className="pose-card-thumb">
                           {thumb ? (
                             // eslint-disable-next-line @next/next/no-img-element
-                            <img src={fileHref(`data/pose-file/${thumb.src}`)} alt="" loading="lazy" />
+                            <ZoomImage
+                              src={fileHref(`data/pose-file/${thumb.src}`)}
+                              alt={pose.name ?? pose.id}
+                              caption={pose.name ?? pose.id}
+                              zoomOn="double"
+                            />
                           ) : (
                             <span className="pose-card-noimg">无图</span>
                           )}
@@ -436,11 +442,10 @@ export function QuickGenerate() {
                   <span className="dice-gen-thumbs">
                     {outputPaths(task.outputPath).map((path) => (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img
+                      <ZoomImage
                         key={path}
                         src={fileHref(`tasks/${task.id}/files/${path}`)}
                         alt="生成结果"
-                        loading="lazy"
                       />
                     ))}
                   </span>

@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { api, fileHref } from '@/lib/api'
+import { api, fileHref, storedFileHref } from '@/lib/api'
+import { ZoomImage } from './zoom-image'
 import { fail, messageOf, notify } from '@/lib/notify'
 
 type JobKind = 'generate' | 'capture.process' | 'download' | 'nobg'
@@ -204,9 +205,12 @@ export function JobsBoard() {
                   <td>
                     <span className="job-asset">
                       <span className="job-thumb-slot">
-                        {thumbHref(job) ? (
-                          <img className="job-thumb" src={thumbHref(job)!} alt="" />
-                        ) : null}
+                        <ZoomImage
+                          className="job-thumb"
+                          src={thumbHref(job)}
+                          alt={job.label}
+                          caption={job.label}
+                        />
                       </span>
                       <span className="job-asset-text">
                         <span className="mono">{job.label}</span>
@@ -291,8 +295,24 @@ function statusText(status: string): string {
 }
 
 function thumbHref(job: UnifiedJob): string | null {
-  if (job.originalUrl) return fileHref(job.originalUrl.replace(/^\//, ''))
-  if (job.outputPath?.startsWith('output/')) return fileHref(job.outputPath)
+  // 采集类有 /capture/file/… 路由；生成/去背产物是磁盘相对路径，必须走 /files/*
+  if (job.originalUrl) return fileHref(job.originalUrl)
+  const path = firstOutputPath(job.outputPath)
+  return path ? storedFileHref(path) : null
+}
+
+// 批量出图的 outputPath 是 JSON 数组字符串（["output/…png","…"]），单图才是裸路径
+function firstOutputPath(raw: string | null): string | null {
+  if (!raw) return null
+  if (!raw.startsWith('[')) return raw
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      return parsed.find((item): item is string => typeof item === 'string' && item !== '') ?? null
+    }
+  } catch {
+    return null
+  }
   return null
 }
 

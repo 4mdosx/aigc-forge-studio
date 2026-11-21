@@ -27,6 +27,15 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
+/** runner 路由路径（output/image/<id>、tasks/<id>/files/…、capture/file/…） */
 export function fileHref(path: string): string {
-  return `/api/runner/${path}`
+  return `/api/runner/${path.replace(/^\/+/, '')}`
+}
+
+/**
+ * 磁盘相对路径（output/… 、input/…）走 /files/* 静态端点。
+ * 生成产物只存在于 outputPath 字段里，直接拼 /api/runner/output/… 会 404。
+ */
+export function storedFileHref(path: string): string {
+  return fileHref(`files/${path.replace(/^\/+/, '')}`)
 }

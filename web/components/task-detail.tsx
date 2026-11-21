@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 
 import { api, fileHref } from '@/lib/api'
+import { ZoomImage } from './zoom-image'
 import { fail, messageOf } from '@/lib/notify'
 import { terminal, type Task } from '@/lib/types'
 
@@ -110,7 +111,9 @@ export function TaskDetail({ id, embedded = false }: { id: string; embedded?: bo
                   return (
                     <li key={path}>
                       <a href={href}>{path}</a>
-                      {imageFile(path) ? <img className="task-shot" src={href} alt="" /> : null}
+                      {imageFile(path) ? (
+                        <ZoomImage className="task-shot" src={href} alt={path} caption={path} />
+                      ) : null}
                     </li>
                   )
                 })}
