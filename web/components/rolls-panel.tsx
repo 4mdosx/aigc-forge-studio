@@ -213,7 +213,6 @@ function RollDetail({
   onClose: () => void
 }) {
   const [gens, setGens] = useState<GenerationRecord[] | null>(null)
-  const [busy, setBusy] = useState(false)
   const activeRef = useRef(false)
 
   useEffect(() => {
@@ -246,17 +245,6 @@ function RollDetail({
     return () => clearInterval(timer)
   }, [refreshGens])
 
-  const generate = useCallback(async () => {
-    setBusy(true)
-    try {
-      await api(`dice/rolls/${record.id}/generate`, { method: 'POST' })
-      activeRef.current = true
-      await refreshGens()
-    } catch (err) {
-      fail(messageOf(err))
-    }
-    setBusy(false)
-  }, [record.id, refreshGens])
 
   const router = useRouter()
   const copy = (text: string) => {
@@ -285,17 +273,8 @@ function RollDetail({
       <div className="dice-roll-detail-body">
         <div className="dice-roll-detail-block">
           <div className="dice-roll-detail-label">
-            <span className="muted">生成 · 按设置里的工作流 · 每次随机 seed</span>
-            <button
-              type="button"
-              className="dice-hero-roll"
-              onClick={() => void generate()}
-              disabled={busy || !record.poseId}
-            >
-              {busy ? '提交中…' : '🎲 生成图片'}
-            </button>
+            <span className="muted">生成历史 · 出图请走新的生成入口</span>
           </div>
-          {!record.poseId ? <p className="muted">这条记录没有 pose，不能出图。</p> : null}
           {gens === null ? null : gens.length === 0 ? (
             <p className="muted">还没生成过。</p>
           ) : (

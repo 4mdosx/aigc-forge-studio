@@ -7,11 +7,12 @@ import { join } from 'node:path'
 import type { ComfyClient, HistoryEntry } from '../comfy/client.ts'
 import { openDatabase } from '../db.ts'
 import type { Runner } from '../task/queue.ts'
+import { createTask } from '../task/records.ts'
 import type { Prompt } from '../workflow/graph.ts'
 import { createApp } from '../http/app.ts'
 
 // compose 三段模型集成测试：work + adapter(prompt 块) + checkpoint 元数据 fixture，
-// 走 POST /tasks 全链路验证 payload 组装，再验证 /trace 溯源。
+// 直接调 createTask 验证 payload 组装（POST /tasks 入口已移除），再验证 /trace 溯源。
 
 const graph = {
   nodes: [
@@ -172,28 +173,28 @@ test('POST /tasks 组装 rawPositive 并经 /trace 溯源', async () => {
   )
   assert.ok(!('error' in saved), `adapter save failed: ${JSON.stringify(saved)}`)
 
-  const created = await json(
-    await app.request('/tasks', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        task: 'compose-it',
-        workName: 'refine-c',
-        workflowName: 'refine-c',
-        version,
-        payload: {
-          rawPositive: 'takao, high score, lying down',
-          rawNegative: 'blurry',
-          seed: 42,
-        },
-      }),
-    }),
-  ) as { id?: string; error?: string }
-  assert.ok(created.id, `task create failed: ${JSON.stringify(created)}`)
+  const created = createTask(
+    runner.db,
+    {
+      task: 'compose-it',
+      workName: 'refine-c',
+      workflowName: 'refine-c',
+      version,
+      payload: {
+        rawPositive: 'takao, high score, lying down',
+        rawNegative: 'blurry',
+        seed: 42,
+      },
+    },
+    runner.now(),
+    runner.randomSeed,
+    runner.dataDir,
+  )
+  const createdId = created.id
 
   const task = runner.db
     .prepare(`SELECT input_json FROM jobs WHERE kind = 'generate' AND id = ?`)
-    .get(created.id) as { input_json: string }
+    .get(createdId) as { input_json: string }
   const input = JSON.parse(task.input_json) as Record<string, unknown>
   // 方言段(前置质量词) + 素材段(剥 high score) + 目的锚
   assert.equal(
@@ -207,7 +208,7 @@ test('POST /tasks 组装 rawPositive 并经 /trace 溯源', async () => {
   // /trace：给任务写个 output_path 再反查
   runner.db
     .prepare(`UPDATE jobs SET output_path = ? WHERE kind = 'generate' AND id = ?`)
-    .run('output/2026-01-01/compose-it/out_00001_.png', created.id)
+    .run('output/2026-01-01/compose-it/out_00001_.png', createdId)
   const traced = await json(
     await app.request('/trace?path=output/2026-01-01/compose-it/out_00001_.png'),
   ) as {
@@ -216,7 +217,7 @@ test('POST /tasks 组装 rawPositive 并经 /trace 溯源', async () => {
     payload?: Record<string, unknown>
     error?: string
   }
-  assert.equal(traced.taskId, created.id)
+  assert.equal(traced.taskId, createdId)
   assert.equal(traced.workName, 'refine-c')
   // 溯源返回的是产图时的最终 positive（即组装值，可作下一跳素材段）
   assert.match((traced.payload?.positive as string) ?? '', /^masterpiece, best quality/)

@@ -1,6 +1,6 @@
 'use client'
 
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Dialog } from '@/components/dialog'
@@ -527,7 +527,6 @@ function writeSlot(
 }
 
 export function DiceBoard({ role }: { role: unknown }) {
-  const router = useRouter()
   const searchParams = useSearchParams()
   const taskId = searchParams.get('tid') ?? ''
   const rollId = searchParams.get('rid') ?? ''
@@ -732,42 +731,6 @@ export function DiceBoard({ role }: { role: unknown }) {
     })()
   }, [sections, forms, selectedPose])
 
-  const submitGenerate = useCallback(() => {
-    if (!selectedPose) {
-      fail('先选一个 pose，才能出图')
-      return
-    }
-    const intent = composeIntent(sections, forms)
-    const text = promptOf(intent)
-    setPreviewOpen(true)
-    setSaving(true)
-    void (async () => {
-      try {
-        const saved = await api<{ id: string }>('dice/rolls', {
-          method: 'POST',
-          body: JSON.stringify({
-            fields: intent,
-            forms,
-            prompt: text.positive,
-            negative: text.negative,
-            poseName: selectedPose.poseName,
-            poseId: selectedPose.id,
-          }),
-        })
-        const created = await api<{ taskId: string }>(`dice/rolls/${saved.id}/generate`, {
-          method: 'POST',
-        })
-        const next = new URLSearchParams(searchParams.toString())
-        next.set('tid', created.taskId)
-        router.replace(`/dice?${next.toString()}`, { scroll: false })
-        notify(`已提交生成 ${created.taskId}`)
-      } catch (err) {
-        fail(messageOf(err))
-      } finally {
-        setSaving(false)
-      }
-    })()
-  }, [sections, forms, selectedPose, router, searchParams])
 
   const applyTemplate = useCallback(
     (template: DiceTemplate) => {
@@ -1280,9 +1243,6 @@ export function DiceBoard({ role }: { role: unknown }) {
           </button>
           <button type="button" className="quiet" disabled={saving} onClick={submitRoll}>
             {saving ? '提交中…' : '提交'}
-          </button>
-          <button type="button" disabled={saving || selectedPose === null} onClick={submitGenerate}>
-            {saving ? '提交中…' : '提交生成'}
           </button>
           <button type="button" className="quiet" onClick={openTemplateDialog}>
             保存到模版

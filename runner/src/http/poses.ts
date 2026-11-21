@@ -9,11 +9,48 @@ import type { Hono } from 'hono'
 import { gatewayHint } from '../chat/client.ts'
 import { taskById, type TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
+import { getHeadWorkflow } from '../generate.ts'
+import { createJobRaw } from '../jobFactory.ts'
 import { relativePath, viewTarget } from '../path.ts'
 import { parseCanvasKey, resolveNearestBucket } from '../workflow/buckets.ts'
-import { createTask, storedPaths } from '../task/records.ts'
+import { storedPaths } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
+import type { AdapterMap } from '../workflow/binding.ts'
 import { bytesOf, jsonObject, stringField } from './request.ts'
+
+// pose 工具链的代码内 adapter（不依赖 work/work_workflows，功能保留但接口化）。
+const bind = (type: string, name: string, input: string) => ({
+  class_type: type,
+  name,
+  input,
+})
+
+const IMG2POSE_ADAPTER: AdapterMap = {
+  inputs: {
+    source_image: bind('LoadImage', 'Pose Source Image', 'image'),
+    width: bind('ImageScale', 'Scale to Canvas', 'width'),
+    height: bind('ImageScale', 'Scale to Canvas', 'height'),
+    canvas_width: bind('EmptyImage', 'Dark Flat BG', 'width'),
+    canvas_height: bind('EmptyImage', 'Dark Flat BG', 'height'),
+    render_width: bind('SAM3DBody_Render', 'Skeleton 2D', 'width'),
+    render_height: bind('SAM3DBody_Render', 'Skeleton 2D', 'height'),
+  },
+  outputs: { image: { class_type: 'SaveImage', name: 'Save Skeleton' } },
+}
+
+const DUAL_ADAPTER: AdapterMap = {
+  inputs: {
+    positive: bind('CLIPTextEncode', 'Positive', 'text'),
+    negative: bind('CLIPTextEncode', 'Negative', 'text'),
+    pose_image: bind('LoadImage', 'Skeleton Image', 'image'),
+    depth_image: bind('LoadImage', 'Depth Image', 'image'),
+    width: bind('EmptyLatentImage', 'Empty Latent 832x1216', 'width'),
+    height: bind('EmptyLatentImage', 'Empty Latent 832x1216', 'height'),
+    batch: bind('EmptyLatentImage', 'Empty Latent 832x1216', 'batch_size'),
+    seed: { class_type: 'KSampler', name: 'Base KSampler', input: 'seed' },
+  },
+  outputs: { image: { class_type: 'SaveImage', name: 'Save' } },
+}
 
 // pose 动作词兜底（完整表在 tools/pose-name-tags.json，这里只留 runner 需要的最小集）
 export const POSE_ACTIONS: Record<string, string[]> = {
@@ -173,27 +210,25 @@ export async function runImg2Pose(runner: Runner, params: Img2PoseParams): Promi
   await client.uploadBytes(srcBytes, 'source_orig.png', srcSub)
 
   // 3. img2pose（现行版本 = main head，v2 预处理链）
-  const task = createTask(
-    runner.db,
-    {
-      task: `pose-${poseId}`,
-      workName: 'img2pose',
-      workflowName: 'img2pose_v1',
-      payload: {
-        source_image: `${srcSub}/source_orig.png`,
-        width: canvas.width,
-        height: canvas.height,
-        canvas_width: canvas.width,
-        canvas_height: canvas.height,
-        render_width: canvas.width,
-        render_height: canvas.height,
-      },
+  const img2poseHead = getHeadWorkflow(runner.db, 'img2pose_v1')
+  const task = createJobRaw(runner.db, runner.now(), {
+    workflowName: 'img2pose_v1',
+    adapter: IMG2POSE_ADAPTER,
+    revisionApiJson: img2poseHead.revision.api_json,
+    revisionId: img2poseHead.revision.id,
+    task: `pose-${poseId}`,
+    label: 'Img2Pose',
+    payload: {
+      source_image: `${srcSub}/source_orig.png`,
+      width: canvas.width,
+      height: canvas.height,
+      canvas_width: canvas.width,
+      canvas_height: canvas.height,
+      render_width: canvas.width,
+      render_height: canvas.height,
     },
-    runner.now(),
-    runner.randomSeed,
-    runner.dataDir,
-  )
-  const done = await pollTask(runner, task.id, 300_000)
+  })
+  const done = await pollTask(runner, task.jobId, 300_000)
   if (done.status !== 'completed') {
     throw new RunnerError(`img2pose task ${done.status}: ${done.error ?? ''}`)
   }
@@ -227,26 +262,25 @@ export async function runImg2Pose(runner: Runner, params: Img2PoseParams): Promi
   const bucket = resolveNearestBucket('sdxl', canvas.width, canvas.height)
   await client.uploadBytes(new Uint8Array(depth), 'depth.png', srcSub)
   await client.uploadBytes(new Uint8Array(skeleton), 'skeleton.png', srcSub)
-  const dualTask = createTask(
-    runner.db,
-    {
-      task: `pose-dual-${poseId}`,
-      workName: 'makeImage',
-      workflowName: 'character-pose_dual_v1',
-      payload: {
-        positive: dualPositive(runner, character, actions, tags),
-        negative: dualNegative(runner, character),
-        pose_image: `${srcSub}/skeleton.png`,
-        depth_image: `${srcSub}/depth.png`,
-        width: bucket.width,
-        height: bucket.height,
-        batch: 1,
-      },
+  const dualHead = getHeadWorkflow(runner.db, 'character-pose_dual_v1')
+  const dualTask = createJobRaw(runner.db, runner.now(), {
+    workflowName: 'character-pose_dual_v1',
+    adapter: DUAL_ADAPTER,
+    revisionApiJson: dualHead.revision.api_json,
+    revisionId: dualHead.revision.id,
+    task: `pose-dual-${poseId}`,
+    label: 'Pose Dual',
+    payload: {
+      positive: dualPositive(runner, character, actions, tags),
+      negative: dualNegative(runner, character),
+      pose_image: `${srcSub}/skeleton.png`,
+      depth_image: `${srcSub}/depth.png`,
+      width: bucket.width,
+      height: bucket.height,
+      batch: 1,
+      seed: 'random',
     },
-    runner.now(),
-    runner.randomSeed,
-    runner.dataDir,
-  )
+  })
 
   const meta = {
     id: poseId,
@@ -264,8 +298,8 @@ export async function runImg2Pose(runner: Runner, params: Img2PoseParams): Promi
       shot: ['full body'],
       framing: ['centered'],
     },
-    img2poseTaskId: task.id,
-    dualTaskId: dualTask.id,
+    img2poseTaskId: task.jobId,
+    dualTaskId: dualTask.jobId,
     note:
       `img2pose v2 全链产物（BiRefNet 抠像→纯深色底→MoGe depth + SAM3D 骨架）。` +
       `dual 测试任务见同批返回。${note}`,
@@ -285,8 +319,8 @@ export async function runImg2Pose(runner: Runner, params: Img2PoseParams): Promi
       skeleton: `pose_pending/${poseName}/${poseId}/skeleton.png`,
       meta: `pose_pending/${poseName}/${poseId}/meta.json`,
     },
-    img2poseTaskId: task.id,
-    dualTaskId: dualTask.id,
+    img2poseTaskId: task.jobId,
+    dualTaskId: dualTask.jobId,
   }
 }
 

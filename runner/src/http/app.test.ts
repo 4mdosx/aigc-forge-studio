@@ -4,8 +4,11 @@ import { PNG } from 'pngjs'
 
 import type { ComfyClient, HistoryEntry } from '../comfy/client.ts'
 import { openDatabase } from '../db.ts'
+import { getHeadWorkflow } from '../generate.ts'
+import { createJobRaw } from '../jobFactory.ts'
 import { tick, type Runner } from '../task/queue.ts'
 import type { Prompt } from '../workflow/graph.ts'
+import type { AdapterMap } from '../workflow/binding.ts'
 import { createApp } from './app.ts'
 
 const graph = {
@@ -53,6 +56,24 @@ const adapter = {
   },
 }
 
+// 新链路建任务：代码内 adapter + createJobRaw，不走 work / POST /tasks。
+function queueJob(
+  runner: Runner,
+  workflowName: string,
+  task: string,
+  payload: Record<string, unknown>,
+) {
+  const head = getHeadWorkflow(runner.db, workflowName)
+  return createJobRaw(runner.db, runner.now(), {
+    workflowName,
+    adapter: adapter as AdapterMap,
+    revisionApiJson: head.revision.api_json,
+    revisionId: head.revision.id,
+    task,
+    payload,
+  })
+}
+
 test('commit, queue one task per instance, and record paths', async () => {
   const submitted: Prompt[] = []
   let history: HistoryEntry | null = null
@@ -81,34 +102,17 @@ test('commit, queue one task per instance, and record paths', async () => {
   )
   assert.equal(branched.status, 201)
 
-  const task = await app.request('/tasks', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      task: 'text2img',
-      workName: 'picture',
-      workflowName: 'character-generator',
-      payload: { text: 'a knight', seed: 'random' },
-    }),
+  const queued = queueJob(runner, 'character-generator', 'text2img', {
+    text: 'a knight',
+    seed: 'random',
   })
-  assert.equal(task.status, 201)
-  const queued = (await task.json()) as {
-    id: string
-    status: string
-    headRevisionId: string
-    workName: string
-    comfyPath: string
-    version: string
-  }
-  assert.equal(queued.status, 'pending')
-  assert.equal(queued.workName, 'picture')
-  assert.equal(queued.comfyPath, 'character-generator.json')
+  assert.equal(queued.workflowName, 'character-generator')
   assert.match(queued.version, versionId)
   const active = (await (await app.request('/tasks')).json()) as {
     tasks: Array<{ id: string }>
   }
   assert.equal(
-    active.tasks.some((item) => item.id === queued.id),
+    active.tasks.some((item) => item.id === queued.jobId),
     true,
   )
 
@@ -127,7 +131,7 @@ test('commit, queue one task per instance, and record paths', async () => {
     },
   }
   await tick(runner)
-  const done = await app.request(`/tasks/${queued.id}`)
+  const done = await app.request(`/tasks/${queued.jobId}`)
   const body = (await done.json()) as {
     status: string
     outputPath: string
@@ -139,19 +143,20 @@ test('commit, queue one task per instance, and record paths', async () => {
     tasks: Array<{ id: string }>
   }
   assert.equal(
-    finished.tasks.some((item) => item.id === queued.id),
+    finished.tasks.some((item) => item.id === queued.jobId),
     false,
   )
   assert.deepEqual(body.process, [
     { path: 'temp/preview.png', name: '', id: '8' },
   ])
 
-  const listed = await app.request(`/revisions/${queued.headRevisionId}/tasks`)
+  const headRevisionId = (runner.db.prepare("SELECT head_revision_id FROM jobs WHERE id = ?").get(queued.jobId) as { head_revision_id: string }).head_revision_id
+  const listed = await app.request(`/revisions/${headRevisionId}/tasks`)
   assert.equal(listed.status, 200)
-  const files = await app.request(`/tasks/${queued.id}/files/output/a.png`)
+  const files = await app.request(`/tasks/${queued.jobId}/files/output/a.png`)
   assert.equal(files.status, 200)
   const escaped = await app.request(
-    `/tasks/${queued.id}/files/output/%2e%2e/secret.png`,
+    `/tasks/${queued.jobId}/files/output/%2e%2e/secret.png`,
   )
   assert.equal(escaped.status, 400)
 })
@@ -174,16 +179,7 @@ test('a second instance runs the next pending task', async () => {
   })
   await attach(app, 'character-generator')
   for (const text of ['one', 'two']) {
-    await app.request('/tasks', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        task: 'text2img',
-        workName: 'picture',
-        workflowName: 'character-generator',
-        payload: { text, seed: 7 },
-      }),
-    })
+    queueJob(runner, 'character-generator', 'text2img', { text, seed: 7 })
   }
   await tick(runner)
   assert.equal(first.length, 1)
@@ -321,98 +317,6 @@ test('imports a workflow chosen from the ComfyUI list', async () => {
   assert.equal(library.workflows[0]?.name, 'RM_BG')
   assert.equal(library.workflows[0]?.comfyPath, 'RM_BG.json')
   assert.equal(library.workflows[0]?.currentBranch, 'main')
-})
-
-test('a task uses main when version is omitted, even after another branch moves', async () => {
-  const runner = testRunner([fakeClient('http://gpu-a', [], () => null)])
-  const app = createApp(runner)
-  await app.request('/workflows', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      name: 'character-generator',
-      comfyPath: 'character-generator.json',
-    }),
-  })
-  const mainVersion = await attach(app, 'character-generator')
-  await app.request('/workflows/character-generator/branches', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name: 'lora-a' }),
-  })
-  await app.request('/workflows/character-generator/switch', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ branch: 'lora-a' }),
-  })
-  const committed = await app.request('/workflows/character-generator/commit', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ message: 'branch only' }),
-  })
-  assert.equal(committed.status, 201)
-  const branchVersion = ((await committed.json()) as { version: string })
-    .version
-  assert.match(branchVersion, versionId)
-  assert.notEqual(branchVersion, mainVersion)
-  const onMain = (await (
-    await app.request('/tasks', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        task: 'text2img',
-        workName: 'picture',
-        workflowName: 'character-generator',
-        payload: { text: 'a knight', seed: 1 },
-      }),
-    })
-  ).json()) as { version: string }
-  const onBranch = (await (
-    await app.request('/tasks', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        task: 'text2img',
-        workName: 'picture',
-        workflowName: 'character-generator',
-        version: branchVersion,
-        payload: { text: 'a knight', seed: 1 },
-      }),
-    })
-  ).json()) as { version: string }
-  assert.equal(onMain.version, mainVersion)
-  assert.equal(onBranch.version, branchVersion)
-
-  const linked = (await (await app.request('/works/picture')).json()) as {
-    workflows: Array<{
-      versions: Array<{
-        version: string
-        borrowedFrom: string | null
-        adapterStatus: { status: string }
-      }>
-    }>
-  }
-  assert.equal(linked.workflows.length, 1)
-  const versions = linked.workflows[0]?.versions ?? []
-  assert.equal(
-    versions.find((item) => item.version === mainVersion)?.adapterStatus.status,
-    'ready',
-  )
-  assert.equal(
-    versions.find((item) => item.version === branchVersion)?.borrowedFrom,
-    mainVersion,
-  )
-
-  const detached = await app.request('/works/picture/workflows/detach', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ workflowName: 'character-generator' }),
-  })
-  assert.equal(detached.status, 200)
-  const work = (await (await app.request('/works/picture')).json()) as {
-    workflows: unknown[]
-  }
-  assert.deepEqual(work.workflows, [])
 })
 
 const versionId = /^[0-9a-z]{8}$/

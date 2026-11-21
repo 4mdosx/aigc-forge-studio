@@ -2,15 +2,8 @@ import type { Hono } from 'hono'
 
 import { JOB_KIND, listTaskRows, taskById } from '../db.ts'
 import { RunnerError } from '../errors.ts'
-import { createTask } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
-import {
-  jsonObject,
-  objectField,
-  optionalVersion,
-  stringField,
-  taskJson,
-} from './request.ts'
+import { taskJson } from './request.ts'
 import { storedPaths } from '../task/records.ts'
 
 export function mountTasks(app: Hono, runner: Runner): void {
@@ -20,34 +13,6 @@ export function mountTasks(app: Hono, runner: Runner): void {
       `status IN ('pending', 'running') ORDER BY created_at, rowid`,
     )
     return c.json({ tasks: rows.map((row) => taskJson(runner.db, row)) })
-  })
-
-  app.post('/tasks', async (c) => {
-    const body = await jsonObject(c.req)
-    const version = optionalVersion(body)
-    const task = createTask(
-      runner.db,
-      {
-        task: stringField(body, 'task'),
-        ...(body.workName === undefined
-          ? {}
-          : { workName: stringField(body, 'workName') }),
-        ...(body.workflowName === undefined
-          ? {}
-          : { workflowName: stringField(body, 'workflowName') }),
-        ...(version === undefined ? {} : { version }),
-        ...(body.payload === undefined
-          ? {}
-          : { payload: objectField(body, 'payload') }),
-        ...(body.parentTaskId === undefined
-          ? {}
-          : { parentTaskId: stringField(body, 'parentTaskId') }),
-      },
-      runner.now(),
-      runner.randomSeed,
-      runner.dataDir,
-    )
-    return c.json(taskJson(runner.db, task), 201)
   })
 
   // 素材段溯源（2026-11-15 三段模型）：output 路径反查产图任务，
