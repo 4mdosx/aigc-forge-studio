@@ -21,9 +21,13 @@ const NAME = 'base_ax4z_lora_cn_1'
 const SOURCE_VERSION = 'dbv5o9v1'
 const CKPT = 'animagine-xl-4.0-zero.safetensors'
 const LORA_DEFAULT = 'test-boot-az-261119-174.safetensors'
+// 2026-11-21：链路是 EmptyLatentImage 纯噪声起步，denoise 必须 1.0。
+// 从 baseline_v1 img2pose 模板克隆来的 0.45 会残留 55% 噪声 → 灰雾糊图（任务 a368cb00 实测，见 experiments/a368_diag）。
+const DENOISE = 1.0
 const MESSAGE =
   'base_ax4z_lora_cn_1（2026-11-21 token 指定）：克隆 baseline_v1 双 ControlNet 模板（OpenPose skeleton + Xinsir depth），' +
-  `底模 animagine-xl-4.0-zero + LoraLoader（默认 ${LORA_DEFAULT}）+ batch 1；adapter 暴露 lora_name/lora_strength 直接切风格 LoRA。`
+  `底模 animagine-xl-4.0-zero + LoraLoader（默认 ${LORA_DEFAULT}）+ batch 1；adapter 暴露 lora_name/lora_strength 直接切风格 LoRA。` +
+  ` 修复：KSampler denoise 0.45→${DENOISE}（EmptyLatent 纯噪声起步，低 denoise 导致灰雾糊图；a368cb00 归因实验证实）。`
 
 const now = new Date().toISOString()
 
@@ -74,6 +78,20 @@ if (lora.widgets_values_named && typeof lora.widgets_values_named === 'object')
 const apiLora = Object.values(api).find((n) => n.class_type === 'LoraLoader')
 if (!apiLora) throw new Error('api_json 无 LoraLoader')
 apiLora.inputs.lora_name = LORA_DEFAULT
+
+// --- 改图：KSampler denoise（widgets_values + widgets_values_named + api_json.inputs 三处同改） ---
+// widgets_values 是位置数组，按 named 的键顺序定位 denoise 下标，不写死。
+const namedKeys = Object.keys(ks.widgets_values_named ?? {})
+const denoiseIdx = namedKeys.indexOf('denoise')
+if (denoiseIdx < 0 || !Array.isArray(ks.widgets_values) || ks.widgets_values.length <= denoiseIdx) {
+  throw new Error('KSampler widgets_values 无法定位 denoise')
+}
+ks.widgets_values[denoiseIdx] = DENOISE
+if (ks.widgets_values_named && typeof ks.widgets_values_named === 'object')
+  ks.widgets_values_named.denoise = DENOISE
+const apiKs = Object.values(api).find((n) => n.class_type === 'KSampler')
+if (!apiKs) throw new Error('api_json 无 KSampler')
+apiKs.inputs.denoise = DENOISE
 
 // --- 版本号：8 位，字母开头，全库查重 ---
 const LETTERS = 'abcdefghijklmnopqrstuvwxyz'
@@ -179,5 +197,5 @@ try {
   throw err
 }
 db.close()
-console.log(`${isNew ? 'created' : 'committed new revision on'} workflow ${NAME} version=${version} (source ${srcVersion}, lora=${LORA_DEFAULT})`)
+console.log(`${isNew ? 'created' : 'committed new revision on'} workflow ${NAME} version=${version} (source ${srcVersion}, lora=${LORA_DEFAULT}, denoise=${DENOISE})`)
 console.log('adapter inputs:', Object.keys(adapter.inputs).join(','))
