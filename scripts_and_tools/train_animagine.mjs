@@ -163,6 +163,21 @@ if (pairs.length === 0) {
   process.exit(1)
 }
 
+// 触发词要早于建 job 拿到：它已经进 LoRA 名字里了，不能等到收尾段才算。
+const trigger = values.trigger.trim() || firstTokenOf(pairs[0].caption)
+if (!trigger) {
+  console.error('拿不到触发词。传 --trigger <word>，或检查 caption 第一行。')
+  process.exit(1)
+}
+
+// 命名：<数据集>-<触发词>-<profile>-az-<YYMMDD-HMM>
+// 触发词进名字：同名数据集换触发词重训出的 LoRA 一眼能分，ComfyUI 下拉里也不会两条同名。
+const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(2, 12).replace('T', '-')
+const jobName = `${dirName}-${trigger}-${values.profile}-az-${stamp}`
+  .toLowerCase()
+  .replace(/[^a-z0-9_-]/g, '-')
+  .replace(/-+/g, '-')
+
 if (!attaching) {
   const repeats = params.numRepeats ?? 10
   const epochs = params.maxTrainEpochs ?? 3
@@ -186,7 +201,8 @@ if (!attaching) {
   console.log(`数据集  ${dirName}：${pairs.length}/${images.length} 组 image+caption（仅用于触发词与 step 估算）`)
 }
 if (values['dry-run']) {
-  console.log('\n[dry-run] 未上传、未建 job、未回流、未验证。')
+  if (!attaching) console.log(`\n名字预告  ${jobName}`)
+  console.log('[dry-run] 未上传、未建 job、未回流、未验证。')
   process.exit(0)
 }
 
@@ -245,8 +261,8 @@ if (attaching) {
   }
   console.log(`已推 ${done} 组到 ${target}`)
 
-  const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(2, 12).replace('T', '-')
-  const name = `${dirName}-${values.profile}-az-${stamp}`.toLowerCase().replace(/[^a-z0-9_-]/g, '-')
+  // 命名：<数据集>-<触发词>-<profile>-az-<YYMMDD-HMM>（上面 jobName 算好，这里只引用）
+  const name = jobName
   const body = {
     name,
     datasetRoot: 'training',
@@ -271,11 +287,6 @@ if (values['train-only']) {
   process.exit(0)
 }
 
-const trigger = values.trigger.trim() || firstTokenOf(pairs[0].caption)
-if (!trigger) {
-  console.error('拿不到触发词。传 --trigger <word>，或检查 caption 第一行。')
-  process.exit(1)
-}
 console.log(`\n触发词（验证时锁首位）：${trigger}`)
 console.log('[post] 进入自动收尾：等训练 → 回流 → 可见性 → 验证 → 拼图')
 

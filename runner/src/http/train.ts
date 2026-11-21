@@ -296,7 +296,7 @@ export function mountTrain(
     const name =
       typeof body.name === 'string' && body.name.trim() !== ''
         ? body.name.trim()
-        : jobNameOf(dirName, profileName, runner.now())
+        : jobNameOf(dirName, trigger, profileName, runner.now())
 
     const [lo, hi] = profile.expectImages ?? []
     const warn =

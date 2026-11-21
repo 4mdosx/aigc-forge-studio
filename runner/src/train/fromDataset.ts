@@ -262,8 +262,12 @@ export async function uploadPairs(
   return { pushed, failures }
 }
 
+// <数据集>-<触发词>-<profile>-az-<YYMMDD-HMM>，与 train_animagine.mjs 的 jobName 同构。
+// 触发词进名字：同名数据集换触发词重训出来的产物能一眼分开，ComfyUI 下拉也不会撞名。
+// 没给触发词（老调用方/无触发词数据集）时该段整体省略，不留双连字符。
 export function jobNameOf(
   dirName: string,
+  trigger: string,
   profile: string,
   date: Date = new Date(),
 ): string {
@@ -272,7 +276,10 @@ export function jobNameOf(
     .replace(/[-:]/g, '')
     .slice(2, 12)
     .replace('T', '-')
-  return `${dirName}-${profile}-az-${stamp}`
+  return [dirName, trigger.trim(), profile, 'az', stamp]
+    .filter((part) => part !== '')
+    .join('-')
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, '-')
+    .replace(/-+/g, '-')
 }

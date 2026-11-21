@@ -337,7 +337,7 @@ test('POST /train/start exports, uploads and creates job from profile', async ()
     assert.equal(body.profile, 'seed')
     const job = body.job as { id: string; name: string }
     assert.equal(job.id, 'stub1')
-    assert.match(job.name, /^oil_sister-seed-az-/)
+    assert.match(job.name, /^oil_sister-oil_style-seed-az-/)
     // 2 组 × (png + txt)
     assert.deepEqual(
       uploads.map((u) => u.path).sort(),
