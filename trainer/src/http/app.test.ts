@@ -207,3 +207,131 @@ test('downloads API: create, poll, idempotent re-post over HTTP', async () => {
     await new Promise((ok) => server.close(ok))
   }
 })
+
+test('GET /list: 平层、glob、递归、totalBytes、目录条目', async () => {
+  for (const p of ['ds/a.png', 'ds/b.png', 'ds/c.txt', 'ds/sub/d.png']) {
+    await app.request(`http://x/upload?root=training&path=${encodeURIComponent(p)}`, {
+      method: 'POST',
+      body: new Uint8Array([1, 2, 3]),
+    })
+  }
+
+  const all = (await (
+    await app.request('http://x/list?root=training&path=ds')
+  ).json()) as {
+    entries: { name: string; isDir: boolean }[]
+    count: number
+    dirs: number
+    totalBytes: number
+    truncated: boolean
+  }
+  assert.equal(all.count, 3) // a.png b.png c.txt
+  assert.equal(all.dirs, 1) // sub
+  assert.equal(all.totalBytes, 9)
+  assert.equal(all.truncated, false)
+
+  const png = (await (
+    await app.request('http://x/list?root=training&path=ds&glob=*.png')
+  ).json()) as { count: number; entries: { name: string }[] }
+  assert.equal(png.count, 2)
+  // 非递归 + glob：子目录也该被 glob 过滤掉
+  assert.equal(png.entries.filter((e) => e.name === 'sub').length, 0)
+
+  const recursive = (await (
+    await app.request('http://x/list?root=training&path=ds&glob=*.png&recursive=1')
+  ).json()) as { count: number; entries: { name: string }[] }
+  assert.equal(recursive.count, 3)
+  assert.ok(recursive.entries.some((e) => e.name === 'sub/d.png'))
+
+  // path 省略 → 列 root 顶层
+  const top = (await (
+    await app.request('http://x/list?root=training')
+  ).json()) as { count: number; dirs: number; path: string }
+  assert.equal(top.path, '')
+  assert.equal(top.count, 0)
+  assert.equal(top.dirs, 1)
+
+  // 不存在 → 404；未知 root → 404
+  assert.equal((await app.request('http://x/list?root=training&path=nope')).status, 404)
+  assert.equal((await app.request('http://x/list?root=nope&path=ds')).status, 404)
+})
+
+test('GET /files 指向目录时 400，不再返回 200 空 body', async () => {
+  await app.request('http://x/upload?root=training&path=ds/a.png', {
+    method: 'POST',
+    body: new Uint8Array([1]),
+  })
+  const res = await app.request('http://x/files?root=training&path=ds')
+  assert.equal(res.status, 400)
+  const json = (await res.json()) as { error: string }
+  assert.match(json.error, /directory; use GET \/list/)
+})
+
+test('POST /sync 对账：删多余、报缺失、prune=false 只读', async () => {
+  for (const p of ['ds/a.png', 'ds/a.txt', 'ds/stale.png']) {
+    await app.request(`http://x/upload?root=training&path=${encodeURIComponent(p)}`, {
+      method: 'POST',
+      body: new Uint8Array([1]),
+    })
+  }
+
+  const res = await app.request('http://x/sync?root=training&path=ds', {
+    method: 'POST',
+    body: JSON.stringify({ files: ['a.png', 'a.txt', 'b.png'] }),
+    headers: { 'content-type': 'application/json' },
+  })
+  assert.equal(res.status, 200)
+  const json = (await res.json()) as {
+    kept: string[]
+    deleted: string[]
+    missing: string[]
+    count: number
+  }
+  assert.deepEqual(json.deleted, ['stale.png'])
+  assert.deepEqual(json.missing, ['b.png'])
+  assert.deepEqual(json.kept.sort(), ['a.png', 'a.txt'])
+  assert.equal(json.count, 2)
+  assert.equal(
+    (await app.request('http://x/files?root=training&path=ds/stale.png')).status,
+    404,
+  )
+
+  // prune=false：只对账不删
+  const dry = await app.request('http://x/sync?root=training&path=ds', {
+    method: 'POST',
+    body: JSON.stringify({ files: ['a.png'], prune: false }),
+    headers: { 'content-type': 'application/json' },
+  })
+  const dryJson = (await dry.json()) as { deleted: string[]; count: number }
+  assert.deepEqual(dryJson.deleted, [])
+  assert.equal(
+    (await app.request('http://x/files?root=training&path=ds/a.txt')).status,
+    200,
+  )
+
+  // 带路径分隔符的名字一律拒绝（对账只作用于平层）
+  const bad = await app.request('http://x/sync?root=training&path=ds', {
+    method: 'POST',
+    body: JSON.stringify({ files: ['../x.png'] }),
+    headers: { 'content-type': 'application/json' },
+  })
+  assert.equal(bad.status, 400)
+})
+
+test('GET /disk reports root usage once directories exist', async () => {
+  await app.request('http://x/upload?root=training&path=ds/a.png', {
+    method: 'POST',
+    body: new Uint8Array([1]),
+  })
+  const res = await app.request('http://x/disk')
+  assert.equal(res.status, 200)
+  const json = (await res.json()) as {
+    disks: { root: string; totalBytes: number; freeBytes: number }[]
+    unavailable: boolean
+  }
+  assert.equal(json.unavailable, false)
+  const training = json.disks.find((d) => d.root === 'training')
+  assert.ok(training)
+  assert.ok(training.totalBytes > 0)
+  assert.ok(training.freeBytes >= 0)
+})

@@ -7,15 +7,18 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 import type { DatabaseSync } from 'node:sqlite'
 
 import { TrainerError } from '../errors.ts'
+import { relativePath } from '../path.ts'
 import type { RootRegistry } from '../roots.ts'
+import { scanDataset, type DatasetStats } from './dataset.ts'
 import { resumeProcessTree, suspendProcessTree } from './pause.ts'
 import {
   buildDatasetToml,
@@ -126,8 +129,6 @@ export function runsOf(trainer: TrainerConfig): Map<string, TrainRun> {
   return trainer.trainRuns
 }
 
-const IMAGE_EXTS = ['.jpg', '.jpeg', '.png', '.webp']
-
 function requireConfig(trainer: TrainerConfig): TrainConfig {
   if (!trainer.train) {
     throw new TrainerError(
@@ -194,11 +195,17 @@ export function buildSpawnPlan(
   }
 }
 
-export function createTrainJob(
-  trainer: TrainerConfig,
-  input: TrainParamsInput,
-): TrainJobRow {
-  const config = requireConfig(trainer)
+/** 建 job 前的完整规划结果：参数、路径、数据集快照。create 与 preview 共用这一份。 */
+export interface TrainPlan {
+  params: ResolvedParams
+  paths: JobPaths
+  stats: DatasetStats
+}
+
+// 校验 + 路径解析 + 数据集盘点，不写任何文件、不碰进程。
+// preview 直接复用，保证「预览看到的就是提交后跑的那份」——dry-run 另写一套实现
+// 迟早和真实逻辑漂移（2026-11-22：客户端算 19 张、trainer 见到 55 张，白跑一轮）。
+export function planTrainJob(trainer: TrainerConfig, input: TrainParamsInput): TrainPlan {
   const params = resolveParams(input)
 
   const trainingRoot = trainer.roots[input.datasetRoot]
@@ -217,13 +224,34 @@ export function createTrainJob(
   if (!existsSync(paths.datasetDir)) {
     throw new TrainerError(`dataset directory not found: ${paths.datasetDir}`, 404)
   }
-  const images = readdirSync(paths.datasetDir).filter((name) => {
-    const dot = name.lastIndexOf('.')
-    return dot >= 0 && IMAGE_EXTS.includes(name.slice(dot).toLowerCase())
-  })
-  if (images.length === 0) {
+
+  const stats = scanDataset(paths.datasetDir)
+  if (stats.imageCount === 0) {
     throw new TrainerError(`dataset directory has no images: ${paths.datasetDir}`, 400)
   }
+
+  // 声明式期望值：客户端说「这批 19 张」，磁盘上却是 55 张 → 当场拒。
+  // 这是 2026-11-22 那轮 1650 步事故唯一能在提交时挡住的地方。
+  const expected = input.expectedImages
+  if (expected !== undefined && expected !== stats.imageCount) {
+    throw new TrainerError(
+      `dataset has ${stats.imageCount} images but expectedImages=${expected} ` +
+        `(${paths.datasetDir}); stale files left on the training machine? ` +
+        `clean with POST /sync or DELETE /files?glob=*`,
+      409,
+    )
+  }
+
+  return { params, paths, stats }
+}
+
+export function createTrainJob(
+  trainer: TrainerConfig,
+  input: TrainParamsInput,
+): TrainJobRow {
+  const config = requireConfig(trainer)
+  const { params, paths, stats } = planTrainJob(trainer, input)
+  params.datasetStats = stats
 
   const running = listTrainJobs(trainer.db, 'running')
   if (running.length > 0) {
@@ -605,3 +633,118 @@ export function readTrainLog(
   if (!tail || tail <= 0 || text.length <= tail) return text
   return text.slice(text.length - tail)
 }
+
+// ── 预演 ────────────────────────────────────────────────────────────────
+// 跑完 createTrainJob 的全部校验与 toml 生成，但不 mkdir、不写文件、不 spawn、不落库。
+// 客户端 dry-run 应当走这里，而不是自己拿目录数跟 profile 相乘——那种算法
+// 恰好漏掉「训练机上有陈旧文件」这一层（见 planTrainJob 的 expectedImages）。
+
+export interface TrainPreview {
+  params: ResolvedParams
+  stats: DatasetStats
+  datasetToml: string
+  trainToml: string
+  /** imageCount × numRepeats × maxTrainEpochs，只是时间预算，不是质量承诺 */
+  estimatedSteps: number
+  /** 当前占着单任务锁的 job（preview 不阻断，但要提示提交会 409） */
+  runningJob: { id: string; name: string } | null
+}
+
+export function previewTrainJob(
+  trainer: TrainerConfig,
+  input: TrainParamsInput,
+): TrainPreview {
+  requireConfig(trainer)
+  const { params, paths, stats } = planTrainJob(trainer, input)
+  params.datasetStats = stats
+  const running = listTrainJobs(trainer.db, 'running')[0]
+  return {
+    params,
+    stats,
+    datasetToml: buildDatasetToml(params, paths),
+    trainToml: buildTrainToml(params, paths),
+    estimatedSteps: stats.imageCount * params.numRepeats * params.maxTrainEpochs,
+    runningJob: running ? { id: running.id, name: running.name } : null,
+  }
+}
+
+// ── 产物 ────────────────────────────────────────────────────────────────
+// 直接读 output_dir 的真实内容。客户端 discoverArtifacts 那套「按命名约定
+// 猜 -000001.safetensors 再逐个 HEAD」在 saveEveryNEpochs ≠ 1 时必然猜空。
+
+export interface ArtifactEntry {
+  name: string
+  size: number
+  mtime: string
+  /** 从 `<name>-000001.safetensors` 解析出的 epoch；final 权重为 null */
+  epoch: number | null
+}
+
+export function listArtifacts(trainer: TrainerConfig, id: string): ArtifactEntry[] {
+  const dir = outputDirOf(trainer, id)
+  if (!existsSync(dir)) return []
+  const entries: ArtifactEntry[] = []
+  for (const name of readdirSync(dir)) {
+    if (!name.toLowerCase().endsWith('.safetensors')) continue
+    const st = statSync(join(dir, name), { throwIfNoEntry: false })
+    if (!st?.isFile()) continue
+    const match = /-(\d{6})\.safetensors$/i.exec(name)
+    entries.push({
+      name,
+      size: st.size,
+      mtime: st.mtime.toISOString(),
+      epoch: match ? Number(match[1]) : null,
+    })
+  }
+  return entries.sort((a, b) => (a.epoch ?? 0) - (b.epoch ?? 0))
+}
+
+export interface SampleEntry {
+  name: string
+  size: number
+  mtime: string
+}
+
+// sd-scripts 的采样图落点随版本变：老版本直接写 output_dir，新版本写 output_dir/sample。
+// 两处都扫，name 用相对 output_dir 的路径（下载时原样回传即可）。
+export function listSamples(trainer: TrainerConfig, id: string): SampleEntry[] {
+  const base = outputDirOf(trainer, id)
+  const entries: SampleEntry[] = []
+  for (const [dir, prefix] of [
+    [base, ''],
+    [join(base, 'sample'), 'sample/'],
+  ] as const) {
+    if (!existsSync(dir)) continue
+    for (const name of readdirSync(dir)) {
+      const ext = name.slice(name.lastIndexOf('.')).toLowerCase()
+      if (!['.png', '.jpg', '.jpeg', '.webp'].includes(ext)) continue
+      const st = statSync(join(dir, name), { throwIfNoEntry: false })
+      if (!st?.isFile()) continue
+      entries.push({
+        name: `${prefix}${name}`,
+        size: st.size,
+        mtime: st.mtime.toISOString(),
+      })
+    }
+  }
+  return entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+}
+
+/** output_dir 内的文件绝对路径；越界拒绝。artifacts 与 samples 的下载共用。 */
+export function outputFileOf(trainer: TrainerConfig, id: string, name: string): string {
+  const base = outputDirOf(trainer, id)
+  const target = join(base, ...relativePath(name).split('/'))
+  const prefix = base.endsWith(sep) ? base : base + sep
+  if (!resolve(target).startsWith(prefix)) {
+    throw new TrainerError('invalid path')
+  }
+  return target
+}
+
+function outputDirOf(trainer: TrainerConfig, id: string): string {
+  const row = rowOf(trainer.db, id)
+  if (!row) throw new TrainerError('train job not found', 404)
+  if (!row.output_dir) throw new TrainerError('job has no output dir', 404)
+  return row.output_dir
+}
+

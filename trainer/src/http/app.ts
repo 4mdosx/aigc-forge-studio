@@ -17,7 +17,7 @@ export function createApp(trainer: Trainer): Hono {
   })
   app.notFound((c) => c.json({ error: 'not found' }, 404))
   app.get('/health', (c) => c.json({ ok: true }))
-  mountSystem(app)
+  mountSystem(app, trainer)
   mountRoots(app, trainer)
   mountUpload(app, trainer)
   mountDownloads(app, trainer)

@@ -163,3 +163,125 @@ test('/train/jobs without train config reports unconfigured', async () => {
   assert.match(json.error, /not configured/)
   trainer.train = original
 })
+
+test('expectedImages 与实际不符 → 409，相符才建 job', async () => {
+  const mismatch = await app.request('http://x/train/jobs', {
+    method: 'POST',
+    body: JSON.stringify({ ...JSON.parse(CREATE_BODY), expectedImages: 5 }),
+    headers: { 'content-type': 'application/json' },
+  })
+  assert.equal(mismatch.status, 409)
+  const err = (await mismatch.json()) as { error: string }
+  assert.match(err.error, /dataset has 1 images but expectedImages=5/)
+
+  // 被拒的请求不该留下 job
+  const before = (await (await app.request('http://x/train/jobs')).json()) as {
+    jobs: unknown[]
+  }
+  assert.equal(before.jobs.length, 0)
+
+  const ok = await app.request('http://x/train/jobs', {
+    method: 'POST',
+    body: JSON.stringify({ ...JSON.parse(CREATE_BODY), expectedImages: 1 }),
+    headers: { 'content-type': 'application/json' },
+  })
+  assert.equal(ok.status, 201)
+  const { job } = (await ok.json()) as {
+    job: { params: { datasetStats: { imageCount: number; captionCount: number } } }
+  }
+  assert.equal(job.params.datasetStats.imageCount, 1)
+  assert.equal(job.params.datasetStats.captionCount, 1)
+})
+
+test('POST /train/jobs/preview 返回统计与 toml，但不建 job', async () => {
+  const res = await app.request('http://x/train/jobs/preview', {
+    method: 'POST',
+    body: JSON.stringify({ ...JSON.parse(CREATE_BODY), expectedImages: 1 }),
+    headers: { 'content-type': 'application/json' },
+  })
+  assert.equal(res.status, 200)
+  const json = (await res.json()) as {
+    stats: { imageCount: number; captionCount: number; missingCaptions: string[] }
+    params: { numRepeats: number; maxTrainEpochs: number }
+    datasetToml: string
+    trainToml: string
+    estimatedSteps: number
+    runningJob: unknown
+  }
+  assert.equal(json.stats.imageCount, 1)
+  assert.equal(json.stats.captionCount, 1)
+  assert.deepEqual(json.stats.missingCaptions, [])
+  assert.match(json.datasetToml, /style-v1/)
+  assert.match(json.trainToml, /sdxl_train_network|max_train_epochs/)
+  assert.equal(
+    json.estimatedSteps,
+    json.stats.imageCount * json.params.numRepeats * json.params.maxTrainEpochs,
+  )
+  assert.equal(json.runningJob, null)
+
+  // preview 不落库
+  const list = (await (await app.request('http://x/train/jobs')).json()) as {
+    jobs: unknown[]
+  }
+  assert.equal(list.jobs.length, 0)
+
+  // 数据对不上时 preview 也照样拒
+  const bad = await app.request('http://x/train/jobs/preview', {
+    method: 'POST',
+    body: JSON.stringify({ ...JSON.parse(CREATE_BODY), expectedImages: 3 }),
+    headers: { 'content-type': 'application/json' },
+  })
+  assert.equal(bad.status, 409)
+})
+
+test('artifacts / samples / output 直接读 output_dir 真实内容', async () => {
+  const created = await app.request('http://x/train/jobs', {
+    method: 'POST',
+    body: CREATE_BODY,
+    headers: { 'content-type': 'application/json' },
+  })
+  const { job } = (await created.json()) as {
+    job: { id: string; outputDir: string }
+  }
+  const outDir = job.outputDir
+  mkdirSync(join(outDir, 'sample'), { recursive: true })
+  writeFileSync(join(outDir, 'style-v1-000001.safetensors'), 'W')
+  writeFileSync(join(outDir, 'style-v1.safetensors'), 'F')
+  writeFileSync(join(outDir, 'sample', 'e000001.png'), 'P')
+
+  const artifacts = (await (
+    await app.request(`http://x/train/jobs/${job.id}/artifacts`)
+  ).json()) as { artifacts: { name: string; epoch: number | null; size: number }[] }
+  assert.equal(artifacts.artifacts.length, 2)
+  const byName = new Map(artifacts.artifacts.map((a) => [a.name, a]))
+  assert.equal(byName.get('style-v1-000001.safetensors')?.epoch, 1)
+  assert.equal(byName.get('style-v1.safetensors')?.epoch, null)
+  assert.equal(byName.get('style-v1-000001.safetensors')?.size, 1)
+
+  const samples = (await (
+    await app.request(`http://x/train/jobs/${job.id}/samples`)
+  ).json()) as { samples: { name: string }[] }
+  assert.deepEqual(
+    samples.samples.map((s) => s.name),
+    ['sample/e000001.png'],
+  )
+
+  const dl = await app.request(
+    `http://x/train/jobs/${job.id}/output?name=${encodeURIComponent('sample/e000001.png')}`,
+  )
+  assert.equal(dl.status, 200)
+  assert.equal(await dl.text(), 'P')
+
+  const missing = await app.request(
+    `http://x/train/jobs/${job.id}/output?name=nope.png`,
+  )
+  assert.equal(missing.status, 404)
+
+  const evil = await app.request(
+    `http://x/train/jobs/${job.id}/output?name=${encodeURIComponent('../../../etc/passwd')}`,
+  )
+  assert.equal(evil.status, 400)
+
+  const noName = await app.request(`http://x/train/jobs/${job.id}/output`)
+  assert.equal(noName.status, 400)
+})

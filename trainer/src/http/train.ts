@@ -1,3 +1,7 @@
+import { createReadStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
+import { Readable } from 'node:stream'
+
 import type { Hono } from 'hono'
 
 import type { Trainer } from '../download/manager.ts'
@@ -5,8 +9,12 @@ import { TrainerError } from '../errors.ts'
 import {
   cancelTrainJob,
   createTrainJob,
+  listArtifacts,
+  listSamples,
   listTrainJobs,
+  outputFileOf,
   pauseTrainJob,
+  previewTrainJob,
   readTrainLog,
   resumeTrainJob,
   trainJobJson,
@@ -44,6 +52,7 @@ const FIELDS = [
   'keepTokens',
   'samplePrompts',
   'sampleEveryNEpochs',
+  'expectedImages',
 ] as const
 
 function trainParamsOf(body: Record<string, unknown>): TrainParamsInput {
@@ -52,6 +61,13 @@ function trainParamsOf(body: Record<string, unknown>): TrainParamsInput {
   )
   if (unknown.length > 0) {
     throw new TrainerError(`unknown fields: ${unknown.join(', ')}`)
+  }
+  const expected = body.expectedImages
+  if (
+    expected !== undefined &&
+    (typeof expected !== 'number' || !Number.isInteger(expected) || expected <= 0)
+  ) {
+    throw new TrainerError('expectedImages must be a positive integer')
   }
   return {
     name: stringField(body, 'name'),
@@ -79,6 +95,7 @@ function trainParamsOf(body: Record<string, unknown>): TrainParamsInput {
     keepTokens: body.keepTokens as number | undefined,
     samplePrompts: body.samplePrompts as string | undefined,
     sampleEveryNEpochs: body.sampleEveryNEpochs as number | undefined,
+    expectedImages: expected as number | undefined,
   }
 }
 
@@ -87,6 +104,14 @@ export function mountTrain(app: Hono, trainer: Trainer): void {
     const body = await jsonObject(c.req)
     const row = createTrainJob(trainer, trainParamsOf(body))
     return c.json({ job: trainJobJson(row) }, 201)
+  })
+
+  // 试运行：同一套校验与 toml 生成，但不建 job、不占 GPU、不写文件。
+  // 客户端 dry-run 必须走这里，否则「预览的步数」和「真跑的步数」会各算各的。
+  app.post('/train/jobs/preview', async (c) => {
+    const body = await jsonObject(c.req)
+    const preview = previewTrainJob(trainer, trainParamsOf(body))
+    return c.json(preview)
   })
 
   app.get('/train/jobs', (c) => {
@@ -118,6 +143,30 @@ export function mountTrain(app: Hono, trainer: Trainer): void {
     const tail = Number(c.req.query('tail') ?? '')
     return c.text(
       readTrainLog(trainer.train, row.id, Number.isFinite(tail) ? tail : undefined),
+    )
+  })
+
+  // 真实产物清单（不靠命名约定猜）
+  app.get('/train/jobs/:id/artifacts', (c) => {
+    return c.json({ artifacts: listArtifacts(trainer, c.req.param('id')) })
+  })
+
+  // 采样图清单（output_dir 与 output_dir/sample 都扫）
+  app.get('/train/jobs/:id/samples', (c) => {
+    return c.json({ samples: listSamples(trainer, c.req.param('id')) })
+  })
+
+  // 下载 output_dir 内的任意文件：?name=xxx.safetensors 或 ?name=sample/e000001.png
+  app.get('/train/jobs/:id/output', async (c) => {
+    const name = c.req.query('name')
+    if (!name) throw new TrainerError('name is required')
+    const target = outputFileOf(trainer, c.req.param('id'), name)
+    const info = await stat(target).catch(() => null)
+    if (!info) throw new TrainerError('file not found', 404)
+    if (!info.isFile()) throw new TrainerError('name must point to a file')
+    return c.body(
+      Readable.toWeb(createReadStream(target)) as unknown as ReadableStream,
+      200,
     )
   })
 

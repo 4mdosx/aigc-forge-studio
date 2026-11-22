@@ -2,6 +2,7 @@ import { join } from 'node:path'
 
 import { TrainerError } from '../errors.ts'
 import { relativePath } from '../path.ts'
+import type { DatasetStats } from './dataset.ts'
 
 // 训练参数解析与 TOML 生成。纯函数，无 IO，方便单测。
 //
@@ -44,10 +45,15 @@ export interface TrainParamsInput {
   /** 采样提示词全文；提供时写入 prompts 文件并按 sampleEveryNEpochs 出图 */
   samplePrompts?: string
   sampleEveryNEpochs?: number
+  /** 声明式期望图片数：与磁盘实际不符时拒绝建 job（挡住训练机上的陈旧残留） */
+  expectedImages?: number
 }
 
-export interface ResolvedParams extends Required<Omit<TrainParamsInput, 'samplePrompts'>> {
+export interface ResolvedParams
+  extends Required<Omit<TrainParamsInput, 'samplePrompts' | 'expectedImages'>> {
   samplePrompts: string | null
+  /** 建 job 时对数据集目录的快照，由 manager 回填，不进 toml */
+  datasetStats?: DatasetStats
 }
 
 export interface JobPaths {
