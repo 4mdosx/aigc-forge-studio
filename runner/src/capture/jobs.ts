@@ -51,10 +51,14 @@ type JobRow = {
 
 const busy = new WeakSet<Runner>()
 
-export function enqueueCaptureJob(db: DatabaseSync, assetId: string, now: number): void {
-  const asset = db.prepare('SELECT status FROM image_assets WHERE id = ?').get(assetId) as
-    | { status: string }
-    | undefined
+export function enqueueCaptureJob(
+  db: DatabaseSync,
+  assetId: string,
+  now: number,
+): void {
+  const asset = db
+    .prepare('SELECT status FROM image_assets WHERE id = ?')
+    .get(assetId) as { status: string } | undefined
   if (asset && asset.status !== 'collected') return
   const existing = db
     .prepare('SELECT status FROM jobs WHERE kind = ? AND asset_id = ?')
@@ -77,7 +81,11 @@ export function enqueueCaptureJob(db: DatabaseSync, assetId: string, now: number
 }
 
 /** 单独排一个 embed 步骤：给换过向量模型的老图补算，跟采集队列共用一张表。 */
-export function enqueueEmbedJob(db: DatabaseSync, assetId: string, now: number): void {
+export function enqueueEmbedJob(
+  db: DatabaseSync,
+  assetId: string,
+  now: number,
+): void {
   const existing = db
     .prepare('SELECT status FROM jobs WHERE kind = ? AND asset_id = ?')
     .get(CAPTURE_JOB, assetId) as { status: string } | undefined
@@ -129,7 +137,9 @@ export function listCaptureJobs(db: DatabaseSync): {
     done: 0,
   }
   const grouped = db
-    .prepare(`SELECT status, COUNT(*) AS n FROM jobs WHERE kind = ? GROUP BY status`)
+    .prepare(
+      `SELECT status, COUNT(*) AS n FROM jobs WHERE kind = ? GROUP BY status`,
+    )
     .all(CAPTURE_JOB) as Array<{ status: string; n: number }>
   for (const row of grouped) {
     if (row.status in counts) counts[row.status as JobStatus] = row.n
@@ -153,10 +163,15 @@ export function listCaptureJobs(db: DatabaseSync): {
   return { counts, items: [...open, ...done].map(jobOf) }
 }
 
-export function retryCaptureJob(db: DatabaseSync, id: string, now: number): CaptureJob {
+export function retryCaptureJob(
+  db: DatabaseSync,
+  id: string,
+  now: number,
+): CaptureJob {
   const current = jobById(db, id)
   if (!current) throw new RunnerError('job not found', 404)
-  if (current.status !== 'failed') throw new RunnerError('只有失败的任务可以重试', 409)
+  if (current.status !== 'failed')
+    throw new RunnerError('只有失败的任务可以重试', 409)
   db.prepare(
     `UPDATE jobs SET
       status = 'pending', attempts = 0, error = NULL, next_run_at = ?,
@@ -168,16 +183,21 @@ export function retryCaptureJob(db: DatabaseSync, id: string, now: number): Capt
   return next
 }
 
+/** 处理一个排队中的采集任务。返回 false 表示队列空了、这一轮没干活。 */
 export async function drainCaptureJobs(
   runner: Runner,
-  run: (assetId: string, step: CaptureStep, signal: AbortSignal) => Promise<CaptureStep | 'done'>,
-): Promise<void> {
-  if (busy.has(runner)) return
+  run: (
+    assetId: string,
+    step: CaptureStep,
+    signal: AbortSignal,
+  ) => Promise<CaptureStep | 'done'>,
+): Promise<boolean> {
+  if (busy.has(runner)) return false
   busy.add(runner)
   try {
     reclaimExpired(runner)
     const job = claimNext(runner)
-    if (!job) return
+    if (!job) return false
     const signal = AbortSignal.timeout(STEP_TIMEOUT_MS)
     try {
       await runClaimed(runner, job, run, signal)
@@ -186,6 +206,7 @@ export async function drainCaptureJobs(
       const message = err instanceof Error ? err.message : String(err)
       settleFailure(runner, job.id, message)
     }
+    return true
   } finally {
     busy.delete(runner)
   }
@@ -194,13 +215,19 @@ export async function drainCaptureJobs(
 async function runClaimed(
   runner: Runner,
   job: CaptureJob,
-  run: (assetId: string, step: CaptureStep, signal: AbortSignal) => Promise<CaptureStep | 'done'>,
+  run: (
+    assetId: string,
+    step: CaptureStep,
+    signal: AbortSignal,
+  ) => Promise<CaptureStep | 'done'>,
   signal: AbortSignal,
 ): Promise<void> {
   let step = job.step
   while (true) {
     if (signal.aborted) {
-      throw signal.reason instanceof Error ? signal.reason : new Error('capture job timed out')
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new Error('capture job timed out')
     }
     const next = await run(job.assetId, step, signal)
     if (next === 'done') return
@@ -277,7 +304,9 @@ function settleFailure(runner: Runner, id: string, message: string): void {
       .run(message, now, id)
     return
   }
-  const delay = BACKOFF_MS[Math.min(job.attempts - 1, BACKOFF_MS.length - 1)] ?? BACKOFF_MS[0]
+  const delay =
+    BACKOFF_MS[Math.min(job.attempts - 1, BACKOFF_MS.length - 1)] ??
+    BACKOFF_MS[0]
   runner.db
     .prepare(
       `UPDATE jobs
@@ -288,7 +317,8 @@ function settleFailure(runner: Runner, id: string, message: string): void {
 }
 
 function jobById(db: DatabaseSync, id: string): CaptureJob | null {
-  const row = db.prepare(`${jobSelect} WHERE jobs.id = ?`).get(id) as JobRow | undefined
+  const row = db.prepare(`${jobSelect} WHERE jobs.id = ?`).get(id) as
+    JobRow | undefined
   return row ? jobOf(row) : null
 }
 

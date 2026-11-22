@@ -49,7 +49,11 @@ async function main(): Promise<void> {
     enqueue: (job) =>
       enqueueDownload(
         runner.db,
-        { url: job.url, ...(job.mediaUrl ? { mediaUrl: job.mediaUrl } : {}), liveId: job.id },
+        {
+          url: job.url,
+          ...(job.mediaUrl ? { mediaUrl: job.mediaUrl } : {}),
+          liveId: job.id,
+        },
         runner.now().getTime(),
       ),
   })
@@ -57,8 +61,14 @@ async function main(): Promise<void> {
   const app = createApp(runner, live)
   const host = values.host ?? config.runner.host
   const port = portOf(values.port, config.runner.port)
+  // tick 内部可能连续跑几秒（capture 有 3 秒预算），不加锁会被下一个 interval 重入。
+  let ticking = false
   const timer = setInterval(() => {
-    void tick(runner)
+    if (ticking) return
+    ticking = true
+    void tick(runner).finally(() => {
+      ticking = false
+    })
   }, 1000)
   const sockets = new WebSocketServer({ noServer: true })
   const server = serve({

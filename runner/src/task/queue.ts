@@ -13,7 +13,12 @@ import type { ChatClient } from '../chat/client.ts'
 import { JOB_KIND, listTaskRows, taskById, type TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import type { Prompt } from '../workflow/graph.ts'
-import { expandPath, preparedPrompt, resultPaths, taskAdapterJson } from './records.ts'
+import {
+  expandPath,
+  preparedPrompt,
+  resultPaths,
+  taskAdapterJson,
+} from './records.ts'
 import { findDegenerateOutputs } from './validate.ts'
 
 export interface Runner {
@@ -38,14 +43,26 @@ export function resume(runner: Runner): void {
     .run(JOB_KIND.generate)
 }
 
+/** 一次 tick 里 capture 最多占这么久，剩下的让给 comfy 结算和下载。 */
+const CAPTURE_BUDGET_MS = 3000
+
 export async function tick(runner: Runner): Promise<void> {
   await settleComfy(runner)
   await claimComfy(runner)
-  await drainCaptureJobs(runner, (assetId, step, signal) =>
-    runCaptureStep(runner, assetId, step, signal),
-  )
+  // 采集步（prepare/tag/embed）单张几百毫秒，一次 tick 只跑一个的话
+  // 批量重算 1824 张要半小时。给 3 秒预算连续跑，队列语义仍是单任务串行。
+  const deadline = Date.now() + CAPTURE_BUDGET_MS
+  while (await drainCaptureJobsSafely(runner)) {
+    if (Date.now() >= deadline) break
+  }
   await drainCaptureTasks(runner, 'download')
   await drainCaptureTasks(runner, 'nobg')
+}
+
+function drainCaptureJobsSafely(runner: Runner): Promise<boolean> {
+  return drainCaptureJobs(runner, (assetId, step, signal) =>
+    runCaptureStep(runner, assetId, step, signal),
+  )
 }
 
 async function settleComfy(runner: Runner): Promise<void> {
@@ -111,7 +128,10 @@ async function claimComfy(runner: Runner): Promise<void> {
         .all(JOB_KIND.generate) as unknown as Array<{ comfy_base_url: string }>
     ).map((row) => row.comfy_base_url),
   )
-  const pending = listTaskRows(runner.db, `status = 'pending' ORDER BY created_at, rowid`)
+  const pending = listTaskRows(
+    runner.db,
+    `status = 'pending' ORDER BY created_at, rowid`,
+  )
   let index = 0
   for (const client of runner.clients) {
     if (busy.has(client.baseURL)) continue
