@@ -20,6 +20,15 @@ import {
   type TrainProfile,
 } from '../train/fromDataset.ts'
 import { TIERS, normalizeTier } from '../train/captionTiers.ts'
+import {
+  artifactCandidates,
+  findRetrievedByJobId,
+  initialState,
+  readManifest,
+  retrieveArtifacts,
+  safeJobName,
+  type RetrieveState,
+} from '../train/retrieve.ts'
 import { jsonObject } from './request.ts'
 
 // 训练发起台：
@@ -57,6 +66,39 @@ const STABLE_PRESET: Record<string, unknown> = {
 export type TrainMountOptions = {
   // 测试注入；生产从 <repoRoot>/scripts_and_tools/train_profiles.json 读。
   profiles?: ProfileBook
+}
+
+// 产物回程是分钟级的大文件传输，不能让 POST 等到传完；进程内存记状态，
+// 落盘的 manifest.json 才是「已回程」真相源（runner 重启后靠它找回）。
+const retrieves = new Map<string, RetrieveState>()
+
+async function syncFromDisk(runner: Runner, jobId: string): Promise<RetrieveState> {
+  const current = retrieves.get(jobId)
+  if (current && current.status !== 'idle') {
+    if (current.status === 'done' && current.name) {
+      const manifest = await readManifest(runner.dataDir, current.name)
+      if (manifest?.jobId === jobId && manifest.files.length) return current
+      const fresh = initialState(jobId)
+      retrieves.set(jobId, fresh)
+      return fresh
+    }
+    return current
+  }
+  const found = await findRetrievedByJobId(runner.dataDir, jobId)
+  if (!found) return current ?? initialState(jobId)
+  const done: RetrieveState = {
+    ...initialState(jobId),
+    name: found.name,
+    status: 'done',
+    phase: '已回程',
+    done: found.manifest.files.length,
+    total: found.manifest.files.length,
+    files: found.manifest.files,
+    finishedAt: found.manifest.deployedAt,
+    localDir: `data/lora/${found.name}`,
+  }
+  retrieves.set(jobId, done)
+  return done
 }
 
 function trainerOf(runner: Runner): string {
@@ -176,6 +218,90 @@ export function mountTrain(
     // tail 等查询参数原样透传（训练页只拉日志尾巴算进度）
     const search = new URL(c.req.url).search
     return proxy(runner, `/train/jobs/${c.req.param('id')}/log${search}`)
+  })
+
+  // 产物回程：POST 启动后台传输并立即返回；GET 查状态（首屏靠 manifest 反查）。
+  app.get('/train/jobs/:id/retrieve', async (c) =>
+    c.json(await syncFromDisk(runner, c.req.param('id'))),
+  )
+
+  app.post('/train/jobs/:id/retrieve', async (c) => {
+    const jobId = c.req.param('id')
+    const detail = await proxy(runner, `/train/jobs/${encodeURIComponent(jobId)}`)
+    if (!detail.ok) return detail
+    const payload = (await detail.json()) as Record<string, unknown>
+    // trainer 详情有的版本包一层 { job: ... }，有的直接是 job 对象。
+    const job = ((payload.job ?? payload) ?? {}) as Record<string, unknown>
+    if (job.status !== 'completed') {
+      throw new RunnerError('只有已完成的任务才能回程产物')
+    }
+    const params = (job.params ?? {}) as Record<string, unknown>
+
+    // 先按 jobId 查盘：旧脚本的 manifest.name 可能和 trainer job.name 不同
+    // （训练名带触发词、job 名不带），只看同名会误判成未回程再拉 1GB。
+    const found = await findRetrievedByJobId(runner.dataDir, jobId)
+    if (found) {
+      const done: RetrieveState = {
+        ...initialState(jobId),
+        name: found.name,
+        status: 'done',
+        phase: '已回程',
+        done: found.manifest.files.length,
+        total: found.manifest.files.length,
+        files: found.manifest.files,
+        finishedAt: found.manifest.deployedAt,
+        localDir: `data/lora/${found.name}`,
+      }
+      retrieves.set(jobId, done)
+      return c.json(done)
+    }
+
+    const name = safeJobName(job.name)
+
+    const running = retrieves.get(jobId)
+    if (running?.status === 'running') return c.json(running, 202)
+
+    const state: RetrieveState = {
+      ...initialState(jobId),
+      name,
+      status: 'running',
+      phase: '准备中',
+      startedAt: runner.now().toISOString(),
+      total: artifactCandidates(params, name).length,
+      localDir: `data/lora/${name}`,
+    }
+    retrieves.set(jobId, state)
+
+    void (async () => {
+      try {
+        const manifest = await retrieveArtifacts({
+          trainerBaseURL: trainerOf(runner),
+          dataDir: runner.dataDir,
+          jobId,
+          name,
+          params,
+          onProgress: (phase, done, total) => {
+            state.phase = phase
+            state.done = done
+            state.total = total
+          },
+        })
+        state.status = 'done'
+        state.phase = '已回程'
+        state.done = manifest.files.length
+        state.total = manifest.files.length
+        state.files = manifest.files
+        state.finishedAt = runner.now().toISOString()
+      } catch (err) {
+        state.status = 'error'
+        state.phase = '回程失败'
+        state.error = err instanceof Error ? err.message : String(err)
+        state.finishedAt = runner.now().toISOString()
+        console.error(`[train] 回程 ${jobId} 失败: ${state.error}`)
+      }
+    })()
+
+    return c.json(state, 202)
   })
 
   for (const action of ['pause', 'resume'] as const) {

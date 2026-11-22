@@ -23,7 +23,26 @@ stub.post('/train/jobs', async (c) => {
   return c.json({ job: { id: 'stub1', name: body.name, params: body } }, 201)
 })
 stub.get('/train/jobs', (c) => c.json({ jobs: [] }))
-stub.get('/train/jobs/:id', (c) => c.json({ job: { id: c.req.param('id') } }))
+stub.get('/train/jobs/:id', (c) => {
+  if (c.req.param('id') === 'retrieve-ok') {
+    return c.json({
+      id: 'retrieve-ok',
+      name: 'demo-job',
+      status: 'completed',
+      params: { baseModel: 'checkpoints/pdv10.safetensors', maxTrainEpochs: 1 },
+    })
+  }
+  if (c.req.param('id') === 'retrieve-running') {
+    return c.json({ id: 'retrieve-running', name: 'demo-job', status: 'running', params: {} })
+  }
+  return c.json({ job: { id: c.req.param('id') } })
+})
+const retrieveBytes = Buffer.from('fake safetensors bytes')
+stub.get('/files', (c) => {
+  const path = c.req.query('path') ?? ''
+  if (path !== 'demo-job/output/demo-job.safetensors') return c.text('not found', 404)
+  return c.body(retrieveBytes)
+})
 stub.get('/train/jobs/:id/log', (c) =>
   c.text(
     `line 1 of ${c.req.param('id')}\nline 2\ntail=${c.req.query('tail') ?? 'none'}\n`,
@@ -426,4 +445,43 @@ test('POST /train/start rejects unknown profile, dataset and params', async () =
     ((await conflict.json()) as { error: string }).error,
     /互斥/,
   )
+})
+
+test('产物回程：仅 completed 可启动，异步拉回后 GET 查到状态，重复触发幂等', async () => {
+  await withStubTrainer(async (base) => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'train-retrieve-'))
+    const app = appWithTrain({ ...runnerWithTrainer(base), dataDir })
+
+    const refused = await app.request('/train/jobs/retrieve-running/retrieve', {
+      method: 'POST',
+    })
+    assert.equal(refused.status, 400)
+    assert.match(((await refused.json()) as { error: string }).error, /已完成/)
+
+    const started = await app.request('/train/jobs/retrieve-ok/retrieve', { method: 'POST' })
+    assert.ok([200, 202].includes(started.status))
+    const first = (await started.json()) as { name: string; status: string }
+    assert.equal(first.name, 'demo-job')
+
+    let state = first
+    for (let i = 0; i < 60 && state.status === 'running'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      state = (await (await app.request('/train/jobs/retrieve-ok/retrieve')).json()) as typeof state
+    }
+    assert.equal(state.status, 'done')
+    const done = state as typeof state & { files: { file: string; size: number }[] }
+    assert.deepEqual(
+      done.files.map((f) => f.file),
+      ['demo-job.safetensors'],
+    )
+    assert.equal(
+      readFileSync(join(dataDir, 'lora', 'demo-job', 'demo-job.safetensors')).length,
+      retrieveBytes.length,
+    )
+
+    // 再点一次：直接回 done，不重复下载
+    const again = await app.request('/train/jobs/retrieve-ok/retrieve', { method: 'POST' })
+    assert.equal(again.status, 200)
+    assert.equal(((await again.json()) as { status: string }).status, 'done')
+  })
 })

@@ -29,6 +29,18 @@ interface TrainJob {
   pid: number | null
 }
 
+interface RetrieveInfo {
+  jobId: string
+  name: string | null
+  status: 'idle' | 'running' | 'done' | 'error'
+  phase: string
+  done: number
+  total: number
+  files: { file: string; size: number; sha256: string }[]
+  error: string | null
+  localDir: string | null
+}
+
 interface GpuCard {
   index: number
   name: string
@@ -135,6 +147,8 @@ export function TrainBoard() {
   const [logJob, setLogJob] = useState<TrainJob | null>(null)
   const [logText, setLogText] = useState('')
   const logRef = useRef<HTMLPreElement>(null)
+  const [retrieves, setRetrieves] = useState<Record<string, RetrieveInfo>>({})
+  const [retrievePending, setRetrievePending] = useState('')
 
   const loadSystem = useCallback(async () => {
     try {
@@ -162,11 +176,32 @@ export function TrainBoard() {
     lastSample.current = { step: parsed.step, at: now }
   }, [])
 
+  const loadRetrieves = useCallback(async (list: TrainJob[]) => {
+    const completed = list.filter((job) => job.status === 'completed')
+    if (completed.length === 0) return
+    const entries = await Promise.all(
+      completed.map(async (job) => {
+        try {
+          const info = await api<RetrieveInfo>(`train/jobs/${encodeURIComponent(job.id)}/retrieve`)
+          return [job.id, info] as const
+        } catch {
+          return null
+        }
+      }),
+    )
+    setRetrieves((current) => {
+      const next = { ...current }
+      for (const entry of entries) if (entry) next[entry[0]] = entry[1]
+      return next
+    })
+  }, [])
+
   const loadJobs = useCallback(async () => {
     try {
       const body = await api<{ jobs: TrainJob[] }>('train/jobs')
       const sorted = [...body.jobs].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       setJobs(sorted)
+      void loadRetrieves(sorted)
       const active = sorted.find((job) => job.status === 'running')
       if (!active) {
         setTail('')
@@ -184,7 +219,7 @@ export function TrainBoard() {
       setJobs([])
       fail(`训练任务读取失败：${messageOf(err)}`)
     }
-  }, [sampleSpeed])
+  }, [sampleSpeed, loadRetrieves])
 
   useEffect(() => {
     void loadSystem()
@@ -209,6 +244,26 @@ export function TrainBoard() {
     const timer = setInterval(() => void loadJobs(), 5000)
     return () => clearInterval(timer)
   }, [loadJobs])
+
+  // 回程是大文件传输：只有存在 running 的回程任务时才加密集轮询
+  useEffect(() => {
+    if (!Object.values(retrieves).some((info) => info.status === 'running')) return
+    const timer = setInterval(() => void loadRetrieves(jobs ?? []), 2000)
+    return () => clearInterval(timer)
+  }, [retrieves, jobs, loadRetrieves])
+
+  const lastRetrieveStatus = useRef<Record<string, string>>({})
+  useEffect(() => {
+    for (const [id, info] of Object.entries(retrieves)) {
+      const prev = lastRetrieveStatus.current[id]
+      lastRetrieveStatus.current[id] = info.status
+      if (prev === 'running' && info.status === 'done') {
+        notify(`产物已回程：${info.localDir ?? 'data/lora'}`)
+      } else if (prev === 'running' && info.status === 'error') {
+        fail(`回程失败：${info.error ?? '未知错误'}`)
+      }
+    }
+  }, [retrieves])
 
   // 日志弹窗：打开时拉全量，之后每 3s 刷新并滚到底
   useEffect(() => {
@@ -274,6 +329,26 @@ export function TrainBoard() {
       fail(messageOf(err))
     } finally {
       setPendingId('')
+    }
+  }
+
+  async function retrieveArtifacts(job: TrainJob) {
+    setRetrievePending(job.id)
+    try {
+      const info = await api<RetrieveInfo>(
+        `train/jobs/${encodeURIComponent(job.id)}/retrieve`,
+        { method: 'POST' },
+      )
+      setRetrieves((current) => ({ ...current, [job.id]: info }))
+      if (info.status === 'done') {
+        notify(`产物已回程：${info.localDir ?? 'data/lora'}`)
+      } else {
+        notify('开始回程产物：拉回 data/lora 并部署到 ComfyUI，权重较大需等几分钟')
+      }
+    } catch (err) {
+      fail(messageOf(err))
+    } finally {
+      setRetrievePending('')
     }
   }
 
@@ -571,6 +646,41 @@ export function TrainBoard() {
                             取消
                           </button>
                         ) : null}
+                        {job.status === 'completed' ? (() => {
+                          const info = retrieves[job.id]
+                          const state = info?.status ?? 'idle'
+                          const label =
+                            state === 'done'
+                              ? '已回程'
+                              : state === 'running'
+                                ? info.total
+                                  ? `回程中 ${info.done}/${info.total}`
+                                  : '回程中'
+                                : state === 'error'
+                                  ? '重试回程'
+                                  : '回程产物'
+                          const title =
+                            state === 'done'
+                              ? `权重在 ${info?.localDir ?? 'data/lora'}；ComfyUI 已可见`
+                              : state === 'error'
+                                ? info?.error ?? ''
+                                : state === 'running'
+                                  ? info?.phase || '传输中'
+                                  : '拉回权重到 data/lora，并部署到训练机 models/loras'
+                          return (
+                            <button
+                              type="button"
+                              className="quiet"
+                              disabled={
+                                retrievePending === job.id || state === 'running' || state === 'done'
+                              }
+                              title={title}
+                              onClick={() => void retrieveArtifacts(job)}
+                            >
+                              {label}
+                            </button>
+                          )
+                        })() : null}
                         <button
                           type="button"
                           className="quiet"
