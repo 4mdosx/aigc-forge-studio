@@ -30,6 +30,8 @@ const { values } = parseArgs({
     lora: { type: 'string', default: 'hemi_real-zxxstyle-seed-az-261121-163.safetensors' },
     trigger: { type: 'string', default: 'zxxstyle' },
     'wrong-trigger': { type: 'string' },
+    'only-versions': { type: 'string' },
+    'grid-name': { type: 'string', default: 'grid' },
     strength: { type: 'string', default: '1.0' },
     pose: { type: 'string', default: '1794656866008' },
     modes: { type: 'string', default: 't2i,cn' },
@@ -82,6 +84,16 @@ const VERSIONS = [
       ]
     : []),
 ]
+
+// 只跑指定版本（例如只做「有 LoRA / 无 LoRA」两组时传 noprefix,nolora）
+const ONLY = values['only-versions']
+  ? new Set(values['only-versions'].split(',').map((v) => v.trim()).filter(Boolean))
+  : null
+if (ONLY) {
+  const known = new Set(VERSIONS.map((v) => v.key))
+  for (const k of ONLY) if (!known.has(k)) throw new Error(`未知版本 ${k}，可选 ${[...known].join('/')}`)
+}
+const ACTIVE = ONLY ? VERSIONS.filter((v) => ONLY.has(v.key)) : VERSIONS
 
 // Danbooru tag 里的括号（bar_(place)）会被 ComfyUI 当权重语法吃掉，必须转义成 \( \)
 const escapeTag = (t) => t.replace(/[()[\]]/g, (m) => `\\${m}`)
@@ -235,9 +247,9 @@ if (DRY) {
   for (const m of MODES) console.log(`  ${m}@${graphs[m].version}`)
   console.log(`out=${OUTDIR}`)
   for (const p of PROMPTS)
-    for (const v of VERSIONS)
+    for (const v of ACTIVE)
       console.log(`  [${p.key}/${v.key}] ${promptOf(p, v).slice(0, 110)}…`)
-  console.log(`总张数 ${PROMPTS.length * VERSIONS.length * MODES.length * SEEDS.length}`)
+  console.log(`总张数 ${PROMPTS.length * ACTIVE.length * MODES.length * SEEDS.length}`)
   process.exit(0)
 }
 
@@ -250,7 +262,7 @@ for (const mode of MODES) {
   const dir = join(OUTDIR, mode)
   mkdirSync(dir, { recursive: true })
   for (const p of PROMPTS) {
-    for (const v of VERSIONS) {
+    for (const v of ACTIVE) {
       for (const seed of SEEDS) {
         const dst = join(dir, `${p.key}-${v.key}-s${seed}.png`)
         if (existsSync(dst)) {
@@ -287,7 +299,7 @@ writeFileSync(
       pose: POSE_ID,
       size: [width, height],
       negative: NEGATIVE,
-      versions: VERSIONS.map(({ key, label, prefix, strength }) => ({ key, label, prefix, strength })),
+      versions: ACTIVE.map(({ key, label, prefix, strength }) => ({ key, label, prefix, strength })),
       prompts: PROMPTS,
       seeds: SEEDS,
       workflows: Object.fromEntries(MODES.map((m) => [m, graphs[m].version])),
@@ -302,12 +314,12 @@ writeFileSync(
 const gridSeed = SEEDS[0]
 for (const mode of MODES) {
   const dir = join(OUTDIR, mode)
-  const cols = VERSIONS.map((v) => v.label).join(',')
+  const cols = ACTIVE.map((v) => v.label).join(',')
   const rows = PROMPTS.map(
     (p) =>
-      `${p.label}|${VERSIONS.map((v) => join(dir, `${p.key}-${v.key}-s${gridSeed}.png`)).join('|')}`,
+      `${p.label}|${ACTIVE.map((v) => join(dir, `${p.key}-${v.key}-s${gridSeed}.png`)).join('|')}`,
   ).join(';')
-  const out = join(dir, `grid-s${gridSeed}.png`)
+  const out = join(dir, `${values['grid-name']}-s${gridSeed}.png`)
   const run = spawnSync(
     'python3',
     [
