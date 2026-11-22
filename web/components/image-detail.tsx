@@ -24,6 +24,9 @@ import { fail, messageOf, notify } from "@/lib/notify";
 
 type NearestOrder = "near" | "far";
 
+// 手改向量只在低维时提供；1280 维 DINO 向量手改没有意义，编辑框也扛不住 10KB 文本。
+const EDITABLE_VECTOR_MAX = 32;
+
 // tag 按钮 hover 提示：有置信度就显示百分比，没有则只显示 tag 名。
 function titleOfTag(name: string, details: readonly TagDetail[]): string {
   const score = details.find((detail) => detail.name === name)?.score ?? 0;
@@ -595,7 +598,9 @@ export function ImageDetail({
             <div className="style-radar-block">
               <div className="style-radar-head">
                 <span>向量</span>
-                {editing !== "embedding" && isStyleVector(selected.embedding) ? (
+                {editing !== "embedding" &&
+                selected.embedding.length > 0 &&
+                selected.embedding.length <= EDITABLE_VECTOR_MAX ? (
                   <button
                     type="button"
                     className="style-radar-edit"
@@ -626,18 +631,16 @@ export function ImageDetail({
                   ) : null}
                 </>
               ) : (
-                <Editable
-                  active={false}
-                  draft={draft}
-                  saving={saving}
-                  multiline
-                  text={embeddingPreview(selected.embedding)}
-                  hint={selected.embeddingModelVersion}
-                  onDraft={setDraft}
-                  onOpen={() => beginEdit("embedding", selected.embedding.join(", "))}
-                  onCancel={() => setEditing(null)}
-                  onSave={() => void saveEdit(selected)}
-                />
+                <>
+                  <p className="style-radar-version">
+                    {selected.embedding.length === 0
+                      ? "还没有向量"
+                      : `${selected.embedding.length} 维向量`}
+                  </p>
+                  {selected.embeddingModelVersion ? (
+                    <p className="style-radar-version">{selected.embeddingModelVersion}</p>
+                  ) : null}
+                </>
               )}
             </div>
             <dl className="capture-meta">

@@ -22,6 +22,12 @@ import { RunnerError } from '../errors.ts'
 import { writeWd14TagTable } from '../tag/table.ts'
 import type { Runner } from '../task/queue.ts'
 import { enqueueCaptureJob, enqueueEmbedJob, type CaptureStep } from './jobs.ts'
+import {
+  loadVectors,
+  saveVector,
+  storedVector,
+  vectorVersions,
+} from './vectors.ts'
 
 const execFile = promisify(execFileCb)
 
@@ -98,7 +104,7 @@ type AssetRow = {
   updated_at: number
 }
 
-export const EMBEDDING_MODEL = 'style-embedder-v4'
+export const EMBEDDING_MODEL = 'dinov3-cls-224-v1'
 const RATINGS = new Set(['general', 'sensitive', 'questionable', 'explicit'])
 
 function ratingOf(value: unknown): string {
@@ -144,7 +150,10 @@ const ASSET_LIST_COLUMNS = `id, status, source_type, source_url, img_url, parent
 const tagKeyReady = new WeakSet<DatabaseSync>()
 
 export function assetTagKey(tag: string): string {
-  return tag.trim().toLowerCase().replace(/[\s_]+/g, '_')
+  return tag
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, '_')
 }
 
 function ensureTagKey(db: DatabaseSync): void {
@@ -155,18 +164,26 @@ function ensureTagKey(db: DatabaseSync): void {
   tagKeyReady.add(db)
 }
 
-function assetWhere(query: AssetListQuery): { sql: string; args: Array<string | number> } {
+function assetWhere(query: AssetListQuery): {
+  sql: string
+  args: Array<string | number>
+} {
   const clauses = ['1 = 1']
   const args: Array<string | number> = []
   if (query.statuses.length > 0) {
-    clauses.push(`image_assets.status IN (${query.statuses.map(() => '?').join(', ')})`)
+    clauses.push(
+      `image_assets.status IN (${query.statuses.map(() => '?').join(', ')})`,
+    )
     args.push(...query.statuses)
   }
   if (query.ratings.length > 0) {
-    clauses.push(`image_assets.rating IN (${query.ratings.map(() => '?').join(', ')})`)
+    clauses.push(
+      `image_assets.rating IN (${query.ratings.map(() => '?').join(', ')})`,
+    )
     args.push(...query.ratings)
   }
-  if (query.safe) clauses.push(`image_assets.rating NOT IN ('questionable', 'explicit')`)
+  if (query.safe)
+    clauses.push(`image_assets.rating NOT IN ('questionable', 'explicit')`)
   if (query.datasetId) {
     clauses.push(
       'image_assets.id IN (SELECT asset_id FROM dataset_assets WHERE dataset_id = ?)',
@@ -184,8 +201,10 @@ function assetWhere(query: AssetListQuery): { sql: string; args: Array<string | 
   return { sql: clauses.join(' AND '), args }
 }
 
-function briefAssets(rows: Array<Omit<AssetRow, 'embedding_json'>>): ImageAsset[] {
-  return rows.map((row) => assetOf({ ...row, embedding_json: '[]' }, true))
+function briefAssets(
+  rows: Array<Omit<AssetRow, 'embedding_json'>>,
+): ImageAsset[] {
+  return rows.map((row) => assetOf({ ...row, embedding_json: '[]' }))
 }
 
 export function pageAssets(
@@ -224,7 +243,9 @@ export function pageAssets(
        ORDER BY created_at DESC, rowid DESC
        LIMIT ? OFFSET ?`,
     )
-    .all(...where.args, query.size, query.offset) as Array<Omit<AssetRow, 'embedding_json'>>
+    .all(...where.args, query.size, query.offset) as Array<
+    Omit<AssetRow, 'embedding_json'>
+  >
   return {
     total: filtered.total,
     offset: query.offset,
@@ -250,7 +271,10 @@ export function listAssetIds(
   return { total: rows.length, ids: rows.map((row) => row.id) }
 }
 
-export function assetsByIds(db: DatabaseSync, ids: readonly string[]): ImageAsset[] {
+export function assetsByIds(
+  db: DatabaseSync,
+  ids: readonly string[],
+): ImageAsset[] {
   if (ids.length === 0) return []
   const rows = db
     .prepare(
@@ -285,7 +309,14 @@ export function assetTagCounts(
 export function assetById(db: DatabaseSync, id: string): ImageAsset | null {
   const row = db.prepare('SELECT * FROM image_assets WHERE id = ?').get(id) as
     AssetRow | undefined
-  return row ? assetOf(row) : null
+  if (!row) return null
+  const asset = assetOf(row)
+  const stored = storedVector(db, id)
+  if (stored) {
+    asset.embedding = Array.from(stored.vec)
+    asset.embeddingModelVersion = stored.modelVersion
+  }
+  return asset
 }
 
 export type NearestNeighbor = {
@@ -315,16 +346,13 @@ export async function nearestAssets(
   const assets = listAssets(runner.db)
   const target = assets.find((asset) => asset.id === id)
   if (!target) throw new RunnerError('image not found', 404)
-  requireCurrentEmbedding(target)
   const pool = allowed
     ? assets.filter((asset) => asset.id === id || allowed.has(asset.id))
     : assets
-  const vectors = vectorsFor(pool)
-  if (!vectors) throw new RunnerError('这张图还没有向量')
+  const vectors = poolVectors(runner.db, pool, id)
   const base = criticBaseURL(runner.dataDir)
   const stamps = new Map<string, string>()
-  for (const asset of pool)
-    stamps.set(asset.id, `${asset.updatedAt}:${asset.embeddingModelVersion}`)
+  for (const asset of pool) stamps.set(asset.id, String(asset.updatedAt))
   let result: {
     neighbors?: Array<{ id?: unknown; cosine?: unknown; l2?: unknown }>
   }
@@ -406,22 +434,23 @@ export async function groupAssets(
   const vectors: Record<string, number[]> = {}
   const skipped: string[] = []
   const stale: string[] = []
+  const stored = loadVectors(runner.db, EMBEDDING_MODEL, selected)
+  const versions = vectorVersions(runner.db)
   let dim: number | null = null
   for (const id of selected) {
-    const asset = byId.get(id)
-    const vector = asset ? currentEmbedding(asset) : null
-    if (!vector) {
+    const vector = stored.get(id)
+    if (!vector || vector.length === 0) {
       skipped.push(id)
-      if (asset && asset.embeddingModelVersion !== EMBEDDING_MODEL)
-        stale.push(id)
+      if (versions.get(id) !== EMBEDDING_MODEL) stale.push(id)
       continue
     }
     if (dim !== null && vector.length !== dim) {
       skipped.push(id)
+      stale.push(id)
       continue
     }
     dim ??= vector.length
-    vectors[id] = vector
+    vectors[id] = Array.from(vector)
   }
   const usable = Object.keys(vectors)
   if (usable.length === 0) throw new RunnerError('这些图片还没有向量')
@@ -430,7 +459,13 @@ export async function groupAssets(
       `可分组的图片有 ${usable.length} 张，groups 必须在 1 到 ${usable.length} 之间`,
     )
   }
-  const packed = await splitVectors(runner.dataDir, vectors, usable, groups, balance)
+  const packed = await splitVectors(
+    runner.dataDir,
+    vectors,
+    usable,
+    groups,
+    balance,
+  )
   return { groups: packed, skipped, stale, balance }
 }
 
@@ -753,7 +788,7 @@ async function writeEmbedding(
 ): Promise<void> {
   const processedAbs = processedAbsOf(runner, asset)
   const base = criticBaseURL(runner.dataDir)
-  const embedded = await criticJson<{ styleVec?: number[] }>(
+  const embedded = await criticJson<{ styleVec?: number[]; dim?: number }>(
     base,
     '/embed',
     { path: processedAbs },
@@ -762,19 +797,19 @@ async function writeEmbedding(
   const embedding = Array.isArray(embedded.styleVec)
     ? embedded.styleVec.filter((value) => typeof value === 'number')
     : []
-  runner.db
-    .prepare(
-      `UPDATE image_assets SET
-        status = CASE WHEN status IN ('approved', 'rejected') THEN status ELSE 'processed' END,
-        embedding_json = ?, embedding_model_version = ?, updated_at = ?
-      WHERE id = ?`,
-    )
-    .run(
-      JSON.stringify(embedding),
-      EMBEDDING_MODEL,
-      runner.now().getTime(),
-      asset.id,
-    )
+  if (embedding.length === 0) throw new Error('critic 没返回风格向量')
+  const now = runner.now().getTime()
+  transaction(runner.db, () => {
+    saveVector(runner.db, asset.id, EMBEDDING_MODEL, embedding, now)
+    runner.db
+      .prepare(
+        `UPDATE image_assets SET
+          status = CASE WHEN status IN ('approved', 'rejected') THEN status ELSE 'processed' END,
+          embedding_json = '[]', embedding_model_version = ?, updated_at = ?
+        WHERE id = ?`,
+      )
+      .run(EMBEDDING_MODEL, now, asset.id)
+  })
 }
 
 function processedAbsOf(runner: Runner, asset: ImageAsset): string {
@@ -803,22 +838,33 @@ export function updateAsset(
   const current = assetById(runner.db, id)
   if (!current) throw new RunnerError('image not found', 404)
   const now = runner.now().getTime()
-  runner.db
-    .prepare(
-      `UPDATE image_assets SET
-        source_url = ?, img_url = ?, tags_json = ?, embedding_json = ?, rating = ?, note = ?, updated_at = ?
-      WHERE id = ?`,
-    )
-    .run(
-      patch.sourceUrl ?? current.source.sourceUrl,
-      patch.imgUrl ?? current.source.imgUrl,
-      JSON.stringify(patch.tags ?? current.tags),
-      JSON.stringify(patch.embedding ?? current.embedding),
-      patch.rating ?? current.rating,
-      patch.note === undefined ? (current.note ?? null) : patch.note,
-      now,
-      id,
-    )
+  transaction(runner.db, () => {
+    runner.db
+      .prepare(
+        `UPDATE image_assets SET
+          source_url = ?, img_url = ?, tags_json = ?, rating = ?, note = ?, updated_at = ?
+        WHERE id = ?`,
+      )
+      .run(
+        patch.sourceUrl ?? current.source.sourceUrl,
+        patch.imgUrl ?? current.source.imgUrl,
+        JSON.stringify(patch.tags ?? current.tags),
+        patch.rating ?? current.rating,
+        patch.note === undefined ? (current.note ?? null) : patch.note,
+        now,
+        id,
+      )
+    // 手改向量只走 vectors 表，并把版本记成当前模型，否则会被判成过期。
+    if (patch.embedding !== undefined) {
+      saveVector(runner.db, id, EMBEDDING_MODEL, patch.embedding, now)
+      runner.db
+        .prepare(
+          `UPDATE image_assets SET embedding_json = '[]', embedding_model_version = ?
+           WHERE id = ?`,
+        )
+        .run(EMBEDDING_MODEL, id)
+    }
+  })
   const next = assetById(runner.db, id)
   if (!next) throw new RunnerError('image not found', 404)
   if (patch.tags !== undefined) writeWd14TagTable(runner.db, runner.dataDir)
@@ -1050,9 +1096,10 @@ function dropOriginalFiles(dir: string): void {
   }
 }
 
-function assetOf(row: AssetRow, brief = false): ImageAsset {
+function assetOf(row: AssetRow): ImageAsset {
   const tags = parseStringList(row.tags_json)
-  const embedding = brief ? [] : parseNumberList(row.embedding_json)
+  // 向量在 image_vectors 里，只有单张详情才补上；列表页一律空数组。
+  const embedding: number[] = []
   const source: ImageAsset['source'] = {
     type: row.source_type === 'crawler' ? 'crawler' : 'manual',
     sourceUrl: row.source_url,
@@ -1153,12 +1200,12 @@ export type EmbeddingRebuild = {
   ids: string[]
 }
 
-/** 把向量为空或版本过期的图排进 embed 队列。换向量模型后跑一次。 */
+/** 把向量版本不对的图排进 embed 队列。换向量模型后跑一次。 */
 export function rebuildStaleEmbeddings(runner: Runner): EmbeddingRebuild {
   const rows = runner.db
     .prepare(
       `SELECT id FROM image_assets
-       WHERE embedding_json = '[]' OR embedding_model_version != ?
+       WHERE embedding_model_version != ? AND processed_path IS NOT NULL
        ORDER BY created_at`,
     )
     .all(EMBEDDING_MODEL) as Array<{ id: string }>
@@ -1168,10 +1215,7 @@ export function rebuildStaleEmbeddings(runner: Runner): EmbeddingRebuild {
 }
 
 export function isEmbeddingStale(asset: ImageAsset): boolean {
-  return (
-    asset.embedding.length === 0 ||
-    asset.embeddingModelVersion !== EMBEDDING_MODEL
-  )
+  return asset.embeddingModelVersion !== EMBEDDING_MODEL
 }
 
 export async function backfillAssetThumbs(
@@ -1250,7 +1294,8 @@ async function syncVectors(
     '/image-vector/state',
     {},
   )
-  const generation = typeof state.generation === 'string' ? state.generation : ''
+  const generation =
+    typeof state.generation === 'string' ? state.generation : ''
   let known = vectorSync.get(base)
   if (!known || known.generation !== generation) {
     known = { generation, stamps: new Map() }
@@ -1270,43 +1315,34 @@ async function syncVectors(
   for (const id of ids) known.stamps.set(id, stamps.get(id) ?? '')
 }
 
-function vectorsFor(assets: ImageAsset[]): Record<string, number[]> | null {
-  const vectors: Record<string, number[]> = {}
-  let dim: number | null = null
-  for (const asset of assets) {
-    const vector = currentEmbedding(asset)
-    if (!vector) continue
-    if (dim !== null && vector.length !== dim) continue
-    dim ??= vector.length
-    vectors[asset.id] = vector
-  }
-  return Object.keys(vectors).length > 0 ? vectors : null
-}
-
-/** 只有当前模型的向量才算数；换模型后旧向量不能混进来当邻居。 */
-function currentEmbedding(asset: ImageAsset): number[] | null {
-  if (asset.embeddingModelVersion !== EMBEDDING_MODEL) return null
-  return usableVector(asset.embedding)
-}
-
-function requireCurrentEmbedding(asset: ImageAsset): void {
-  if (asset.embedding.length === 0)
+/** 检索用的向量池：目标图必须在里面，维度不一致的邻居直接丢掉。 */
+function poolVectors(
+  db: DatabaseSync,
+  assets: ImageAsset[],
+  targetId: string,
+): Record<string, number[]> {
+  const stored = loadVectors(
+    db,
+    EMBEDDING_MODEL,
+    assets.map((asset) => asset.id),
+  )
+  const self = stored.get(targetId)
+  if (!self || self.length === 0) {
+    const other = storedVector(db, targetId)
+    if (other)
+      throw new RunnerError(
+        `这张图的向量来自 ${other.modelVersion || '未知模型'}，与当前 ${EMBEDDING_MODEL} 不一致；先重建向量`,
+        409,
+      )
     throw new RunnerError('这张图还没有向量', 409)
-  if (asset.embeddingModelVersion !== EMBEDDING_MODEL) {
-    throw new RunnerError(
-      `这张图的向量来自 ${asset.embeddingModelVersion || '未知模型'}，与当前 ${EMBEDDING_MODEL} 不一致；先重建向量`,
-      409,
-    )
   }
-  if (!usableVector(asset.embedding))
-    throw new RunnerError('这张图的向量不可用', 409)
-}
-
-function usableVector(values: number[]): number[] | null {
-  if (values.length === 0) return null
-  if (values.some((value) => !Number.isFinite(value))) return null
-  if (values.every((value) => value === 0)) return null
-  return values
+  const dim = self.length
+  const vectors: Record<string, number[]> = { [targetId]: Array.from(self) }
+  for (const [assetId, vec] of stored) {
+    if (assetId === targetId || vec.length !== dim) continue
+    vectors[assetId] = Array.from(vec)
+  }
+  return vectors
 }
 
 function criticBaseURL(dataDir: string): string {

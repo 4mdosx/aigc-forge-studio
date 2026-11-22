@@ -6,7 +6,7 @@
     POST /prepare {"path": "...", "out": "..."}  # 预处理 PNG
     POST /tag     {"path": "...", "model": "...", "general_threshold": 0.35,
                    "character_threshold": 0.85, "exclude": [], "with_scores": false}
-    POST /embed   {"path": "...", "ref": "...", "device": "auto"}
+    POST /embed   {"path": "...", "ref": "...", "device": "auto", "mode": "cls|head"}
     POST /close   {"a": "...", "b": "..."}   # 两图风格距离（L2 + cosine）
     POST /image-vector {"vectors": {...}, "modelVersion": "..."}  # upsert 向量缓存
     POST /image-vector/state
@@ -131,7 +131,9 @@ def embed():
         data = _body()
         image = _resolve(data["path"])
         ref = _resolve(data["ref"], "ref") if data.get("ref") else None
-        result = embedder.embed(image, ref=ref, device=data.get("device"))
+        result = embedder.embed(
+            image, ref=ref, device=data.get("device"), mode=data.get("mode")
+        )
         return jsonify({"ok": True, **result})
     except KeyError:
         return jsonify({"ok": False, "error": "缺少 path"}), 400

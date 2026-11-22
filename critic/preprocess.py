@@ -64,6 +64,27 @@ def style_array(path: Path, mean, std):
     return np.ascontiguousarray(array.transpose(2, 0, 1)[None, ...])
 
 
+def square_array(path: Path, mean, std, size: int):
+    """统一颜色后直接缩放到 size×size，不补白边。
+
+    风格向量用这一路：DINO 按方形输入训练，白边会引入模型没见过的边框像素；
+    实测 224 与 448 的检索效果打平，所以用最小的 224，单张 0.13s。
+    """
+    import numpy as np
+
+    config = load_profile()
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source) or source
+        image.load()
+        image = to_color(image, config)
+        image.load()
+    if image.size != (size, size):
+        image = image.resize((size, size), Image.Resampling.BILINEAR)
+    array = np.asarray(image, dtype=np.float32) / 255.0
+    array = (array - np.asarray(mean, dtype=np.float32)) / np.asarray(std, dtype=np.float32)
+    return np.ascontiguousarray(array.transpose(2, 0, 1)[None, ...])
+
+
 def to_color(image: Image.Image, profile: dict) -> Image.Image:
     space = str(profile.get("colorSpace", "sRGB"))
     channels = int(profile.get("channels", 3))

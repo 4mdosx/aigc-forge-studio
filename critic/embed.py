@@ -1,4 +1,11 @@
-"""风格向量。输入图片路径，返回 7 维 styleVec；给参考图时附带距离。"""
+"""风格向量。输入图片路径，返回向量；给参考图时附带距离。
+
+两种模式：
+- cls（默认）DINOv3-H 的 CLS，1280 维。方形缩放到 224 再进模型。
+- head 作者训练的 7 维风格头，DINO 按 profile bucket 预处理后取 CLS 再走 MLP。
+
+7 维头在检索上明显弱于裸 CLS（同源@10 0.160 vs 0.588），仅为对照保留。
+"""
 
 from __future__ import annotations
 
@@ -9,13 +16,19 @@ from pathlib import Path
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-from critic.preprocess import style_array
+from critic.preprocess import square_array, style_array
 
 ROOT = Path(__file__).resolve().parent.parent
 MODEL_DIR = ROOT / "data" / "models" / "style-embedder"
 DINO_DIR = MODEL_DIR / "dinov3-vith16plus"
 HEAD_FILE = MODEL_DIR / "Style_Embedder_v4.safetensors"
-DIM = 7
+
+MODE_CLS = "cls"
+MODE_HEAD = "head"
+DEFAULT_MODE = MODE_CLS
+INPUT_SIZE = 224
+HEAD_DIM = 7
+CLS_DIM = 1280
 
 # 作者博客解释的是旧 6 维模型的方向；v4 是 7 维，仅作弱提示，不是官方标签。
 AXIS_HINTS = [
@@ -28,16 +41,24 @@ AXIS_HINTS = [
     "undocumented in author blog",
 ]
 
-_embed_fn = None
+_forward = None
 _embed_device = None
 
 
 def loaded() -> bool:
-    return _embed_fn is not None
+    return _forward is not None
 
 
 def device() -> str | None:
     return _embed_device
+
+
+def mode_of(value: object) -> str:
+    if value in (None, ""):
+        return DEFAULT_MODE
+    if value in (MODE_CLS, MODE_HEAD):
+        return str(value)
+    raise ValueError(f"mode 必须是 {MODE_CLS} 或 {MODE_HEAD}")
 
 
 def embed(
@@ -46,17 +67,25 @@ def embed(
     ref: str | Path | None = None,
     device: str | None = None,
     dtype: str | None = None,
+    mode: str | None = None,
 ) -> dict:
     image = _image(path, "path")
-    embed_fn, used = _predictor(device, dtype)
-    result = {"image": str(image), "device": used, "styleVec": embed_fn(image)}
+    forward, used, mode = _predictor(device, dtype, mode)
+    vector = forward(image, mode)
+    result = {
+        "image": str(image),
+        "device": used,
+        "mode": mode,
+        "dim": len(vector),
+        "styleVec": vector,
+    }
     if ref:
         reference = _image(ref, "ref")
-        ref_vec = embed_fn(reference)
+        ref_vec = forward(reference, mode)
         result["ref"] = {
             "image": str(reference),
             "styleVec": ref_vec,
-            **compare(result["styleVec"], ref_vec),
+            **compare(vector, ref_vec),
         }
     return result
 
@@ -64,12 +93,14 @@ def embed(
 def close(a: str | Path, b: str | Path, *, device: str | None = None) -> dict:
     left = _image(a, "a")
     right = _image(b, "b")
-    embed_fn, used = _predictor(device, None)
+    forward, used, mode = _predictor(device, None, None)
     return {
         "a": str(left),
         "b": str(right),
         "device": used,
-        **compare(embed_fn(left), embed_fn(right)),
+        "mode": mode,
+        "dim": CLS_DIM if mode == MODE_CLS else HEAD_DIM,
+        **compare(forward(left, mode), forward(right, mode)),
     }
 
 
@@ -94,11 +125,11 @@ def _image(path: str | Path, field: str) -> Path:
     return image
 
 
-def _predictor(device: str | None, dtype: str | None):
-    global _embed_fn, _embed_device
-    if _embed_fn is None:
-        _embed_fn, _embed_device = _load(device, dtype)
-    return _embed_fn, _embed_device
+def _predictor(device: str | None, dtype: str | None, mode: str | None):
+    global _forward, _embed_device
+    if _forward is None:
+        _forward, _embed_device = _load(device, dtype)
+    return _forward, _embed_device, mode_of(mode)
 
 
 def _load(device: str | None, dtype: str | None):
@@ -114,9 +145,9 @@ def _load(device: str | None, dtype: str | None):
     class EmbeddingNetwork(nn.Module):
         def __init__(self):
             super().__init__()
-            self.fc1 = nn.Linear(1280, 256)
+            self.fc1 = nn.Linear(CLS_DIM, 256)
             self.fc2 = nn.Linear(256, 128)
-            self.fc3 = nn.Linear(128, DIM)
+            self.fc3 = nn.Linear(128, HEAD_DIM)
             self.act = nn.ReLU(inplace=True)
 
         def forward(self, x):
@@ -143,13 +174,21 @@ def _load(device: str | None, dtype: str | None):
     head.load_state_dict(load_file(str(HEAD_FILE), device=str(dev)))
     head.eval()
 
-    def embed_fn(path: Path):
-        pixels = torch.from_numpy(style_array(path, mean, std)).to(device=dev, dtype=dt)
+    def forward(path: Path, mode: str) -> list[float]:
+        if mode == MODE_CLS:
+            array = square_array(path, mean, std, INPUT_SIZE)
+        else:
+            array = style_array(path, mean, std)
+        pixels = torch.from_numpy(array).to(device=dev, dtype=dt)
         with torch.inference_mode():
             cls = dino(pixel_values=pixels).last_hidden_state[:, 0, :]
-            vec = head(cls).float().cpu().numpy().reshape(-1)
-        if vec.shape[0] != DIM or not all(math.isfinite(float(x)) for x in vec):
-            raise RuntimeError(f"风格向量异常：{vec!r}")
-        return [round(float(x), 5) for x in vec]
+            vec = (head(cls) if mode == MODE_HEAD else cls).float().cpu().numpy().reshape(-1)
+        expect = HEAD_DIM if mode == MODE_HEAD else CLS_DIM
+        if vec.shape[0] != expect or not all(math.isfinite(float(x)) for x in vec):
+            raise RuntimeError(f"风格向量异常：{mode} 期望 {expect} 维，得到 {vec.shape}")
+        # 1280 维不做 round(5)：f16 存储只保 3 位有效数字，四舍五入纯属浪费。
+        if mode == MODE_HEAD:
+            return [round(float(x), 5) for x in vec]
+        return [float(x) for x in vec]
 
-    return embed_fn, str(dev)
+    return forward, str(dev)

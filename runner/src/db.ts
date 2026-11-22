@@ -244,6 +244,37 @@ CREATE TABLE IF NOT EXISTS image_assets (
 
 CREATE INDEX IF NOT EXISTS image_assets_by_status ON image_assets (status, created_at);
 
+-- 风格向量单独放。1280 维写成 JSON 是 10KB 一行的文本，
+-- 而 image_assets 的列表查询走 SELECT *，不该顺带把它捞出来。这里存 f32 二进制。
+CREATE TABLE IF NOT EXISTS image_vectors (
+  asset_id TEXT PRIMARY KEY REFERENCES image_assets(id) ON DELETE CASCADE,
+  model_version TEXT NOT NULL,
+  dim INTEGER NOT NULL,
+  vec BLOB NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS image_vectors_by_model ON image_vectors (model_version);
+
+-- 分组结果是资产，不是查询副产品：聚类全局依赖，每次重算边界都会变，
+-- 人整理过的组号必须能存下来。
+CREATE TABLE IF NOT EXISTS group_plans (
+  plan_id TEXT PRIMARY KEY,
+  groups INTEGER NOT NULL,
+  model_version TEXT NOT NULL,
+  centers_json TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS image_groups (
+  asset_id TEXT PRIMARY KEY REFERENCES image_assets(id) ON DELETE CASCADE,
+  plan_id TEXT NOT NULL,
+  group_no INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS image_groups_by_plan ON image_groups (plan_id, group_no);
+
 -- 通用任务池。tasks / capture_tasks 是历史表，仅 migrate 阶段读取后并入 jobs。
 CREATE TABLE IF NOT EXISTS jobs (${jobColumns});
 
@@ -425,18 +456,27 @@ function unifyJobTables(db: DatabaseSync): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
     .all() as Array<{ name: string }>
   const has = (name: string) => tables.some((row) => row.name === name)
-  const jobsColumns = db.prepare('PRAGMA table_info(jobs)').all() as Array<{ name: string }>
-  if (!has('tasks') && !has('capture_tasks') &&
-      jobsColumns.some((column) => column.name === 'workflow_name')) {
+  const jobsColumns = db.prepare('PRAGMA table_info(jobs)').all() as Array<{
+    name: string
+  }>
+  if (
+    !has('tasks') &&
+    !has('capture_tasks') &&
+    jobsColumns.some((column) => column.name === 'workflow_name')
+  ) {
     createJobIndexes(db)
     return
   }
 
-  const hasUnified = jobsColumns.some((column) => column.name === 'workflow_name')
+  const hasUnified = jobsColumns.some(
+    (column) => column.name === 'workflow_name',
+  )
   // SCHEMA 会在新库里建出空的历史表；空表直接丢弃，不重建 jobs。
   const countOf = (table: string): number => {
     if (!has(table)) return 0
-    return (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n
+    return (
+      db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }
+    ).n
   }
   if (hasUnified && countOf('tasks') === 0 && countOf('capture_tasks') === 0) {
     db.exec('DROP TABLE IF EXISTS tasks')
@@ -448,17 +488,26 @@ function unifyJobTables(db: DatabaseSync): void {
     ? []
     : (db.prepare('SELECT * FROM jobs').all() as Array<Record<string, unknown>>)
   const oldTasks = countOf('tasks')
-    ? (db.prepare('SELECT * FROM tasks').all() as Array<Record<string, unknown>>)
+    ? (db.prepare('SELECT * FROM tasks').all() as Array<
+        Record<string, unknown>
+      >)
     : []
   const oldCapture = countOf('capture_tasks')
-    ? (db.prepare('SELECT * FROM capture_tasks').all() as Array<Record<string, unknown>>)
+    ? (db.prepare('SELECT * FROM capture_tasks').all() as Array<
+        Record<string, unknown>
+      >)
     : []
   // 迁移只允许数据变多：现有 jobs 若有行，必须有旧表数据可搬，否则拒绝重建。
   const currentJobs = hasUnified
     ? (db.prepare('SELECT COUNT(*) AS n FROM jobs').get() as { n: number }).n
     : 0
-  if (currentJobs > 0 && oldJobs.length + oldTasks.length + oldCapture.length === 0) {
-    throw new RunnerError('refusing job migration: non-empty jobs with no source tables')
+  if (
+    currentJobs > 0 &&
+    oldJobs.length + oldTasks.length + oldCapture.length === 0
+  ) {
+    throw new RunnerError(
+      'refusing job migration: non-empty jobs with no source tables',
+    )
   }
 
   const ms = (value: unknown): number | null => {
@@ -491,11 +540,28 @@ function unifyJobTables(db: DatabaseSync): void {
         )
       `)
       const empty = {
-        workflow_name: null, workflow_id: null, work_id: null, comfy_path: null,
-        adapter_json: null, api_json: null, head_revision_id: null, parent_task_id: null,
-        task: null, input_json: null, prompt_id: null, comfy_base_url: null,
-        output_path: null, process_json: null, asset_id: null, step: null,
-        dedupe_key: null, url: '', img_url: '', live_id: null, label: '', result: null,
+        workflow_name: null,
+        workflow_id: null,
+        work_id: null,
+        comfy_path: null,
+        adapter_json: null,
+        api_json: null,
+        head_revision_id: null,
+        parent_task_id: null,
+        task: null,
+        input_json: null,
+        prompt_id: null,
+        comfy_base_url: null,
+        output_path: null,
+        process_json: null,
+        asset_id: null,
+        step: null,
+        dedupe_key: null,
+        url: '',
+        img_url: '',
+        live_id: null,
+        label: '',
+        result: null,
       }
       for (const row of oldJobs) {
         insert.run({
@@ -566,7 +632,9 @@ function unifyJobTables(db: DatabaseSync): void {
         })
       }
       const migrated = (
-        db.prepare('SELECT COUNT(*) AS n FROM jobs_unified').get() as { n: number }
+        db.prepare('SELECT COUNT(*) AS n FROM jobs_unified').get() as {
+          n: number
+        }
       ).n
       const expected = oldJobs.length + oldTasks.length + oldCapture.length
       if (migrated < expected) {
@@ -586,11 +654,19 @@ function unifyJobTables(db: DatabaseSync): void {
 }
 
 function createJobIndexes(db: DatabaseSync): void {
-  db.exec(`CREATE INDEX IF NOT EXISTS jobs_by_ready ON jobs (kind, status, next_run_at, created_at)`)
-  db.exec(`CREATE INDEX IF NOT EXISTS jobs_by_status ON jobs (status, created_at)`)
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS jobs_by_ready ON jobs (kind, status, next_run_at, created_at)`,
+  )
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS jobs_by_status ON jobs (status, created_at)`,
+  )
   db.exec(`CREATE INDEX IF NOT EXISTS jobs_by_asset ON jobs (asset_id, kind)`)
-  db.exec(`CREATE INDEX IF NOT EXISTS jobs_by_revision ON jobs (head_revision_id)`)
-  db.exec(`CREATE INDEX IF NOT EXISTS jobs_by_key ON jobs (kind, dedupe_key, status)`)
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS jobs_by_revision ON jobs (head_revision_id)`,
+  )
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS jobs_by_key ON jobs (kind, dedupe_key, status)`,
+  )
 }
 
 // dice_fields 曾用保留字 values 作列名，后升 candidates；v3 = tiers JSON 列。
@@ -1168,7 +1244,8 @@ export function taskRowOf(row: JobRowRaw): TaskRow {
 
 export function jobById(db: DatabaseSync, id: string): JobRowRaw | null {
   return (
-    (db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as JobRowRaw | undefined) ?? null
+    (db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as
+      JobRowRaw | undefined) ?? null
   )
 }
 
@@ -1187,7 +1264,9 @@ export function listTaskRows(
   ...args: Array<string | number | null>
 ): TaskRow[] {
   const rows = db
-    .prepare(`SELECT * FROM jobs WHERE kind = '${JOB_KIND.generate}' AND ${where}`)
+    .prepare(
+      `SELECT * FROM jobs WHERE kind = '${JOB_KIND.generate}' AND ${where}`,
+    )
     .all(...args)
   return (rows as JobRowRaw[]).map(taskRowOf)
 }

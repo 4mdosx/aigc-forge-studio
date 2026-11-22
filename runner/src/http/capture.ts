@@ -21,6 +21,7 @@ import {
   assetTagCounts,
   assetsByIds,
   deleteAsset,
+  EMBEDDING_MODEL,
   ingestBytes,
   listAssetIds,
   pageAssets,
@@ -35,6 +36,12 @@ import {
   type FinalVersion,
 } from '../capture/asset.ts'
 import { removeBackground } from '../capture/nobg.ts'
+import {
+  assignUngrouped,
+  clearGroups,
+  loadGroups,
+  saveGroups,
+} from '../capture/groups.ts'
 import {
   listCaptureJobs,
   resumeCaptureJobs,
@@ -69,15 +76,26 @@ function nearestOrderOf(raw: string | undefined): 'near' | 'far' {
   throw new RunnerError('order 必须是 near 或 far')
 }
 
-const ASSET_STATUSES = new Set(['collected', 'processed', 'approved', 'rejected'])
-const ASSET_RATINGS = new Set(['general', 'sensitive', 'questionable', 'explicit'])
+const ASSET_STATUSES = new Set([
+  'collected',
+  'processed',
+  'approved',
+  'rejected',
+])
+const ASSET_RATINGS = new Set([
+  'general',
+  'sensitive',
+  'questionable',
+  'explicit',
+])
 const PAGE_SIZE_MAX = 200
 
 function pageOffsetOf(raw: string | undefined): number {
   if (raw === undefined || raw === '') return 0
   if (!/^\d+$/.test(raw)) throw new RunnerError('offset 必须是非负整数')
   const offset = Number(raw)
-  if (!Number.isSafeInteger(offset)) throw new RunnerError('offset 必须是非负整数')
+  if (!Number.isSafeInteger(offset))
+    throw new RunnerError('offset 必须是非负整数')
   return offset
 }
 
@@ -91,7 +109,11 @@ function pageSizeOf(raw: string | undefined): number {
   return size
 }
 
-function csvOf(raw: string | undefined, label: string, allowed?: Set<string>): string[] {
+function csvOf(
+  raw: string | undefined,
+  label: string,
+  allowed?: Set<string>,
+): string[] {
   if (raw === undefined || raw === '') return []
   const values = raw
     .split(',')
@@ -1095,7 +1117,8 @@ export function mountCapture(app: Hono, runner: Runner): void {
     const query = assetListQueryOf(c)
     const view = c.req.query('view')
     if (view === 'ids') return c.json(listAssetIds(runner.db, query))
-    if (view !== undefined && view !== '') throw new RunnerError('view 必须是 ids')
+    if (view !== undefined && view !== '')
+      throw new RunnerError('view 必须是 ids')
     return c.json(
       pageAssets(runner.db, {
         ...query,
@@ -1136,7 +1159,10 @@ export function mountCapture(app: Hono, runner: Runner): void {
         c.req.param('id'),
         nearestCountOf(c.req.query('k')),
         nearestOrderOf(c.req.query('order')),
-        ids ?? (hasAssetScope(scope) ? listAssetIds(runner.db, scope).ids : undefined),
+        ids ??
+          (hasAssetScope(scope)
+            ? listAssetIds(runner.db, scope).ids
+            : undefined),
       ),
     )
   })
@@ -1157,6 +1183,42 @@ export function mountCapture(app: Hono, runner: Runner): void {
     return c.json(
       await groupAssets(runner, body.ids, body.groups, balance as Balance),
     )
+  })
+
+  app.get('/capture/groups', (c) => {
+    const saved = loadGroups(runner)
+    if (!saved) return c.json({ groups: null })
+    return c.json(saved)
+  })
+
+  app.put('/capture/groups', async (c) => {
+    const body = await jsonObject(c.req)
+    if (!Array.isArray(body.groups) || body.groups.length === 0)
+      throw new RunnerError('groups 必须是非空数组')
+    const groups = body.groups.map((raw) => {
+      if (!raw || typeof raw !== 'object')
+        throw new RunnerError('groups 的每一项必须是 {ids, centerId}')
+      const entry = raw as { ids?: unknown; centerId?: unknown }
+      if (
+        !Array.isArray(entry.ids) ||
+        entry.ids.some((id) => typeof id !== 'string')
+      ) {
+        throw new RunnerError('分组的 ids 必须是 string[]')
+      }
+      const centerId =
+        typeof entry.centerId === 'string' ? entry.centerId : null
+      return { ids: entry.ids as string[], centerId }
+    })
+    return c.json(saveGroups(runner, EMBEDDING_MODEL, groups))
+  })
+
+  app.delete('/capture/groups', (c) => {
+    clearGroups(runner)
+    return c.json({ ok: true })
+  })
+
+  app.post('/capture/groups/assign', (c) => {
+    return c.json(assignUngrouped(runner, EMBEDDING_MODEL))
   })
 
   app.post('/capture/embeddings/rebuild', (c) => {

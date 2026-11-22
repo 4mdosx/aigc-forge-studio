@@ -33,11 +33,12 @@ def main() -> int:
     tag_cmd.add_argument("--with-scores", action="store_true")
     tag_cmd.add_argument("--json", action="store_true")
 
-    embed_cmd = commands.add_parser("embed", help="7 维风格向量")
+    embed_cmd = commands.add_parser("embed", help="风格向量（默认 1280 维 CLS）")
     embed_cmd.add_argument("path", help="本地图片路径")
     embed_cmd.add_argument("--ref", help="可选参考图，附带 L2 / cosine")
     embed_cmd.add_argument("--device", help="torch device，默认 auto（mps/cuda/cpu）")
     embed_cmd.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
+    embed_cmd.add_argument("--mode", default="cls", choices=["cls", "head"], help="cls=1280 维裸向量，head=7 维风格头")
     embed_cmd.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
@@ -53,7 +54,13 @@ def main() -> int:
             )
             _print_tag(result, args.json)
         else:
-            result = embed(args.path, ref=args.ref, device=args.device, dtype=args.dtype)
+            result = embed(
+                args.path,
+                ref=args.ref,
+                device=args.device,
+                dtype=args.dtype,
+                mode=args.mode,
+            )
             _print_embed(result, args.json)
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
         print(exc, file=sys.stderr)
@@ -80,9 +87,16 @@ def _print_embed(result: dict, as_json: bool) -> None:
     if as_json:
         print(json.dumps(result, ensure_ascii=False))
         return
-    print(f"image: {result['image']}   device: {result['device']}")
-    for index, value in enumerate(result["styleVec"], 1):
-        print(f"  dim{index}: {value:+.5f}   ({AXIS_HINTS[index - 1]})")
+    print(
+        f"image: {result['image']}   device: {result['device']}   "
+        f"mode: {result.get('mode', 'cls')}   dim: {len(result['styleVec'])}"
+    )
+    if result.get("mode", "cls") == "head":
+        for index, value in enumerate(result["styleVec"], 1):
+            print(f"  dim{index}: {value:+.5f}   ({AXIS_HINTS[index - 1]})")
+    else:
+        head = ", ".join(f"{value:+.4f}" for value in result["styleVec"][:6])
+        print(f"  {head} …")
     if "ref" in result:
         ref = result["ref"]
         print(f"ref: {ref['image']}")

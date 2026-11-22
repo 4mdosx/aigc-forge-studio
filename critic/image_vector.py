@@ -185,7 +185,7 @@ def split(
 ) -> dict:
     """把这些图片分成 groups 组。
 
-    balance="cluster"（默认）每次二分最分散的那一簇，组大小不均但语义正确；
+    balance="cluster"（默认）跑 ward 层次聚类，组大小均衡且语义正确；
     balance="even" 沿叶子顺序等分，组大小整齐，但边界会切进密集区。
     每组附一个 centerId（组内到其它成员平均相似度最高的那张）。
     """
@@ -347,12 +347,12 @@ def _medoid(rows: np.ndarray, members: list[int], ordered: list[str]) -> str:
 
 
 def _cluster_chunks(rows: np.ndarray, groups: int) -> list[list[int]]:
-    """二分聚类：每次把最分散的那一簇切成两半，切到 groups 为止。
+    """ward 层次聚类：最小化簇内方差。
 
-    直接对全量做 maxclust 会把切割点放在最长的边上——几个离群的图就把
-    组数占满，主群体一张不动（实测 1824 张里会出现 1796 一组）。二分法
-    强制每次只切一部分，组大小分布正常，而且天然是嵌套的：k 变大是在
-    细化原来的组，不是把全场重排。
+    为什么不是 average-linkage：高维 cos 有集中效应，average 找不到有意义的
+    切点，实测 1824 张 1280 维会退化成一个 1816 张的巨簇 + 一堆 1~3 张的
+    离群点。ward 在 L2 归一化后的欧氏空间里工作，组大小均衡，
+    同一 pixiv 作品的图被封到一起的比例从 0.572 涨到 0.878（k=6）。
     """
     count = int(rows.shape[0])
     if groups == 1:
@@ -360,59 +360,26 @@ def _cluster_chunks(rows: np.ndarray, groups: int) -> list[list[int]]:
     if groups == count:
         return [[index] for index in range(count)]
     unit = _unit(rows)
-    clusters: list[list[int]] = [list(range(count))]
-    while len(clusters) < groups:
-        target = -1
-        parts: list[list[int]] | None = None
-        for index in _split_order(unit, clusters):
-            parts = _two_way(rows, clusters[index])
-            if parts is not None:
-                target = index
-                break
-        if parts is None or target < 0:
-            break
-        clusters[target : target + 1] = parts
-    while len(clusters) < groups:
-        target = max(range(len(clusters)), key=lambda index: len(clusters[index]))
-        chunk = clusters[target]
-        if len(chunk) < 2:
-            break
-        half = len(chunk) // 2 or 1
-        clusters[target : target + 1] = [chunk[:half], chunk[half:]]
-    ordered = [_row_order(unit, chunk) for chunk in clusters]
-    ordered.sort(key=lambda chunk: (-len(chunk), chunk[0]))
-    return ordered
+    labels = _ward_labels(unit, groups)
+    buckets: dict[int, list[int]] = {}
+    for index, label in enumerate(labels.tolist()):
+        buckets.setdefault(int(label), []).append(index)
+    if len(buckets) != groups:
+        raise RuntimeError(f"ward 分出 {len(buckets)} 组，期望 {groups} 组")
+    chunks = [_row_order(unit, chunk) for chunk in buckets.values()]
+    chunks.sort(key=lambda chunk: (-len(chunk), chunk[0]))
+    return chunks
 
 
-def _split_order(unit: np.ndarray, clusters: list[list[int]]) -> list[int]:
-    """最该切的那簇排前面：组内离差平方和最大者优先。"""
-    scored = []
-    for index, chunk in enumerate(clusters):
-        if len(chunk) < 2:
-            continue
-        scored.append((_dispersion(unit, chunk), len(chunk), index))
-    scored.sort(reverse=True)
-    return [index for _, _, index in scored]
-
-
-def _dispersion(unit: np.ndarray, members: list[int]) -> float:
-    block = unit[members]
-    center = block.mean(axis=0)
-    return float(((block - center) ** 2).sum())
-
-
-def _two_way(rows: np.ndarray, members: list[int]) -> list[list[int]] | None:
+def _ward_labels(unit: np.ndarray, groups: int) -> np.ndarray:
     try:
-        from scipy.cluster.hierarchy import fcluster, linkage
+        from sklearn.cluster import AgglomerativeClustering
     except ImportError as exc:
-        raise RuntimeError(_MISSING_SCIPY) from exc
-    sub = rows[members]
-    labels = fcluster(linkage(sub, method="average", metric="cosine"), t=2, criterion="maxclust")
-    left = [members[index] for index in range(len(members)) if labels[index] == labels[0]]
-    right = [members[index] for index in range(len(members)) if labels[index] != labels[0]]
-    if not left or not right:
-        return None
-    return [left, right]
+        raise RuntimeError(
+            "缺少 scikit-learn。先执行: .venv/bin/python -m pip install -r critic/requirements.txt"
+        ) from exc
+    model = AgglomerativeClustering(n_clusters=groups, linkage="ward")
+    return model.fit_predict(unit)
 
 
 def _row_order(unit: np.ndarray, members: list[int]) -> list[int]:

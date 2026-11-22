@@ -36,7 +36,7 @@ python3.12 -m venv .venv
 .venv/bin/python scripts_and_tools/critic.py embed data/character/takao/ref/AL_kv_full__高雄立绘.jpg --json
 ```
 
-`tag` 返回 tags，以及 Danbooru 四档 rating（`general` / `sensitive` / `questionable` / `explicit`）。档位取标签敏感度下限和模型 rating 里更高的一档。`embed` 返回 7 维 `styleVec`。`--ref` 再附上 L2 和 cosine。`--json` 打印模块返回的数据。
+`tag` 返回 tags，以及 Danbooru 四档 rating（`general` / `sensitive` / `questionable` / `explicit`）。档位取标签敏感度下限和模型 rating 里更高的一档。`embed` 默认返回 1280 维 CLS `styleVec`（`--mode head` 走 7 维风格头）。`--ref` 再附上 L2 和 cosine。`--json` 打印模块返回的数据。
 
 ## 接口
 
@@ -44,8 +44,11 @@ python3.12 -m venv .venv
 - `POST /tag` — 图片打 WD14 tag
   - `path`（必填）本地图片路径；相对路径按仓库根解析
   - `model`、`general_threshold`、`character_threshold`、`exclude`、`with_scores` 可选
-- `POST /embed` — 图片转 7 维风格向量
+- `POST /embed` — 图片转风格向量
   - `path`（必填）；`ref` 可选参考图（返回 L2 / cosine）；`device` 可选
+  - `mode` 可选。`cls`（默认）DINOv3-H 的 CLS，1280 维，方形缩放到 224 进模型；
+    `head` 是作者训练的 7 维风格头。7 维头的检索效果差一个量级，只为对照保留
+  - 返回 `styleVec`、`dim`、`mode`
 - `POST /close` — 两图风格距离（L2 / cosine）
   - `a`、`b`（必填）图片路径；`device` 可选
 - `POST /image-vector` — 把一批向量并进缓存（upsert）
@@ -62,11 +65,14 @@ python3.12 -m venv .venv
 - `POST /image-vector/groups` — 把指定的 n 张图片分成 m 组
   - `ids`（必填）；`groups`（必填）组数，范围是 1 到 `ids` 的长度
   - `vectors` 可选，直接传向量；不给就从缓存里取
-  - `balance` 可选。`cluster`（默认）每次二分最分散的那一簇，组大小不均但语义正确；
+  - `balance` 可选。`cluster`（默认）跑 ward 层次聚类，组大小均衡且语义正确；
     `even` 沿叶子顺序等分，组大小整齐但边界会切进密集区
   - 每组返回 `{ids, centerId}`，`centerId` 是组内到其它成员平均相似度最高的那张
 
-图片向量这一路只用 numpy + scipy，不需要额外的模型文件。`requirements.txt` 里已经带上。
+分组用 ward 而不是 average-linkage：高维 cos 有集中效应，average 在 1280 维下会
+退化成一个巨型簇 + 一堆离群点（实测 1824 张里 1816 张挤在一组）。
+
+图片向量这一路用 numpy + scipy + scikit-learn，不需要额外的模型文件。`requirements.txt` 里已经带上。
 
 ## 调用示例
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from "react";
 
 import {
   RATINGS,
@@ -93,6 +93,8 @@ export function ImageGallery({
     groups: string[][];
     skipped: string[];
     stale: string[];
+    /** 从服务端读回来的全局分组：不跟当前筛选绑定。 */
+    global: boolean;
   } | null>(null);
   const [groupBusy, setGroupBusy] = useState(false);
   const [groupError, setGroupError] = useState<string | null>(null);
@@ -138,9 +140,14 @@ export function ImageGallery({
   const orderKey = orderIds.join("\n");
   const nearOn = query && near !== null && orderIds.includes(near.anchor);
   const diverseOn = query && diverse !== null && !nearOn;
-  const groupedOn = query && grouped !== null && grouped.key === orderKey;
+  const groupedOn =
+    query && grouped !== null && (grouped.global || grouped.key === orderKey);
+  const orderSet = useMemo(() => new Set(orderIds), [orderKey]);
   const browseIds = groupedOn
-    ? [...(grouped?.groups.flat() ?? []), ...(grouped?.skipped ?? [])]
+    ? [
+        ...(grouped?.groups.flat() ?? []),
+        ...(grouped?.skipped ?? []),
+      ].filter((id) => orderSet.has(id))
     : nearOn && near
       ? near.ids
       : diverseOn && diverse
@@ -186,6 +193,43 @@ export function ImageGallery({
     if (!safetyReady) return;
     onVisible?.(browseKey === "" ? [] : browseKey.split("\n"));
   }, [browseKey, onVisible, safetyReady]);
+
+  // 分组结果落在服务端，刷新页面还能接着上次的整理。
+  const loadSavedGroups = useCallback(async () => {
+    const saved = await api<{
+      groups: Array<{ ids: string[]; centerId: string | null }> | null;
+      ungrouped?: string[];
+    }>("capture/groups");
+    if (!saved.groups) return null;
+    const next = {
+      key: "",
+      groups: saved.groups.map((group) => group.ids),
+      skipped: saved.ungrouped ?? [],
+      stale: [],
+      global: true,
+    };
+    setGrouped(next);
+    return next;
+  }, []);
+
+  useEffect(() => {
+    if (!query) {
+      setGrouped(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (cancelled) return;
+        await loadSavedGroups();
+      } catch {
+        // 还没有保存过分组是正常状态
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [query, loadSavedGroups]);
 
   useEffect(() => {
     if (!safety) return;
@@ -473,11 +517,22 @@ export function ImageGallery({
         method: "POST",
         body: JSON.stringify({ ids, groups: count }),
       });
+      // 分组落库：聚类是全局依赖的，每次重算边界都会变，人整理过的组号必须留住。
+      await api("capture/groups", {
+        method: "PUT",
+        body: JSON.stringify({
+          groups: result.groups.map((group) => ({
+            ids: group.ids,
+            centerId: group.centerId ?? null,
+          })),
+        }),
+      });
       setGrouped({
-        key: ids.join("\n"),
+        key: "",
         groups: result.groups.map((group) => group.ids),
         skipped: result.skipped,
         stale: result.stale ?? [],
+        global: true,
       });
       setDiverse(null);
       setDiverseError(null);
@@ -564,6 +619,28 @@ export function ImageGallery({
     setGroupError(null);
     setSampleCount("12");
     setGroupCount("3");
+    // 分组是存下来的资产，重置视图时一起清掉，否则刷新又回来了。
+    void api<{ ok: boolean }>("capture/groups", { method: "DELETE" }).catch(
+      () => undefined,
+    );
+  }
+
+  async function attachNew() {
+    setGroupBusy(true);
+    setGroupError(null);
+    try {
+      const result = await api<{ assigned: number }>("capture/groups/assign", {
+        method: "POST",
+      });
+      await loadSavedGroups();
+      setGroupError(
+        result.assigned > 0 ? `已挂靠 ${result.assigned} 张新图` : "没有待挂靠的图",
+      );
+    } catch (err) {
+      setGroupError(messageOf(err));
+    } finally {
+      setGroupBusy(false);
+    }
   }
 
   const orderedIds = browseKey === "" ? [] : browseKey.split("\n");
@@ -1112,6 +1189,17 @@ export function ImageGallery({
           >
             {groupBusy ? "分组中…" : "分组"}
           </button>
+          {grouped?.global ? (
+            <button
+              type="button"
+              className="quiet"
+              disabled={groupBusy}
+              title="把上次分组之后新加的图挂到最接近的组"
+              onClick={() => void attachNew()}
+            >
+              挂靠新图
+            </button>
+          ) : null}
           <button type="button" className="quiet" onClick={resetArrange}>
             重置
           </button>
