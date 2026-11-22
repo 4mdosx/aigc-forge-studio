@@ -23,6 +23,15 @@ stub.post('/train/jobs', async (c) => {
   return c.json({ job: { id: 'stub1', name: body.name, params: body } }, 201)
 })
 stub.get('/train/jobs', (c) => c.json({ jobs: [] }))
+stub.post('/train/jobs/preview', async (c) => {
+  const body = await c.req.json()
+  received.push({ path: '/train/jobs/preview', method: 'POST', body })
+  return c.json({
+    stats: { imageCount: 3, captionCount: 3 },
+    estimatedSteps: 90,
+    params: body,
+  })
+})
 stub.get('/train/jobs/:id', (c) => {
   if (c.req.param('id') === 'retrieve-ok') {
     return c.json({
@@ -484,4 +493,62 @@ test('产物回程：仅 completed 可启动，异步拉回后 GET 查到状态�
     assert.equal(again.status, 200)
     assert.equal(((await again.json()) as { status: string }).status, 'done')
   })
+})
+
+test('POST /train/jobs/preview 合并预设后透传', async () => {
+  await withStubTrainer(async (baseURL) => {
+    const app = appWithTrain(runnerWithTrainer(baseURL))
+    const start = received.length
+    const res = await app.request('/train/jobs/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'p1',
+        datasetRoot: 'training',
+        datasetPath: 'p1/img',
+        baseModel: 'checkpoints/pdv10.safetensors',
+      }),
+    })
+    assert.equal(res.status, 200)
+    const json = (await res.json()) as { estimatedSteps: number }
+    assert.equal(json.estimatedSteps, 90)
+
+    const hit = received.slice(start).find((r) => r.path === '/train/jobs/preview')
+    assert.ok(hit, 'preview 应透传到 trainer')
+    const body = hit.body as Record<string, unknown>
+    // STABLE_PRESET 兜底字段要带上，否则 trainer 会按它自己的默认值算
+    assert.equal(body.resolution, 1024)
+    assert.equal(body.numRepeats, 10)
+    assert.equal(body.name, 'p1')
+  })
+})
+
+test('旧 trainer 没有 preview 路由 → 503 带升级提示', async () => {
+  const stale = new Hono()
+  stale.all('*', (c) => c.json({ error: 'not found' }, 404))
+  const server = serve({ fetch: stale.fetch, hostname: '127.0.0.1', port: 0 })
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('listening', resolve)
+      server.once('error', reject)
+    })
+    const addr = server.address()
+    if (!addr || typeof addr === 'string') throw new Error('no port')
+    const app = appWithTrain(runnerWithTrainer(`http://127.0.0.1:${addr.port}`))
+    const res = await app.request('/train/jobs/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'p1',
+        datasetRoot: 'training',
+        datasetPath: 'p1/img',
+        baseModel: 'm.safetensors',
+      }),
+    })
+    assert.equal(res.status, 503)
+    const json = (await res.json()) as { error: string }
+    assert.match(json.error, /preview/)
+  } finally {
+    await new Promise<void>((ok) => server.close(() => ok()))
+  }
 })

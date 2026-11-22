@@ -231,8 +231,30 @@ export async function uploadPairs(
   stagingDir: string,
   pairs: readonly ExportPair[],
   concurrency = 4,
-): Promise<{ pushed: number; failures: string[] }> {
+): Promise<{ pushed: number; failures: string[]; pruned: number }> {
   const target = `${dirName}/img`
+  // 先对账：训练机上传目录只写不删，同名数据集重训会把旧图一起喂进去，
+  // 步数被悄悄放大（2026-11-22 实踩：本地算 570 步，trainer 按 55 张跑成 1650 步）。
+  // 旧版 trainer 没有 /sync，静默跳过——清理失败不该阻断上传。
+  let pruned = 0
+  try {
+    const res = await fetch(
+      `${trainerBase}/sync?root=training&path=${encodeURIComponent(target)}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          files: pairs.flatMap((pair) => [`${pair.id}.png`, `${pair.id}.txt`]),
+        }),
+      },
+    )
+    if (res.ok) {
+      const json = (await res.json()) as { deleted?: string[] }
+      pruned = json.deleted?.length ?? 0
+    }
+  } catch {
+    // trainer 不可达：交给下面的 put 给出明确错误
+  }
   const workers = Math.max(1, Math.min(concurrency, pairs.length))
   const failures: string[] = []
   let pushed = 0
@@ -259,7 +281,7 @@ export async function uploadPairs(
       }
     }),
   )
-  return { pushed, failures }
+  return { pushed, failures, pruned }
 }
 
 // <数据集>-<触发词>-<profile>-az-<YYMMDD-HMM>，与 train_animagine.mjs 的 jobName 同构。

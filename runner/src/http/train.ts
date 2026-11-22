@@ -208,6 +208,23 @@ export function mountTrain(
     return postTrainJob(runner, body)
   })
 
+  // 试运行：同一套预设合并与校验，但不占显存、不建 job。
+  // 不走 postTrainJob——preview 不该顺手清 ComfyUI 显存。
+  app.post('/train/jobs/preview', async (c) => {
+    const body = await jsonObject(c.req)
+    const merged = { ...STABLE_PRESET, ...body }
+    return proxy(
+      runner,
+      '/train/jobs/preview',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(merged),
+      },
+      '训练机 trainer 没有 preview 路由（进程仍是旧版本）：在训练机执行 git pull 后 infra\\trainer_service.ps1 restart',
+    )
+  })
+
   app.get('/train/jobs', (c) => proxy(runner, '/train/jobs'))
 
   app.get('/train/jobs/:id', (c) =>
@@ -441,7 +458,7 @@ export function mountTrain(
     }
 
     const stagingDir = stagePairs(runner.dataDir, dirName, pairs)
-    const { pushed, failures } = await uploadPairs(
+    const { pushed, failures, pruned } = await uploadPairs(
       trainerOf(runner),
       dirName,
       stagingDir,
@@ -460,6 +477,8 @@ export function mountTrain(
       datasetRoot: 'training',
       datasetPath: `${dirName}/img`,
       baseModel,
+      // 声明式期望值：训练机若还有旧图（sync 没清掉或旧版 trainer），直接 409
+      expectedImages: pairs.length,
       ...params,
     })
     const text = await res.text()
@@ -478,6 +497,7 @@ export function mountTrain(
         tier: tier ?? 'raw',
         images: pairs.length,
         pushed,
+        pruned,
         skipped,
         warn,
         steps,
