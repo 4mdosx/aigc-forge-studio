@@ -20,6 +20,9 @@ import { ZoomImage } from "@/components/zoom-image";
 import { fail, messageOf, notify } from "@/lib/notify";
 import { isSafetyHiddenRating } from "@/lib/safety-mode";
 
+/** 非虚拟列表（分组 / 相似度）与布局未就绪时用来取第一页的页大小。 */
+const DEFAULT_PAGE = 60;
+
 export function ImageGallery({
   items,
   total,
@@ -283,15 +286,23 @@ export function ImageGallery({
   }, [filterKey, scopeKey]);
 
   useEffect(() => {
-    if (!safetyReady || range.size === 0) return;
-    onPage({ ...filterQuery, offset: range.offset, size: range.size });
+    if (!safetyReady) return;
+    // 分组 / 相似度视图不是虚拟列表，range 从来算不出来；高度还没撑开时也一样。
+    // 两种情况下都得先按默认页大小取一页，否则 loaded 永远为 false，界面卡在「加载中」。
+    const sized = range.size > 0;
+    onPage({
+      ...filterQuery,
+      offset: sized ? range.offset : 0,
+      size: sized ? range.size : DEFAULT_PAGE,
+    });
   }, [filterQuery, onPage, range.offset, range.size, safetyReady]);
 
   useEffect(() => {
     const body = galleryBody;
     if (!body || !safetyReady || !virtual) return;
     const apply = () => {
-      if (body.clientHeight === 0) return;
+      // 高度为 0 时也要算出窗口：否则 size 永远是 0，下面的取页 effect 不会触发，
+      // 图库就永久停在「加载中」。布局撑开之后 ResizeObserver 会再校正一次。
       const next = galleryWindow(body, total);
       setRange((cur) =>
         cur.offset === next.offset &&
@@ -1421,8 +1432,10 @@ function galleryWindow(body: HTMLElement, total: number) {
   const tile = (width - gap * (cols - 1)) / cols;
   const row = Math.max(48, tile - 4) + 4 + gap;
   const overscan = 2;
+  // 容器还没拿到高度时按一屏 720px 估，先取到第一页再说。
+  const viewport = body.clientHeight > 0 ? body.clientHeight : 720;
   const firstRow = Math.max(0, Math.floor(body.scrollTop / row) - overscan);
-  const lastRow = Math.ceil((body.scrollTop + body.clientHeight) / row) + overscan;
+  const lastRow = Math.ceil((body.scrollTop + viewport) / row) + overscan;
   const offset = firstRow * cols;
   const end = total > 0 ? Math.min(total, Math.max(offset + cols, lastRow * cols)) : lastRow * cols;
   const size = Math.min(200, Math.max(cols, end - offset));
