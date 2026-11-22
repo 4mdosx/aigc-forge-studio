@@ -134,11 +134,28 @@ export interface CanonicalRule {
 export interface CanonicalTable {
   version: number
   theme: string
+  router: string[]
   note?: string
   order: string[]
   drop: string[]
   rules: CanonicalRule[]
   tokenBudget: number
+}
+
+// 托底层：所有题材共用的 drop 与规范 rule，不随题材切换。
+export interface CanonicalGlobal {
+  drop: string[]
+  rules: CanonicalRule[]
+  order: string[]
+}
+
+// 题材表库：global 兜底 + 多张题材表；路由按 router 命中词打分。
+export interface CanonicalBank {
+  version: number
+  note?: string
+  tokenBudget: number
+  global: CanonicalGlobal
+  themes: Record<string, CanonicalTable>
 }
 
 function normalize(token: string): string {
@@ -206,6 +223,75 @@ export function recomposeCanonical(groups: PromptGroups, table: CanonicalTable):
   return items.slice(0, table.tokenBudget).map((item) => item.text).join(', ')
 }
 
+// ---- bank：托底层 + 多题材表 + 路由打分 ----
+
+export interface ThemeRoute {
+  id: string
+  score: number
+}
+
+// 按 router 命中词打分，命中数多的题材胜出；同分按 bank.themes 插入顺序取先。
+export function rankThemes(tokens: string[], bank: CanonicalBank): ThemeRoute[] {
+  const seen = new Set(tokens.map(normalize))
+  const ranked: ThemeRoute[] = []
+  for (const [id, table] of Object.entries(bank.themes)) {
+    let score = 0
+    for (const hit of table.router) if (seen.has(normalize(hit))) score++
+    if (score > 0) ranked.push({ id, score })
+  }
+  ranked.sort((a, b) => b.score - a.score)
+  return ranked
+}
+
+function fallbackTable(bank: CanonicalBank): CanonicalTable {
+  return {
+    version: bank.version,
+    theme: 'global',
+    router: [],
+    ...(bank.note ? { note: `托底：${bank.note}` } : {}),
+    order: [...bank.global.order],
+    drop: [...bank.global.drop],
+    rules: [...bank.global.rules],
+    tokenBudget: bank.tokenBudget,
+  }
+}
+
+// 命中题材：global drop ∪ theme drop；global rule 先入、theme 同 slot 覆盖；
+// order 以 theme 为主，global 独有槽位追加到末尾。
+export function resolveTable(
+  tokens: string[],
+  bank: CanonicalBank,
+): { table: CanonicalTable; themeId: string | null } {
+  const top = rankThemes(tokens, bank)[0]
+  if (!top) return { table: fallbackTable(bank), themeId: null }
+  const theme = bank.themes[top.id]
+  const ruleMap = new Map<string, CanonicalRule>()
+  for (const rule of bank.global.rules) ruleMap.set(rule.slot, rule)
+  for (const rule of theme.rules) ruleMap.set(rule.slot, rule)
+  return {
+    themeId: top.id,
+    table: {
+      version: bank.version,
+      theme: theme.theme,
+      router: [...theme.router],
+      ...(theme.note ? { note: theme.note } : {}),
+      order: [...theme.order, ...bank.global.order.filter((slot) => !theme.order.includes(slot))],
+      drop: [...new Set([...bank.global.drop, ...theme.drop])],
+      rules: [...ruleMap.values()],
+      tokenBudget: theme.tokenBudget ?? bank.tokenBudget,
+    },
+  }
+}
+
+export function recomposeBank(
+  groups: PromptGroups,
+  bank: CanonicalBank,
+): { text: string; themeId: string | null } {
+  const tokens = GROUP_KEYS.flatMap((key) => groups[key])
+  const { table, themeId } = resolveTable(tokens, bank)
+  return { text: recomposeCanonical(groups, table), themeId }
+}
+
 // chat gateway 一次做完「维度去重 + 生产重组」（前面四步里的第 3、4 步）
 export const RECOMPOSE_SYSTEM = `你是二次元插画的生产 prompt 编译器。
 输入是 WD14 打标词（逗号分隔）。输出一条不超过 15 个词组的生产 prompt。
@@ -222,4 +308,139 @@ export function cleanLlmText(text: string): string {
     .replace(/^```[a-zA-Z]*\s*\n?/, '')
     .replace(/\n?```$/, '')
     .trim()
+}
+
+// 给定一串 WD14 tag，让 LLM 产出一张可直接入 bank 的题材表。
+// 强调显式映射和专有 router：这两处最容易被 LLM「聪明地概括」写坏。
+export const THEME_TABLE_SYSTEM = `你是二次元插画生产 prompt 的「题材表编译器」。
+输入是一串逗号分隔的 WD14 tag（同一题材的样图打标）。输出一张题材表 JSON，用于把这个题材的长 tag 压成约 12 个词组的生产 prompt。只输出 JSON，不要解释、不要编号、不要代码块围栏。
+
+结构：
+{
+  "version": 1,
+  "theme": "kebab-case 题材 id",
+  "note": "一句话说明这个题材的生产约束",
+  "router": ["只在本题材出现、别的题材不会有的专有 tag"],
+  "order": ["trigger", "identity", 本题材专用槽位..., "pose", "gaze", "other"],
+  "drop": ["要丢弃的 tag"],
+  "rules": [
+    { "slot": "槽位名", "match": ["别名 tag"], "output": "规范词组" },
+    { "slot": "槽位名", "match": ["别名 tag"], "compose": {
+        "template": "{part1} {part2} item",
+        "parts": {
+          "part1": { "map": { "alias_tag": "输出词" }, "default": "默认词" },
+          "part2": { "map": { "alias_tag": "输出词" }, "default": "默认词" }
+        }
+      } }
+  ],
+  "tokenBudget": 15
+}
+
+硬规则：
+1. router 只放题材专有 tag（例如 playboy_bunny、kimono、maid_headdress），3-8 个；通用词（1girl、long_hair、looking_at_viewer）不许进 router，否则会误路由。
+2. drop 放场景物件（吧台/酒杯/瓶子/家具）、重复变体、低权重身体细节（breasts/thighs/lips/skindentation）；身份词、核心服装、姿势构图不要丢。
+3. rules 的 match 写全部输入中出现过的别名变体；同义词合并成一条 output 或一条 compose。
+4. compose 的 parts.map 必须是显式「别名→输出词」，给出 default；禁止靠词根自动取词。一个视觉维度只出一条词组，颜色+剪裁+品类合成一条。
+5. order 列出所有 slot 名，和 rules 里的 slot 对齐；本题材专有槽位排在 identity 之后、pose 之前。
+6. tokenBudget 用 15。
+7. theme id 用 kebab-case 英文，能和 router 对上。`
+
+// 解析 LLM 吐出的题材表草案；结构不合法直接报错，绝不让坏表进 bank。
+export function parseThemeDraft(raw: string): CanonicalTable {
+  let value: unknown
+  try {
+    value = JSON.parse(cleanLlmText(raw))
+  } catch {
+    throw new Error('题材表不是合法 JSON')
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('题材表必须是 JSON 对象')
+  }
+  const obj = value as Record<string, unknown>
+  const strList = (name: string): string[] => {
+    const v = obj[name]
+    if (!Array.isArray(v) || !v.every((item) => typeof item === 'string')) {
+      throw new Error(`题材表 ${name} 必须是字符串数组`)
+    }
+    return (v as string[]).map((item) => item.trim()).filter(Boolean)
+  }
+  const theme = typeof obj.theme === 'string' ? obj.theme.trim() : ''
+  if (theme === '') throw new Error('题材表 theme 不能为空')
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(theme)) {
+    throw new Error('题材表 theme 必须是 kebab-case')
+  }
+  const router = strList('router')
+  if (router.length === 0) throw new Error('题材表 router 不能为空，否则无法路由')
+  const order = strList('order')
+  const drop = strList('drop')
+  if (!Array.isArray(obj.rules)) throw new Error('题材表 rules 必须是数组')
+  const rules: CanonicalRule[] = (obj.rules as unknown[]).map((item, index) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`rules[${index}] 必须是对象`)
+    }
+    const rule = item as Record<string, unknown>
+    if (typeof rule.slot !== 'string' || rule.slot.trim() === '') {
+      throw new Error(`rules[${index}].slot 不能为空`)
+    }
+    const match = rule.match
+    if (!Array.isArray(match) || !match.every((m) => typeof m === 'string')) {
+      throw new Error(`rules[${index}].match 必须是字符串数组`)
+    }
+    const aliases = (match as string[]).map((m) => m.trim()).filter(Boolean)
+    if (aliases.length === 0) throw new Error(`rules[${index}].match 不能为空`)
+    const base = { slot: rule.slot.trim(), match: aliases }
+    if (typeof rule.output === 'string' && rule.output.trim() !== '') {
+      return { ...base, output: rule.output.trim() }
+    }
+    if (rule.compose === null || typeof rule.compose !== 'object' || Array.isArray(rule.compose)) {
+      throw new Error(`rules[${index}] 需要 output 或 compose`)
+    }
+    const compose = rule.compose as Record<string, unknown>
+    if (typeof compose.template !== 'string' || compose.template.trim() === '') {
+      throw new Error(`rules[${index}].compose.template 不能为空`)
+    }
+    if (compose.parts === null || typeof compose.parts !== 'object' || Array.isArray(compose.parts)) {
+      throw new Error(`rules[${index}].compose.parts 必须是对象`)
+    }
+    const parts: Record<string, CanonicalPart> = {}
+    for (const [key, part] of Object.entries(compose.parts as Record<string, unknown>)) {
+      if (part === null || typeof part !== 'object' || Array.isArray(part)) {
+        throw new Error(`rules[${index}].compose.parts.${key} 必须是对象`)
+      }
+      const p = part as Record<string, unknown>
+      if (p.map === null || typeof p.map !== 'object' || Array.isArray(p.map)) {
+        throw new Error(`rules[${index}].compose.parts.${key}.map 必须是对象`)
+      }
+      const map: Record<string, string> = {}
+      for (const [alias, word] of Object.entries(p.map as Record<string, unknown>)) {
+        if (typeof word !== 'string' || word.trim() === '') {
+          throw new Error(`rules[${index}].compose.parts.${key}.map.${alias} 必须是非空字符串`)
+        }
+        map[alias.trim()] = word.trim()
+      }
+      parts[key] = {
+        map,
+        ...(typeof p.default === 'string' && p.default.trim() !== '' ? { default: p.default.trim() } : {}),
+      }
+    }
+    return { ...base, compose: { template: compose.template.trim(), parts } }
+  })
+  const slots = new Set(rules.map((rule) => rule.slot))
+  for (const slot of slots) {
+    if (!order.includes(slot)) throw new Error(`order 缺少 rules 用到的 slot: ${slot}`)
+  }
+  const tokenBudget =
+    typeof obj.tokenBudget === 'number' && Number.isFinite(obj.tokenBudget) && obj.tokenBudget > 0
+      ? Math.floor(obj.tokenBudget)
+      : 15
+  return {
+    version: typeof obj.version === 'number' ? Math.floor(obj.version) : 1,
+    theme,
+    router,
+    ...(typeof obj.note === 'string' && obj.note.trim() !== '' ? { note: obj.note.trim() } : {}),
+    order,
+    drop,
+    rules,
+    tokenBudget,
+  }
 }

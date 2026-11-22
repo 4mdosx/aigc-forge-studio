@@ -747,6 +747,45 @@ button.prompt-studio-btn.primary:hover:not(:disabled) {
   font-size: 0.72rem;
 }
 
+.prompt-studio-theme {
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.4rem;
+  background: #e4f1e9;
+  color: #0c6b53;
+  font-size: 0.68rem;
+}
+
+.prompt-studio-theme-gen {
+  margin-top: 0.25rem;
+  border-top: 1px solid #e6dccb;
+  padding-top: 0.4rem;
+  font-size: 0.78rem;
+}
+
+.prompt-studio-theme-gen summary {
+  cursor: pointer;
+  color: #6b6358;
+}
+
+.prompt-studio-theme-hint {
+  margin: 0.35rem 0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.prompt-studio-theme-gen textarea {
+  width: 100%;
+  font-size: 0.76rem;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+textarea.prompt-studio-draft {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.7rem;
+  background: #fffdf8;
+}
+
 .quick-gen-row {
   display: grid;
   grid-template-columns: 5rem 1fr;

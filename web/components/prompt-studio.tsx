@@ -27,14 +27,25 @@ interface RecomposeBody {
   mode: 'llm' | 'canonical'
   text: string
   model?: string
-  theme?: string
+  theme?: string | null
+  themeLabel?: string
 }
 
-type ResultState = Record<'llm' | 'canonical', { text: string; error: string; busy: boolean }>
+interface ThemeDraftBody {
+  mode: 'theme-draft'
+  model: string
+  table: unknown
+  raw: string
+}
+
+type ResultState = Record<
+  'llm' | 'canonical',
+  { text: string; themeLabel: string; error: string; busy: boolean }
+>
 
 const INITIAL_RESULT: ResultState = {
-  llm: { text: '', error: '', busy: false },
-  canonical: { text: '', error: '', busy: false },
+  llm: { text: '', themeLabel: '', error: '', busy: false },
+  canonical: { text: '', themeLabel: '', error: '', busy: false },
 }
 
 function flatten(groups: PromptGroups): string {
@@ -83,8 +94,8 @@ export function PromptStudio({ onPrompt }: { onPrompt: (text: string) => void })
     const input = flatten(groups)
     if (input.trim() === '') return
     setResults({
-      llm: { text: '', error: '', busy: true },
-      canonical: { text: '', error: '', busy: true },
+      llm: { text: '', themeLabel: '', error: '', busy: true },
+      canonical: { text: '', themeLabel: '', error: '', busy: true },
     })
     const run = async (mode: 'llm' | 'canonical') => {
       try {
@@ -94,12 +105,17 @@ export function PromptStudio({ onPrompt }: { onPrompt: (text: string) => void })
         })
         setResults((current) => ({
           ...current,
-          [mode]: { text: body.text, error: '', busy: false },
+          [mode]: {
+            text: body.text,
+            themeLabel: mode === 'canonical' ? (body.themeLabel ?? '') : '',
+            error: '',
+            busy: false,
+          },
         }))
       } catch (err) {
         setResults((current) => ({
           ...current,
-          [mode]: { text: '', error: messageOf(err), busy: false },
+          [mode]: { text: '', themeLabel: '', error: messageOf(err), busy: false },
         }))
       }
     }
@@ -109,6 +125,30 @@ export function PromptStudio({ onPrompt }: { onPrompt: (text: string) => void })
   const adopt = (mode: 'llm' | 'canonical', text: string) => {
     setAdopted({ mode, text })
     onPrompt(text)
+  }
+
+  const [draftTags, setDraftTags] = useState('')
+  const [draft, setDraft] = useState('')
+  const [draftError, setDraftError] = useState('')
+  const [draftBusy, setDraftBusy] = useState(false)
+
+  // 一串 tag → LLM 产出题材表草案；只回显不落盘，人审过再手动并进 bank。
+  const generateTheme = async () => {
+    if (draftTags.trim() === '') return
+    setDraftBusy(true)
+    setDraft('')
+    setDraftError('')
+    try {
+      const body = await api<ThemeDraftBody>('prompt/theme-from-tags', {
+        method: 'POST',
+        body: JSON.stringify({ tags: draftTags }),
+      })
+      setDraft(JSON.stringify(body.table, null, 2))
+    } catch (err) {
+      setDraftError(messageOf(err))
+    } finally {
+      setDraftBusy(false)
+    }
   }
 
   return (
@@ -163,6 +203,9 @@ export function PromptStudio({ onPrompt }: { onPrompt: (text: string) => void })
           <div key={mode} className="prompt-studio-result">
             <div className="prompt-studio-result-head">
               <strong>{mode === 'llm' ? 'Chat Gateway' : 'Canonical 表'}</strong>
+              {mode === 'canonical' && results[mode].themeLabel ? (
+                <span className="prompt-studio-theme">命中 {results[mode].themeLabel}</span>
+              ) : null}
               {results[mode].busy ? <span className="muted">生成中…</span> : null}
             </div>
             <p className="prompt-studio-result-text">
@@ -189,6 +232,42 @@ export function PromptStudio({ onPrompt }: { onPrompt: (text: string) => void })
           编辑任意组会切回四组拼装。
         </p>
       ) : null}
+
+      <details className="prompt-studio-theme-gen">
+        <summary>题材表生成器 · 一串 tag → 题材表草案</summary>
+        <p className="muted prompt-studio-theme-hint">
+          输入同一题材的 WD14 tag，让 LLM 产出一张可入 bank 的题材表。只回显不落盘；
+          人审过显式 router 和 compose 映射后，再手动并进 data/prompt-canonical.json。
+        </p>
+        <textarea
+          className="prose"
+          rows={3}
+          value={draftTags}
+          placeholder="playboy_bunny, rabbit_ears, black_leotard, highleg_leotard, bar_(place), …"
+          onChange={(event) => setDraftTags(event.target.value)}
+        />
+        <button
+          type="button"
+          className="prompt-studio-btn"
+          disabled={draftTags.trim() === '' || draftBusy}
+          onClick={() => void generateTheme()}
+        >
+          {draftBusy ? '生成中…' : '生成题材表'}
+        </button>
+        {draftError ? <p className="prompt-studio-error">{draftError}</p> : null}
+        {draft ? (
+          <>
+            <textarea className="prompt-studio-draft" readOnly rows={12} value={draft} />
+            <button
+              type="button"
+              className="prompt-studio-btn"
+              onClick={() => void navigator.clipboard.writeText(draft)}
+            >
+              复制 JSON
+            </button>
+          </>
+        ) : null}
+      </details>
     </div>
   )
 }
