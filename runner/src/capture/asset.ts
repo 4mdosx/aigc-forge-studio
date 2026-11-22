@@ -1162,16 +1162,6 @@ function parseStringList(text: string): string[] {
   }
 }
 
-function parseNumberList(text: string): number[] {
-  try {
-    const parsed: unknown = JSON.parse(text)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((item) => typeof item === 'number')
-  } catch {
-    return []
-  }
-}
-
 function assetId(now: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0')
   const stamp =
