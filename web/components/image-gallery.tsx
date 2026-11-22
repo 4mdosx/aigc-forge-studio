@@ -24,6 +24,17 @@ import { isSafetyHiddenRating } from "@/lib/safety-mode";
 const DEFAULT_PAGE = 60;
 /** 分组裁剪的上下预渲染余量（像素），半屏左右。 */
 const GROUP_OVERSCAN = 600;
+/** 「未分组」那一栏的折叠 key，不跟任何真实组冲突。 */
+const SKIPPED_GROUP_KEY = "skipped";
+
+/**
+ * 组的稳定标识：只看张数和首尾 id，O(1)。
+ * 组内容一变（重排、重建）签名就变，折叠状态跟着失效，不会张冠李戴。
+ */
+function groupSignature(ids: string[] | undefined, index: number) {
+  if (!ids || ids.length === 0) return `empty:${index}`;
+  return `${ids.length}:${ids[0]}:${ids[ids.length - 1]}`;
+}
 
 export function ImageGallery({
   items,
@@ -101,6 +112,8 @@ export function ImageGallery({
     /** 从服务端读回来的全局分组：不跟当前筛选绑定。 */
     global: boolean;
   } | null>(null);
+  /** 折叠的组。key 按组内容算，换了分组方案就自然失效、回到展开。 */
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [groupBusy, setGroupBusy] = useState(false);
   const [groupError, setGroupError] = useState<string | null>(null);
   const [galleryBody, setGalleryBody] = useState<HTMLDivElement | null>(null);
@@ -180,6 +193,14 @@ export function ImageGallery({
           return item ? [item] : [];
         })
       : [];
+  // 组 + 「未分组」一栏的折叠 key / 展开状态，裁剪与渲染共用同一份。
+  const groupKeys = sections
+    ? [
+        ...sections.map((_, index) => groupSignature(grouped?.groups[index], index)),
+        SKIPPED_GROUP_KEY,
+      ]
+    : [];
+  const openGroups = groupKeys.map((key) => !collapsed.has(key));
   const flat = nearOn && near
     ? near.ids.flatMap((id) => {
         const item = pool.get(id);
@@ -930,8 +951,10 @@ export function ImageGallery({
    * 不量任何被裁剪影响的高度，所以反复渲染不会累积误差也不会抖。
    * 整组在视窗外就留一块等高空白，在视窗内就按行切一段。
    */
-  function clipGroups(lists: ImageAsset[][]) {
+  function clipGroups(lists: ImageAsset[][], open: boolean[]) {
     const { cols, rowH, rowGap, headerH, groupGap } = groupGeo.current;
+    // 折叠后组里只剩标题：高度就是 h3 本身，不含标题与格子之间的行间距。
+    const headH = Math.max(0, headerH - rowGap);
     const plain = lists.map((list) => ({
       start: 0,
       end: list.length,
@@ -945,13 +968,17 @@ export function ImageGallery({
     return lists.map((list, index) => {
       const count = list.length;
       const rows = Math.ceil(count / cols);
+      const folded = open[index] === false;
       // 网格最后一行后面没有行间距，所以整组高度扣掉一个 rowGap。
-      const height = count === 0 ? headerH : headerH + rows * rowH - rowGap;
+      const height = folded || count === 0 ? headH : headerH + rows * rowH - rowGap;
       const current = top;
       top += height + groupGap;
-      if (count === 0) return plain[index] as (typeof plain)[number];
+      if (folded || count === 0) {
+        return { start: 0, end: 0, padTop: 0, padBottom: 0 };
+      }
       if (current + height <= from || current >= to) {
-        return { start: 0, end: 0, padTop: 0, padBottom: height };
+        // 标题本来就在，占位只需补上标题之外的剩余高度。
+        return { start: 0, end: 0, padTop: 0, padBottom: Math.max(0, height - headerH) };
       }
       const startRow = Math.max(0, Math.floor((from - current - headerH) / rowH) - 1);
       const endRow = Math.min(rows, Math.ceil((to - current - headerH) / rowH) + 1);
@@ -974,6 +1001,15 @@ export function ImageGallery({
         padTop: startRow * rowH,
         padBottom: Math.max(0, tail * rowH - rowGap * (startRow > 0 ? 2 : 1)),
       };
+    });
+  }
+
+  function toggleGroup(key: string) {
+    setCollapsed((cur) => {
+      const next = new Set(cur);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
     });
   }
 
@@ -1016,7 +1052,7 @@ export function ImageGallery({
   const actionLabel =
     acting === "approve" ? "通过" : acting === "reject" ? "拒绝" : "删除";
   // 组 + 「未分组」一起排队算位置，裁剪区间按同一个坐标系给。
-  const clips = sections ? clipGroups([...sections, skipped]) : [];
+  const clips = sections ? clipGroups([...sections, skipped], openGroups) : [];
 
   return (
     <section className={"panel capture-gallery" + (query ? " gallery-has-arrange" : "")}>
@@ -1242,6 +1278,8 @@ export function ImageGallery({
           <>
             {sections.map((group, index) => {
               const clip = clips[index];
+              const open = openGroups[index] !== false;
+              const groupKey = groupKeys[index];
               return (
                 <section
                   key={grouped?.groups[index]?.join(",") || index}
@@ -1251,14 +1289,31 @@ export function ImageGallery({
                   }}
                 >
                   <h3>
-                    组 {index + 1} · {grouped?.groups[index]?.length ?? group.length}
+                    <button
+                      type="button"
+                      className="gallery-group-head"
+                      aria-expanded={open}
+                      title={open ? "折叠这一组" : "展开这一组"}
+                      onClick={() => toggleGroup(groupKey)}
+                    >
+                      <span className="gallery-group-caret" aria-hidden="true">
+                        ▾
+                      </span>
+                      <span>
+                        组 {index + 1} · {grouped?.groups[index]?.length ?? group.length}
+                      </span>
+                    </button>
                   </h3>
-                  {clip && clip.padTop > 0 ? (
-                    <div className="gallery-group-pad" style={{ height: clip.padTop }} />
-                  ) : null}
-                  {renderTiles(clip ? group.slice(clip.start, clip.end) : group)}
-                  {clip && clip.padBottom > 0 ? (
-                    <div className="gallery-group-pad" style={{ height: clip.padBottom }} />
+                  {open ? (
+                    <>
+                      {clip && clip.padTop > 0 ? (
+                        <div className="gallery-group-pad" style={{ height: clip.padTop }} />
+                      ) : null}
+                      {renderTiles(clip ? group.slice(clip.start, clip.end) : group)}
+                      {clip && clip.padBottom > 0 ? (
+                        <div className="gallery-group-pad" style={{ height: clip.padBottom }} />
+                      ) : null}
+                    </>
                   ) : null}
                 </section>
               );
@@ -1266,6 +1321,7 @@ export function ImageGallery({
             {grouped && grouped.skipped.length > 0
               ? (() => {
                   const clip = clips[sections.length];
+                  const open = openGroups[sections.length] !== false;
                   return (
                     <section
                       className="gallery-group"
@@ -1273,13 +1329,30 @@ export function ImageGallery({
                         groupRefs.current[sections.length] = node;
                       }}
                     >
-                      <h3>未分组 · {grouped.skipped.length}</h3>
-                      {clip && clip.padTop > 0 ? (
-                        <div className="gallery-group-pad" style={{ height: clip.padTop }} />
-                      ) : null}
-                      {renderTiles(clip ? skipped.slice(clip.start, clip.end) : skipped)}
-                      {clip && clip.padBottom > 0 ? (
-                        <div className="gallery-group-pad" style={{ height: clip.padBottom }} />
+                      <h3>
+                        <button
+                          type="button"
+                          className="gallery-group-head"
+                          aria-expanded={open}
+                          title={open ? "折叠这一组" : "展开这一组"}
+                          onClick={() => toggleGroup(SKIPPED_GROUP_KEY)}
+                        >
+                          <span className="gallery-group-caret" aria-hidden="true">
+                            ▾
+                          </span>
+                          <span>未分组 · {grouped.skipped.length}</span>
+                        </button>
+                      </h3>
+                      {open ? (
+                        <>
+                          {clip && clip.padTop > 0 ? (
+                            <div className="gallery-group-pad" style={{ height: clip.padTop }} />
+                          ) : null}
+                          {renderTiles(clip ? skipped.slice(clip.start, clip.end) : skipped)}
+                          {clip && clip.padBottom > 0 ? (
+                            <div className="gallery-group-pad" style={{ height: clip.padBottom }} />
+                          ) : null}
+                        </>
                       ) : null}
                     </section>
                   );

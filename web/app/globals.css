@@ -2535,6 +2535,43 @@ button.capture-tag-toggle:hover:not(:disabled) {
   font-weight: 600;
 }
 
+/* 组头就是折叠开关：整行可点，箭头朝下=展开，朝右=折叠。 */
+.gallery-group-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gallery-group-head:hover {
+  color: #2f2a24;
+}
+
+.gallery-group-head:focus-visible {
+  outline: 1px solid #b9a894;
+  outline-offset: 2px;
+}
+
+.gallery-group-caret {
+  display: inline-block;
+  width: 0.62rem;
+  font-size: 0.6rem;
+  line-height: 1;
+  transition: transform 120ms ease;
+}
+
+.gallery-group-head[aria-expanded="false"] .gallery-group-caret {
+  transform: rotate(-90deg);
+}
+
 .capture-stage-foot {
   display: flex;
   align-items: baseline;
