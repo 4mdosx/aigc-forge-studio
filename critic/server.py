@@ -8,9 +8,11 @@
                    "character_threshold": 0.85, "exclude": [], "with_scores": false}
     POST /embed   {"path": "...", "ref": "...", "device": "auto"}
     POST /close   {"a": "...", "b": "..."}   # 两图风格距离（L2 + cosine）
-    POST /image-vector {"vectors": {"图片 id": [float, ...]}}  # 整表替换缓存
-    POST /image-vector/nearest {"id": "...", "k": 10}
-    POST /image-vector/groups {"ids": ["..."], "groups": 2}
+    POST /image-vector {"vectors": {...}, "modelVersion": "..."}  # upsert 向量缓存
+    POST /image-vector/state
+    POST /image-vector/reset
+    POST /image-vector/nearest {"id": "...", "k": 10, "order": "near", "ids": ["..."]}
+    POST /image-vector/groups {"ids": ["..."], "groups": 2, "balance": "cluster|even"}
 
 运行（仓库根目录的 .venv）：
     .venv/bin/python critic/server.py --port 8791
@@ -64,7 +66,7 @@ def health():
             "taggers_loaded": tagger.loaded_models(),
             "embedder_loaded": embedder.loaded(),
             "embed_device": embedder.device(),
-            "image_vectors": image_vector.cached(),
+            "image_vectors": image_vector.state(),
             "wd14_models": list(tagger.MODELS),
         }
     )
@@ -140,10 +142,15 @@ def embed():
 
 
 @app.post("/image-vector")
-def image_vector_load():
-    """用本次要处理的全部图片替换向量缓存。body.vectors 为 {图片 id: 向量}。"""
+def image_vector_sync():
+    """把 id → 向量并进缓存（upsert，不是整表替换）。
+
+    body: {"vectors": {...}, "modelVersion": "style-embedder-v4"}
+    维度或 modelVersion 与缓存不一致时返回 400，避免新旧向量静默混用。
+    """
     try:
-        result = image_vector.load(_body()["vectors"])
+        data = _body()
+        result = image_vector.sync(data["vectors"], data.get("modelVersion") or "")
         return jsonify({"ok": True, **result})
     except KeyError:
         return jsonify({"ok": False, "error": "缺少 vectors"}), 400
@@ -153,16 +160,30 @@ def image_vector_load():
         return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
 
 
+@app.post("/image-vector/state")
+def image_vector_state():
+    return jsonify({"ok": True, **image_vector.state()})
+
+
+@app.post("/image-vector/reset")
+def image_vector_reset():
+    return jsonify({"ok": True, **image_vector.reset()})
+
+
 @app.post("/image-vector/nearest")
 def image_vector_nearest():
     try:
         data = _body()
         raw_k = data.get("k", 10)
         raw_order = data.get("order", "near")
+        raw_ids = data.get("ids")
+        if raw_ids is not None and not isinstance(raw_ids, list):
+            raise ValueError("ids 必须是图片 id 数组")
         result = image_vector.nearest(
             data["id"],
             10 if raw_k is None else raw_k,
             order="near" if raw_order is None else raw_order,
+            only=raw_ids,
         )
         return jsonify({"ok": True, **result})
     except KeyError:
@@ -177,7 +198,13 @@ def image_vector_nearest():
 def image_vector_groups():
     try:
         data = _body()
-        result = image_vector.split(data["ids"], data["groups"])
+        balance = data.get("balance") or "cluster"
+        result = image_vector.split(
+            data["ids"],
+            data["groups"],
+            vectors=data.get("vectors"),
+            balance=balance,
+        )
         return jsonify({"ok": True, **result})
     except KeyError as exc:
         field = exc.args[0] if exc.args else "字段"

@@ -48,17 +48,25 @@ python3.12 -m venv .venv
   - `path`（必填）；`ref` 可选参考图（返回 L2 / cosine）；`device` 可选
 - `POST /close` — 两图风格距离（L2 / cosine）
   - `a`、`b`（必填）图片路径；`device` 可选
-- `POST /image-vector` — 用本次要处理的全部图片替换向量缓存
-  - `vectors`（必填）`{图片 id: 数值向量}`。同一次请求里的向量维度必须一致，不能是零向量
-  - 每次都是全量替换，不与上次的缓存合并。缓存只在 critic 进程内存里，重启后需要重新传入
+- `POST /image-vector` — 把一批向量并进缓存（upsert）
+  - `vectors`（必填）`{图片 id: 数值向量}`。同一批里维度必须一致，不能是零向量
+  - `modelVersion` 可选；和缓存里的记录不一致时返回 400，不会混用新旧向量
+  - 已有的 id 覆盖、新的 id 追加，缓存不会因为一次请求被清空
+- `POST /image-vector/state` — 缓存现状：`count` / `dim` / `modelVersion` / `generation`
+  - `generation` 每次进程启动或 reset 都会变；调用方靠它判断要不要重灌
+- `POST /image-vector/reset` — 清空缓存并换一代 `generation`
 - `POST /image-vector/nearest` — 某张图片在缓存里的最近邻或最远邻，默认最近 10 条
   - `id`（必填）缓存中的图片 id；`k` 可选，默认 10；`order` 可选，`near` 或 `far`，默认 `near`
+  - `ids` 可选候选集，只在给出的 id 里找。候选集在查询这一侧过滤，所以并发请求互不影响
   - `near` 按 cosine 从近到远，`far` 从远到近。不含自己。每条含 `l2` 和 `cosine`
 - `POST /image-vector/groups` — 把指定的 n 张图片分成 m 组
-  - `ids`（必填）缓存中的图片 id；`groups`（必填）组数，范围是 1 到 `ids` 的长度
-  - 先按 cosine 把图片排成一条，再尽量均分成 m 组。每组数量相差不超过 1
+  - `ids`（必填）；`groups`（必填）组数，范围是 1 到 `ids` 的长度
+  - `vectors` 可选，直接传向量；不给就从缓存里取
+  - `balance` 可选。`cluster`（默认）每次二分最分散的那一簇，组大小不均但语义正确；
+    `even` 沿叶子顺序等分，组大小整齐但边界会切进密集区
+  - 每组返回 `{ids, centerId}`，`centerId` 是组内到其它成员平均相似度最高的那张
 
-图片向量这一路用 scikit-learn，不需要额外的模型文件。`requirements.txt` 里已经带上。
+图片向量这一路只用 numpy + scipy，不需要额外的模型文件。`requirements.txt` 里已经带上。
 
 ## 调用示例
 

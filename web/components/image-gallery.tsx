@@ -92,6 +92,7 @@ export function ImageGallery({
     key: string;
     groups: string[][];
     skipped: string[];
+    stale: string[];
   } | null>(null);
   const [groupBusy, setGroupBusy] = useState(false);
   const [groupError, setGroupError] = useState<string | null>(null);
@@ -465,8 +466,9 @@ export function ImageGallery({
     setGroupError(null);
     try {
       const result = await api<{
-        groups: Array<{ ids: string[] }>;
+        groups: Array<{ ids: string[]; centerId?: string | null }>;
         skipped: string[];
+        stale?: string[];
       }>("capture/assets/groups", {
         method: "POST",
         body: JSON.stringify({ ids, groups: count }),
@@ -475,9 +477,30 @@ export function ImageGallery({
         key: ids.join("\n"),
         groups: result.groups.map((group) => group.ids),
         skipped: result.skipped,
+        stale: result.stale ?? [],
       });
       setDiverse(null);
       setDiverseError(null);
+    } catch (err) {
+      setGroupError(messageOf(err));
+    } finally {
+      setGroupBusy(false);
+    }
+  }
+
+  async function rebuildVectors() {
+    setGroupBusy(true);
+    setGroupError(null);
+    try {
+      const result = await api<{ queued: number }>(
+        "capture/embeddings/rebuild",
+        { method: "POST" },
+      );
+      setGroupError(
+        result.queued === 0
+          ? "没有需要重建的向量"
+          : `已排入 ${result.queued} 张图的向量重建，跑完再分组`,
+      );
     } catch (err) {
       setGroupError(messageOf(err));
     } finally {
@@ -506,7 +529,7 @@ export function ImageGallery({
     setDiverseError(null);
     try {
       const result = await api<{
-        groups: Array<{ ids: string[] }>;
+        groups: Array<{ ids: string[]; centerId?: string | null }>;
         skipped: string[];
       }>("capture/assets/groups", {
         method: "POST",
@@ -1016,6 +1039,19 @@ export function ImageGallery({
                 {renderTiles(skipped)}
               </section>
             ) : null}
+            {grouped && grouped.stale.length > 0 ? (
+              <p className="gallery-query-error">
+                {grouped.stale.length} 张图的向量来自旧模型，已跳过。
+                <button
+                  type="button"
+                  className="quiet"
+                  disabled={groupBusy}
+                  onClick={() => void rebuildVectors()}
+                >
+                  重建向量
+                </button>
+              </p>
+            ) : null}
           </>
         ) : flat ? (
           renderTiles(flat)
@@ -1305,10 +1341,17 @@ function galleryWindow(body: HTMLElement, total: number) {
   return { offset, size, cols, row };
 }
 
-function centersOf(groups: Array<{ ids: string[] }>): string[] {
+function centersOf(
+  groups: Array<{ ids: string[]; centerId?: string | null }>,
+): string[] {
   const ids: string[] = [];
   for (const group of groups) {
     if (group.ids.length === 0) continue;
+    // 优先用后端给的 medoid（组内平均相似度最高的那张），没有才退回中间元素。
+    if (group.centerId && group.ids.includes(group.centerId)) {
+      ids.push(group.centerId);
+      continue;
+    }
     ids.push(group.ids[Math.floor((group.ids.length - 1) / 2)] as string);
   }
   return ids;

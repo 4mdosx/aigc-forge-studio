@@ -21,7 +21,7 @@ import { transaction } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import { writeWd14TagTable } from '../tag/table.ts'
 import type { Runner } from '../task/queue.ts'
-import { enqueueCaptureJob, type CaptureStep } from './jobs.ts'
+import { enqueueCaptureJob, enqueueEmbedJob, type CaptureStep } from './jobs.ts'
 
 const execFile = promisify(execFileCb)
 
@@ -98,7 +98,7 @@ type AssetRow = {
   updated_at: number
 }
 
-const EMBEDDING_MODEL = 'style-embedder-v4'
+export const EMBEDDING_MODEL = 'style-embedder-v4'
 const RATINGS = new Set(['general', 'sensitive', 'questionable', 'explicit'])
 
 function ratingOf(value: unknown): string {
@@ -315,22 +315,26 @@ export async function nearestAssets(
   const assets = listAssets(runner.db)
   const target = assets.find((asset) => asset.id === id)
   if (!target) throw new RunnerError('image not found', 404)
+  requireCurrentEmbedding(target)
   const pool = allowed
     ? assets.filter((asset) => asset.id === id || allowed.has(asset.id))
     : assets
-  const vectors = vectorsFor(pool, target)
+  const vectors = vectorsFor(pool)
   if (!vectors) throw new RunnerError('这张图还没有向量')
   const base = criticBaseURL(runner.dataDir)
+  const stamps = new Map<string, string>()
+  for (const asset of pool)
+    stamps.set(asset.id, `${asset.updatedAt}:${asset.embeddingModelVersion}`)
   let result: {
     neighbors?: Array<{ id?: unknown; cosine?: unknown; l2?: unknown }>
   }
   try {
-    await criticJson(base, '/image-vector', { vectors })
-    const span = Math.max(k, Object.keys(vectors).length - 1)
+    await syncVectors(base, vectors, stamps)
     result = await criticJson(base, '/image-vector/nearest', {
       id,
-      k: span,
+      k,
       order,
+      ids: Object.keys(vectors),
     })
   } catch (err) {
     if (err instanceof RunnerError) throw err
@@ -363,19 +367,33 @@ export async function nearestAssets(
   return { id, neighbors: neighbors.slice(0, k) }
 }
 
+export type Balance = 'cluster' | 'even'
+
+export type AssetGroup = {
+  ids: string[]
+  centerId: string | null
+}
+
 export type AssetGroups = {
-  groups: Array<{ ids: string[] }>
+  groups: AssetGroup[]
+  /** 没有可用向量或向量维度对不上，没参与分组。 */
   skipped: string[]
+  /** skipped 里因为模型换过、向量过期的那些，需要重建。 */
+  stale: string[]
+  balance: Balance
 }
 
 export async function groupAssets(
   runner: Runner,
   ids: readonly string[],
   groups: number,
+  balance: Balance = 'cluster',
 ): Promise<AssetGroups> {
   const selected = idListOf(ids)
   if (!Number.isInteger(groups) || groups < 1)
     throw new RunnerError('groups 必须是正整数')
+  if (balance !== 'cluster' && balance !== 'even')
+    throw new RunnerError('balance 必须是 cluster 或 even')
   const assets = listAssets(runner.db)
   const byId = new Map(assets.map((asset) => [asset.id, asset]))
   const missing = selected.filter((id) => !byId.has(id))
@@ -387,10 +405,18 @@ export async function groupAssets(
   }
   const vectors: Record<string, number[]> = {}
   const skipped: string[] = []
+  const stale: string[] = []
   let dim: number | null = null
   for (const id of selected) {
-    const vector = usableVector(byId.get(id)?.embedding ?? [])
-    if (!vector || (dim !== null && vector.length !== dim)) {
+    const asset = byId.get(id)
+    const vector = asset ? currentEmbedding(asset) : null
+    if (!vector) {
+      skipped.push(id)
+      if (asset && asset.embeddingModelVersion !== EMBEDDING_MODEL)
+        stale.push(id)
+      continue
+    }
+    if (dim !== null && vector.length !== dim) {
       skipped.push(id)
       continue
     }
@@ -404,8 +430,8 @@ export async function groupAssets(
       `可分组的图片有 ${usable.length} 张，groups 必须在 1 到 ${usable.length} 之间`,
     )
   }
-  const packed = await splitVectors(runner.dataDir, vectors, usable, groups)
-  return { groups: packed, skipped }
+  const packed = await splitVectors(runner.dataDir, vectors, usable, groups, balance)
+  return { groups: packed, skipped, stale, balance }
 }
 
 async function splitVectors(
@@ -413,37 +439,42 @@ async function splitVectors(
   vectors: Record<string, number[]>,
   ids: string[],
   groups: number,
-): Promise<Array<{ ids: string[] }>> {
+  balance: Balance,
+): Promise<AssetGroup[]> {
   const root = findRepoRoot([dirname(dataDir), import.meta.dirname])
   const python = join(root, '.venv', 'bin', 'python')
   const script = `
 import json, sys
 sys.path.insert(0, ${JSON.stringify(root)})
-from critic.image_vector import load, split
+from critic.image_vector import split
 payload = json.load(sys.stdin)
-load(payload["vectors"])
-json.dump(split(payload["ids"], int(payload["groups"])), sys.stdout)
+json.dump(
+    split(payload["ids"], int(payload["groups"]), vectors=payload["vectors"], balance=payload["balance"]),
+    sys.stdout,
+)
 `
   let stdout = ''
   try {
     stdout = await runPython(
       python,
       script,
-      JSON.stringify({ vectors, ids, groups }),
+      JSON.stringify({ vectors, ids, groups, balance }),
     )
   } catch (err) {
     if (err instanceof RunnerError) throw err
     const message = err instanceof Error ? err.message : String(err)
     throw new RunnerError(message, 502)
   }
-  let parsed: { groups?: Array<{ ids?: unknown }> }
+  let parsed: { groups?: Array<{ ids?: unknown; centerId?: unknown }> }
   try {
-    parsed = JSON.parse(stdout) as { groups?: Array<{ ids?: unknown }> }
+    parsed = JSON.parse(stdout) as {
+      groups?: Array<{ ids?: unknown; centerId?: unknown }>
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     throw new RunnerError(message, 502)
   }
-  const packed: Array<{ ids: string[] }> = []
+  const packed: AssetGroup[] = []
   const seen = new Set<string>()
   for (const group of parsed.groups ?? []) {
     if (!group || !Array.isArray(group.ids)) continue
@@ -452,7 +483,12 @@ json.dump(split(payload["ids"], int(payload["groups"])), sys.stdout)
         typeof id === 'string' && id in vectors && !seen.has(id),
     )
     for (const id of groupIds) seen.add(id)
-    if (groupIds.length > 0) packed.push({ ids: groupIds })
+    if (groupIds.length === 0) continue
+    const centerId =
+      typeof group.centerId === 'string' && groupIds.includes(group.centerId)
+        ? group.centerId
+        : null
+    packed.push({ ids: groupIds, centerId })
   }
   if (packed.length !== groups || seen.size !== ids.length) {
     throw new RunnerError(
@@ -614,7 +650,8 @@ export async function runCaptureStep(
     asset.status === 'rejected' ||
     asset.status === 'processed'
   ) {
-    return 'done'
+    // 定稿的图不再重跑 prepare / tag；只有向量过期时允许补 embed。
+    if (step !== 'embed' || !isEmbeddingStale(asset)) return 'done'
   }
   if (step === 'prepare') {
     await writePrepared(runner, asset, ac)
@@ -1111,6 +1148,32 @@ export async function writeThumb(source: string, dest: string): Promise<void> {
   ])
 }
 
+export type EmbeddingRebuild = {
+  queued: number
+  ids: string[]
+}
+
+/** 把向量为空或版本过期的图排进 embed 队列。换向量模型后跑一次。 */
+export function rebuildStaleEmbeddings(runner: Runner): EmbeddingRebuild {
+  const rows = runner.db
+    .prepare(
+      `SELECT id FROM image_assets
+       WHERE embedding_json = '[]' OR embedding_model_version != ?
+       ORDER BY created_at`,
+    )
+    .all(EMBEDDING_MODEL) as Array<{ id: string }>
+  const now = runner.now().getTime()
+  for (const row of rows) enqueueEmbedJob(runner.db, row.id, now)
+  return { queued: rows.length, ids: rows.map((row) => row.id) }
+}
+
+export function isEmbeddingStale(asset: ImageAsset): boolean {
+  return (
+    asset.embedding.length === 0 ||
+    asset.embeddingModelVersion !== EMBEDDING_MODEL
+  )
+}
+
 export async function backfillAssetThumbs(
   dataDir: string,
   db: DatabaseSync,
@@ -1166,20 +1229,77 @@ export async function pixelSize(
   }
 }
 
-function vectorsFor(
-  assets: ImageAsset[],
-  target: ImageAsset,
-): Record<string, number[]> | null {
-  const vector = usableVector(target.embedding)
-  if (!vector) return null
-  const vectors: Record<string, number[]> = { [target.id]: vector }
-  for (const asset of assets) {
-    if (asset.id === target.id) continue
-    const other = usableVector(asset.embedding)
-    if (!other || other.length !== vector.length) continue
-    vectors[asset.id] = other
+type VectorSync = { generation: string; stamps: Map<string, string> }
+
+/** critic 的向量缓存代次 + 本进程已经灌过哪些 id。 */
+const vectorSync = new Map<string, VectorSync>()
+
+/** 丢掉「哪些 id 已经灌过」的记忆。测试用，进程重启时也会自动失效。 */
+export function clearVectorSync(): void {
+  vectorSync.clear()
+}
+
+/** 只把 critic 还没有的向量发过去；critic 重启换代次就重灌一遍。 */
+async function syncVectors(
+  base: string,
+  vectors: Record<string, number[]>,
+  stamps: Map<string, string>,
+): Promise<void> {
+  const state = await criticJson<{ generation?: unknown }>(
+    base,
+    '/image-vector/state',
+    {},
+  )
+  const generation = typeof state.generation === 'string' ? state.generation : ''
+  let known = vectorSync.get(base)
+  if (!known || known.generation !== generation) {
+    known = { generation, stamps: new Map() }
+    vectorSync.set(base, known)
   }
-  return vectors
+  const pending: Record<string, number[]> = {}
+  for (const [id, vector] of Object.entries(vectors)) {
+    if (known.stamps.get(id) === (stamps.get(id) ?? '')) continue
+    pending[id] = vector
+  }
+  const ids = Object.keys(pending)
+  if (ids.length === 0) return
+  await criticJson(base, '/image-vector', {
+    vectors: pending,
+    modelVersion: EMBEDDING_MODEL,
+  })
+  for (const id of ids) known.stamps.set(id, stamps.get(id) ?? '')
+}
+
+function vectorsFor(assets: ImageAsset[]): Record<string, number[]> | null {
+  const vectors: Record<string, number[]> = {}
+  let dim: number | null = null
+  for (const asset of assets) {
+    const vector = currentEmbedding(asset)
+    if (!vector) continue
+    if (dim !== null && vector.length !== dim) continue
+    dim ??= vector.length
+    vectors[asset.id] = vector
+  }
+  return Object.keys(vectors).length > 0 ? vectors : null
+}
+
+/** 只有当前模型的向量才算数；换模型后旧向量不能混进来当邻居。 */
+function currentEmbedding(asset: ImageAsset): number[] | null {
+  if (asset.embeddingModelVersion !== EMBEDDING_MODEL) return null
+  return usableVector(asset.embedding)
+}
+
+function requireCurrentEmbedding(asset: ImageAsset): void {
+  if (asset.embedding.length === 0)
+    throw new RunnerError('这张图还没有向量', 409)
+  if (asset.embeddingModelVersion !== EMBEDDING_MODEL) {
+    throw new RunnerError(
+      `这张图的向量来自 ${asset.embeddingModelVersion || '未知模型'}，与当前 ${EMBEDDING_MODEL} 不一致；先重建向量`,
+      409,
+    )
+  }
+  if (!usableVector(asset.embedding))
+    throw new RunnerError('这张图的向量不可用', 409)
 }
 
 function usableVector(values: number[]): number[] | null {

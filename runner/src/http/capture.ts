@@ -26,10 +26,12 @@ import {
   pageAssets,
   groupAssets,
   nearestAssets,
+  rebuildStaleEmbeddings,
   rejectAsset,
   replaceNobg,
   updateAsset,
   type AssetListQuery,
+  type Balance,
   type FinalVersion,
 } from '../capture/asset.ts'
 import { removeBackground } from '../capture/nobg.ts'
@@ -1149,7 +1151,16 @@ export function mountCapture(app: Hono, runner: Runner): void {
     }
     if (typeof body.groups !== 'number')
       throw new RunnerError('groups 必须是正整数')
-    return c.json(await groupAssets(runner, body.ids, body.groups))
+    const balance = body.balance ?? 'cluster'
+    if (balance !== 'cluster' && balance !== 'even')
+      throw new RunnerError('balance 必须是 cluster 或 even')
+    return c.json(
+      await groupAssets(runner, body.ids, body.groups, balance as Balance),
+    )
+  })
+
+  app.post('/capture/embeddings/rebuild', (c) => {
+    return c.json(rebuildStaleEmbeddings(runner))
   })
 
   app.put('/capture/assets/:id', async (c) => {

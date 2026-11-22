@@ -76,6 +76,28 @@ export function enqueueCaptureJob(db: DatabaseSync, assetId: string, now: number
   ).run(now, CAPTURE_JOB, assetId)
 }
 
+/** 单独排一个 embed 步骤：给换过向量模型的老图补算，跟采集队列共用一张表。 */
+export function enqueueEmbedJob(db: DatabaseSync, assetId: string, now: number): void {
+  const existing = db
+    .prepare('SELECT status FROM jobs WHERE kind = ? AND asset_id = ?')
+    .get(CAPTURE_JOB, assetId) as { status: string } | undefined
+  if (!existing) {
+    db.prepare(
+      `INSERT INTO jobs (
+        id, kind, asset_id, status, step, attempts, max_attempts, next_run_at, created_at
+      ) VALUES (?, ?, ?, 'pending', 'embed', 0, ?, ?, ?)`,
+    ).run(jobId(new Date(now)), CAPTURE_JOB, assetId, MAX_ATTEMPTS, now, now)
+    return
+  }
+  if (existing.status === 'pending' || existing.status === 'running') return
+  db.prepare(
+    `UPDATE jobs SET
+      status = 'pending', step = 'embed', attempts = 0, error = NULL, next_run_at = ?,
+      started_at = NULL, finished_at = NULL
+    WHERE kind = ? AND asset_id = ?`,
+  ).run(now, CAPTURE_JOB, assetId)
+}
+
 export function resumeCaptureJobs(db: DatabaseSync, now: number): void {
   db.prepare(
     `UPDATE jobs SET
