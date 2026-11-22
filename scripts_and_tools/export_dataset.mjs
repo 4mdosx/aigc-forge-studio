@@ -30,7 +30,8 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const dataDir = join(repoRoot, 'data')
 const runnerBase = 'http://127.0.0.1:8787'
 const VERSION = 'processed'
-const SKIP_RATINGS = new Set(['questionable', 'explicit'])
+// 空集合 = 不按 rating 过滤，questionable / explicit 也一并导出（11-22 定，勿改回）
+const SKIP_RATINGS = new Set([])
 const TAGGER_CSV = join(
   dataDir,
   'models',
