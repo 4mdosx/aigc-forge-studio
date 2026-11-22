@@ -202,6 +202,7 @@ if (!attaching) {
 }
 if (values['dry-run']) {
   if (!attaching) console.log(`\n名字预告  ${jobName}`)
+  if (!attaching) await previewOnTrainer(dirName, pairs.length, params)
   console.log('[dry-run] 未上传、未建 job、未回流、未验证。')
   process.exit(0)
 }
@@ -232,6 +233,7 @@ if (attaching) {
   const concurrency = Math.max(1, Number(values.concurrency) || 4)
   // /upload 的 path 相对 root，不带 root 名（带 training/ 会落到 training\training）
   const target = `${dirName}/img`
+  await syncDataset(target, pairs)
   console.log(`\n推送 ${pairs.length} 组 → ${trainerBase}`)
   let done = 0
   const errors = []
@@ -268,6 +270,8 @@ if (attaching) {
     datasetRoot: 'training',
     datasetPath: `${dirName}/img`,
     baseModel: BASE_MODEL,
+    // 声明式期望值：训练机上若还剩旧图，trainer 直接 409，不用等跑完才发现步数不对
+    expectedImages: pairs.length,
     ...params,
   }
   const created = await fetchJson(`${runnerBase}/train/jobs`, {
@@ -329,7 +333,104 @@ async function waitForJob(id) {
   throw new Error('等待训练超时（--timeout-hours）')
 }
 
-async function discoverArtifacts(name, epochs) {
+// 声明式对账：先告诉 trainer「这批应该有哪些文件」，让它清掉陈旧的。
+// 训练机的上传目录只写不删，复用同一个数据集名时旧图会留在里面，步数被悄悄放大
+// （2026-11-22：脚本算 570 步，trainer 按残留的 55 张跑出 1650 步）。
+async function syncDataset(target, pairs) {
+  const files = pairs.flatMap((p) => [p.image, `${p.stem}.txt`])
+  let res
+  try {
+    res = await fetch(
+      `${trainerBase}/sync?root=training&path=${encodeURIComponent(target)}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ files }),
+      },
+    )
+  } catch (err) {
+    console.warn(`[sync] 跳过（trainer 不可达）：${err.message}`)
+    return
+  }
+  const text = await res.text()
+  if (res.status === 404) {
+    // 两种 404：目录还没建 = 首次训练；{"error":"not found"} = trainer 是旧版本
+    const reason = text.includes('path not found')
+      ? '目标目录尚未创建（首次训练）'
+      : 'trainer 没有 /sync 路由（旧版本，git pull 后重启即可）'
+    console.log(`[sync] 跳过清理：${reason}`)
+    return
+  }
+  if (!res.ok) {
+    console.warn(`[sync] 失败 HTTP ${res.status}：${text.slice(0, 200)}`)
+    return
+  }
+  const json = JSON.parse(text)
+  if (json.deleted?.length) {
+    const head = json.deleted.slice(0, 5).join(', ')
+    const more = json.deleted.length > 5 ? ' …' : ''
+    console.log(`[sync] 清掉 ${json.deleted.length} 个陈旧文件：${head}${more}`)
+  } else {
+    console.log('[sync] 无陈旧文件')
+  }
+}
+
+// 真 dry-run：让 trainer 用它那侧的目录算一遍。本地算的是「我打算传什么」，
+// trainer 算的是「它现在有什么」——两者不一致正是残留文件的信号。
+async function previewOnTrainer(dirName, localCount, params) {
+  let res
+  try {
+    res = await fetch(`${runnerBase}/train/jobs/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: jobName,
+        datasetRoot: 'training',
+        datasetPath: `${dirName}/img`,
+        baseModel: BASE_MODEL,
+        ...params,
+      }),
+    })
+  } catch (err) {
+    console.log(`[preview] 跳过（runner 不可达）：${err.message}`)
+    return
+  }
+  const text = await res.text()
+  if (!res.ok) {
+    console.log(`[preview] 跳过：HTTP ${res.status} ${text.slice(0, 160)}`)
+    return
+  }
+  const json = JSON.parse(text)
+  const remote = json.stats?.imageCount ?? 0
+  const caption = json.stats?.captionCount ?? 0
+  console.log(
+    `\n[preview] 训练机侧现有 ${remote} 图 / ${caption} caption，预计 ${json.estimatedSteps} 步`,
+  )
+  if (remote !== localCount) {
+    console.warn(
+      `          注意：本地准备 ${localCount} 组，训练机上 ${remote} 图。` +
+        `提交时会先被 /sync 清成 ${localCount} 组（正是为了不重演 1650 步那次）。`,
+    )
+  }
+}
+
+async function discoverArtifacts(name, epochs, jobId) {
+  // 优先问 trainer 要真实产物清单。旧版 trainer 没这个路由，回退到按命名约定猜。
+  if (jobId) {
+    try {
+      const res = await fetch(`${trainerBase}/train/jobs/${jobId}/artifacts`)
+      if (res.ok) {
+        const json = await res.json()
+        const found = (json.artifacts ?? []).map((a) => ({
+          file: a.name,
+          label: a.epoch === null ? 'final' : `epoch ${a.epoch}`,
+        }))
+        if (found.length) return found
+      }
+    } catch {
+      // 网络或旧版本：走下面的命名猜测
+    }
+  }
   const found = []
   for (let i = 1; i <= epochs; i += 1) {
     const file = `${name}-${String(i).padStart(6, '0')}.safetensors`
@@ -421,7 +522,7 @@ async function finalize(doneJob, { trigger: triggerWord, stepsPerEpoch }) {
   if (doneJob.status === 'running' || doneJob.status === 'pending') {
     await waitForJob(doneJob.id)
   }
-  const artifacts = await discoverArtifacts(name, epochs)
+  const artifacts = await discoverArtifacts(name, epochs, doneJob.id)
   console.log(`[post] 产物 ${artifacts.map((a) => a.file).join(', ')}`)
   await deployArtifacts(name, artifacts)
   await confirmVisible(artifacts)
