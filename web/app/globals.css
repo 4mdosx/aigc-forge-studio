@@ -2522,6 +2522,11 @@ button.capture-tag-toggle:hover:not(:disabled) {
   gap: 0.45rem;
 }
 
+/* 分组视图视窗裁剪的占位：撑住被裁掉的行的位置。 */
+.gallery-group > .gallery-group-pad {
+  grid-column: 1 / -1;
+}
+
 .gallery-group h3 {
   grid-column: 1 / -1;
   margin: 0;

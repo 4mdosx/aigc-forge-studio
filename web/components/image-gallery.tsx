@@ -22,6 +22,8 @@ import { isSafetyHiddenRating } from "@/lib/safety-mode";
 
 /** 非虚拟列表（分组 / 相似度）与布局未就绪时用来取第一页的页大小。 */
 const DEFAULT_PAGE = 60;
+/** 分组裁剪的上下预渲染余量（像素），半屏左右。 */
+const GROUP_OVERSCAN = 600;
 
 export function ImageGallery({
   items,
@@ -127,6 +129,12 @@ export function ImageGallery({
     cols: 1,
     row: 104,
   });
+  /** 分组视图不是虚拟列表，视窗与分组几何要自己算。 */
+  const [view, setView] = useState({ top: 0, height: 0, width: 0 });
+  const groupRefs = useRef<Array<HTMLElement | null>>([]);
+  /** 只存不会随裁剪变化的量：列数、行高、标题高、组间距。位置由它们解析推算。 */
+  const groupGeo = useRef({ cols: 0, rowH: 0, rowGap: 0, headerH: 0, groupGap: 0 });
+  const [, setGeoSeen] = useState(0);
   const datasetId = datasetOnly && datasetFocus ? datasetFocus.id : null;
   const filterQuery = useMemo<Omit<AssetPageQuery, "offset" | "size">>(
     () => ({
@@ -322,6 +330,71 @@ export function ImageGallery({
       observer.disconnect();
     };
   }, [galleryBody, safetyReady, total, virtual]);
+
+  // 分组视图：滚动位置与视口尺寸，裁剪要用。rAF 合帧，避免每像素一渲染。
+  const sectionsOn = sections !== null;
+  useEffect(() => {
+    const body = galleryBody;
+    if (!body || !sectionsOn) return;
+    let frame = 0;
+    const read = () => {
+      frame = 0;
+      setView((cur) =>
+        cur.top === body.scrollTop &&
+        cur.height === body.clientHeight &&
+        cur.width === body.clientWidth
+          ? cur
+          : { top: body.scrollTop, height: body.clientHeight, width: body.clientWidth },
+      );
+    };
+    const schedule = () => {
+      if (frame === 0) frame = window.requestAnimationFrame(read);
+    };
+    read();
+    body.addEventListener("scroll", schedule, { passive: true });
+    const observer = new ResizeObserver(schedule);
+    observer.observe(body);
+    return () => {
+      if (frame !== 0) window.cancelAnimationFrame(frame);
+      body.removeEventListener("scroll", schedule);
+      observer.disconnect();
+    };
+  }, [galleryBody, sectionsOn]);
+
+  // 量一次格子几何就够：列数、行高、标题高、组间距都是布局常量，
+  // 不算总高度，所以裁剪不会反过来影响测量，也就不会抖动。
+  const countsKey = sections ? sections.map((group) => group.length).join(",") : "";
+  useEffect(() => {
+    const body = galleryBody;
+    if (!body || sections === null) return;
+    const node = groupRefs.current.find(
+      (item) => item !== null && item.querySelector(".capture-tile"),
+    );
+    if (!node) return;
+    const style = getComputedStyle(node);
+    const gap = Number.parseFloat(style.rowGap) || 0;
+    const cols = style.gridTemplateColumns.split(" ").filter(Boolean).length;
+    const tile = node.querySelector<HTMLElement>(".capture-tile");
+    const title = node.querySelector("h3");
+    const rowH = tile ? tile.getBoundingClientRect().height + gap : 0;
+    const headerH = title
+      ? title.getBoundingClientRect().bottom - node.getBoundingClientRect().top + gap
+      : 0;
+    const groupGap = Number.parseFloat(getComputedStyle(body).rowGap) || 0;
+    if (cols === 0 || rowH === 0) return;
+    const prev = groupGeo.current;
+    if (
+      prev.cols === cols &&
+      Math.abs(prev.rowH - rowH) < 0.5 &&
+      Math.abs(prev.rowGap - gap) < 0.5 &&
+      Math.abs(prev.headerH - headerH) < 0.5 &&
+      Math.abs(prev.groupGap - groupGap) < 0.5
+    ) {
+      return;
+    }
+    groupGeo.current = { cols, rowH, rowGap: gap, headerH, groupGap };
+    setGeoSeen((value) => value + 1);
+  }, [galleryBody, sectionsOn, countsKey, view.width]);
 
   useEffect(() => {
     if (!safetyReady) return;
@@ -852,6 +925,58 @@ export function ImageGallery({
     }
   }
 
+  /**
+   * 分组视图的视窗裁剪：位置全部由「列数 / 行高 / 标题高 / 组间距」推算，
+   * 不量任何被裁剪影响的高度，所以反复渲染不会累积误差也不会抖。
+   * 整组在视窗外就留一块等高空白，在视窗内就按行切一段。
+   */
+  function clipGroups(lists: ImageAsset[][]) {
+    const { cols, rowH, rowGap, headerH, groupGap } = groupGeo.current;
+    const plain = lists.map((list) => ({
+      start: 0,
+      end: list.length,
+      padTop: 0,
+      padBottom: 0,
+    }));
+    if (cols === 0 || rowH === 0) return plain;
+    const from = view.top - GROUP_OVERSCAN;
+    const to = view.top + view.height + GROUP_OVERSCAN;
+    let top = 0;
+    return lists.map((list, index) => {
+      const count = list.length;
+      const rows = Math.ceil(count / cols);
+      // 网格最后一行后面没有行间距，所以整组高度扣掉一个 rowGap。
+      const height = count === 0 ? headerH : headerH + rows * rowH - rowGap;
+      const current = top;
+      top += height + groupGap;
+      if (count === 0) return plain[index] as (typeof plain)[number];
+      if (current + height <= from || current >= to) {
+        return { start: 0, end: 0, padTop: 0, padBottom: height };
+      }
+      const startRow = Math.max(0, Math.floor((from - current - headerH) / rowH) - 1);
+      const endRow = Math.min(rows, Math.ceil((to - current - headerH) / rowH) + 1);
+      const start = Math.min(count, startRow * cols);
+      const end = Math.min(count, endRow * cols);
+      if (start === 0 && end === count) return plain[index] as (typeof plain)[number];
+      const tail = rows - endRow;
+      // 占位自己是一行，会各带一个行间距；从占位高度里扣回来，整组高度才和未裁剪时一致。
+      if (tail === 0) {
+        return {
+          start,
+          end,
+          padTop: Math.max(0, startRow * rowH - rowGap),
+          padBottom: 0,
+        };
+      }
+      return {
+        start,
+        end,
+        padTop: startRow * rowH,
+        padBottom: Math.max(0, tail * rowH - rowGap * (startRow > 0 ? 2 : 1)),
+      };
+    });
+  }
+
   function renderTiles(list: ImageAsset[]) {
     return list.map((item) => {
       const thumb = item.thumbUrl
@@ -890,6 +1015,8 @@ export function ImageGallery({
     orderedIds.length > 0 && orderedIds.every((id) => picked.has(id));
   const actionLabel =
     acting === "approve" ? "通过" : acting === "reject" ? "拒绝" : "删除";
+  // 组 + 「未分组」一起排队算位置，裁剪区间按同一个坐标系给。
+  const clips = sections ? clipGroups([...sections, skipped]) : [];
 
   return (
     <section className={"panel capture-gallery" + (query ? " gallery-has-arrange" : "")}>
@@ -1113,20 +1240,51 @@ export function ImageGallery({
           </p>
         ) : sections ? (
           <>
-            {sections.map((group, index) => (
-              <section key={grouped?.groups[index]?.join(",") || index} className="gallery-group">
-                <h3>
-                  组 {index + 1} · {grouped?.groups[index]?.length ?? group.length}
-                </h3>
-                {renderTiles(group)}
-              </section>
-            ))}
-            {grouped && grouped.skipped.length > 0 ? (
-              <section className="gallery-group">
-                <h3>未分组 · {grouped.skipped.length}</h3>
-                {renderTiles(skipped)}
-              </section>
-            ) : null}
+            {sections.map((group, index) => {
+              const clip = clips[index];
+              return (
+                <section
+                  key={grouped?.groups[index]?.join(",") || index}
+                  className="gallery-group"
+                  ref={(node) => {
+                    groupRefs.current[index] = node;
+                  }}
+                >
+                  <h3>
+                    组 {index + 1} · {grouped?.groups[index]?.length ?? group.length}
+                  </h3>
+                  {clip && clip.padTop > 0 ? (
+                    <div className="gallery-group-pad" style={{ height: clip.padTop }} />
+                  ) : null}
+                  {renderTiles(clip ? group.slice(clip.start, clip.end) : group)}
+                  {clip && clip.padBottom > 0 ? (
+                    <div className="gallery-group-pad" style={{ height: clip.padBottom }} />
+                  ) : null}
+                </section>
+              );
+            })}
+            {grouped && grouped.skipped.length > 0
+              ? (() => {
+                  const clip = clips[sections.length];
+                  return (
+                    <section
+                      className="gallery-group"
+                      ref={(node) => {
+                        groupRefs.current[sections.length] = node;
+                      }}
+                    >
+                      <h3>未分组 · {grouped.skipped.length}</h3>
+                      {clip && clip.padTop > 0 ? (
+                        <div className="gallery-group-pad" style={{ height: clip.padTop }} />
+                      ) : null}
+                      {renderTiles(clip ? skipped.slice(clip.start, clip.end) : skipped)}
+                      {clip && clip.padBottom > 0 ? (
+                        <div className="gallery-group-pad" style={{ height: clip.padBottom }} />
+                      ) : null}
+                    </section>
+                  );
+                })()
+              : null}
             {grouped && grouped.stale.length > 0 ? (
               <p className="gallery-query-error">
                 {grouped.stale.length} 张图的向量来自旧模型，已跳过。
