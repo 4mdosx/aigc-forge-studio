@@ -1,0 +1,32 @@
+[
+  {
+    "id": "kimono",
+    "pos": "ohou, 1girl, solo, fox_ears, black_hair, red_eyes, black_kimono, wide_sleeves, black_pantyhose, high_heels, standing, full body, japanese shrine, red torii gate, pink cherry blossoms, dutch angle, looking at viewer",
+    "neg": "lineart, cel shading, flat colors, outline, sketch, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, logo, multiple girls, chibi, 2d, flat lighting"
+  },
+  {
+    "id": "bunny",
+    "pos": "ohou, 1girl, solo, rabbit_ears, black_hair, red_eyes, black_leotard, black_gloves, black_pantyhose, holding tray, bar interior, wine bottles, red ambient light, from below, looking at viewer",
+    "neg": "lineart, cel shading, flat colors, outline, sketch, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, logo, multiple girls, chibi, 2d, flat lighting"
+  },
+  {
+    "id": "cyber",
+    "pos": "ohou, 1girl, solo, fox_ears, black_hair, red_eyes, black_leotard, black_pantyhose, neon signs, rainy cyberpunk street at night, wet asphalt reflection, standing, full body, from below",
+    "neg": "lineart, cel shading, flat colors, outline, sketch, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, logo, multiple girls, chibi, 2d, flat lighting"
+  },
+  {
+    "id": "beach",
+    "pos": "ohou, 1girl, solo, fox_ears, black_hair, red_eyes, white bikini, beach, ocean, sunset, backlight, standing, full body",
+    "neg": "lineart, cel shading, flat colors, outline, sketch, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, logo, multiple girls, chibi, 2d, flat lighting"
+  },
+  {
+    "id": "office",
+    "pos": "ohou, 1girl, solo, fox_ears, black_hair, red_eyes, white shirt, black pencil skirt, office desk, window daylight, sitting, cowboy shot",
+    "neg": "lineart, cel shading, flat colors, outline, sketch, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, logo, multiple girls, chibi, 2d, flat lighting"
+  },
+  {
+    "id": "portrait",
+    "pos": "ohou, 1girl, solo, fox_ears, black_hair, red_eyes, upper body, close-up portrait, looking at viewer, studio lighting, grey background",
+    "neg": "lineart, cel shading, flat colors, outline, sketch, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, logo, multiple girls, chibi, 2d, flat lighting"
+  }
+]

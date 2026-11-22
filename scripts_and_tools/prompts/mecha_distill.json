@@ -1,0 +1,91 @@
+{
+  "_comment": "img2img 自举蒸馏用 prompt 矩阵。material 段全变体共用并前置（前 77 token 内），variants 只描述构图/姿态差异。denoise 是每变体的推荐值，脚本 --denoise auto 时采用；A 组低 denoise 保材质不保姿态，B 组高 denoise 换视角但材质靠 material 段和源图 latent 兜。",
+  "material": "mecha musume, white ceramic armor plating with glossy clear coat and fresnel specular reflections, black glossy latex bodysuit, brass gold mechanical joints and pistons, faceless black visor helmet with mechanical cat ears, frilled white skirt armor, black mechanical legs with panel lines, high heels, hard surface, no lineart, no cel shading, soft studio lighting, pure white seamless background, 3d cg render",
+  "negative": "lineart, cel shading, flat colors, outline, sketch, traditional media, watercolor, oil painting, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, missing fingers, extra limbs, fused legs, mutated hands, deformed, cropped, out of frame, feet out of frame, text, signature, watermark, logo, busy background, scenery, gradient background, colored background, multiple girls, nude, nsfw",
+  "variants": [
+    {
+      "id": "a1-front",
+      "group": "A",
+      "denoise": 0.66,
+      "note": "原构图微变：正面全身站立，用来测低 denoise 能否只换细节不动结构",
+      "pose": "standing, facing viewer, arms relaxed at sides, full body, holding katana in right hand, straight on"
+    },
+    {
+      "id": "a2-blade-up",
+      "group": "A",
+      "denoise": 0.68,
+      "note": "同上构图，换持刀方向：刀尖朝上，测材质是否被 prompt 改动带走",
+      "pose": "standing, facing viewer, full body, holding katana vertically with blade pointing up in front of body"
+    },
+    {
+      "id": "a3-hands-crossed",
+      "group": "A",
+      "denoise": 0.67,
+      "note": "同构图换手臂姿态，关节与装甲板缝是否保持连续",
+      "pose": "standing, facing viewer, full body, arms crossed over chest, katana sheathed on back"
+    },
+    {
+      "id": "a4-dual-blade",
+      "group": "A",
+      "denoise": 0.7,
+      "note": "持双刀，测手部结构和关节密度在稍高 denoise 下是否崩",
+      "pose": "standing, facing viewer, full body, holding two katanas one in each hand, blades angled down and out"
+    },
+    {
+      "id": "b1-three-quarter",
+      "group": "B",
+      "denoise": 0.72,
+      "note": "三分侧身，视角变化，测形体是否仍可辨认",
+      "pose": "standing, three-quarter view turned 30 degrees to the side, full body, holding katana lowered at side"
+    },
+    {
+      "id": "b2-from-behind",
+      "group": "B",
+      "denoise": 0.74,
+      "note": "背视回望，测背面装甲设计是否被模型自行补全（这是泛化关键）",
+      "pose": "standing, from behind, looking back over shoulder, full body, katana in hand, back armor visible"
+    },
+    {
+      "id": "b3-kneeling",
+      "group": "B",
+      "denoise": 0.74,
+      "note": "单膝跪地，姿态跨度大，主要测腿部机械结构在折叠时是否合理",
+      "pose": "kneeling on one knee, holding katana point down to the ground, full body, three-quarter view"
+    },
+    {
+      "id": "b4-dash",
+      "group": "B",
+      "denoise": 0.76,
+      "note": "冲刺姿态，极限测材质在动态姿势下能否守住",
+      "pose": "dashing forward in combat, leaning low, katana trailing behind, dynamic pose, full body, side view"
+    },
+    {
+      "id": "b5-low-angle",
+      "group": "B",
+      "denoise": 0.72,
+      "note": "低角度仰视，重心在腿部，测机械腿的透视是否正确",
+      "pose": "standing, viewed from below at a low angle, looking down at viewer, full body, katana held down"
+    },
+    {
+      "id": "b6-profile",
+      "group": "B",
+      "denoise": 0.7,
+      "note": "正侧profile，最考验体块厚度与关节剖面",
+      "pose": "standing in profile view facing left, full body, katana held forward at waist level"
+    },
+    {
+      "id": "b7-cowboy-shot",
+      "group": "B",
+      "denoise": 0.71,
+      "note": "七分身景别，把人物放大，测材质细节能否撑住近景",
+      "pose": "cowboy shot from mid-thigh up, standing, facing viewer, katana resting on shoulder"
+    },
+    {
+      "id": "b8-crouch",
+      "group": "B",
+      "denoise": 0.77,
+      "note": "蹲姿态，手脚同框，最易崩的姿势之一，作为失败样本观测点",
+      "pose": "crouching low with one hand on the ground, holding katana, full body, front view"
+    }
+  ]
+}

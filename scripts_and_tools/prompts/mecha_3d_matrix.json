@@ -1,0 +1,22 @@
+[
+  {
+    "id": "native",
+    "pos": "pmk3d, 1girl, solo, mecha musume, white ceramic armor plating, black glossy bodysuit, brass gold mechanical joints, faceless visor helmet, holding katana, standing, full body, white background, hard surface, no outline, soft studio lighting, highly detailed, best quality",
+    "neg": "lineart, cel shading, flat colors, outline, sketch, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, logo, busy background, scenery, multiple girls"
+  },
+  {
+    "id": "cafe",
+    "pos": "pmk3d, 1girl, solo, sitting at a cafe table, holding coffee cup, casual clothes, indoors, warm ambient light, upper body, looking at viewer, best quality",
+    "neg": "lineart, cel shading, flat colors, outline, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, multiple girls, cropped"
+  },
+  {
+    "id": "rainstreet",
+    "pos": "pmk3d, 1girl, solo, walking on a rainy city street at night, holding umbrella, neon reflections on wet asphalt, full body, cinematic lighting, best quality",
+    "neg": "lineart, cel shading, flat colors, outline, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, multiple girls"
+  },
+  {
+    "id": "portrait",
+    "pos": "pmk3d, 1girl, solo, upper body portrait, looking at viewer, simple grey background, soft lighting, detailed face, best quality",
+    "neg": "lineart, cel shading, flat colors, outline, lowres, worst quality, low quality, bad anatomy, text, signature, watermark, multiple girls"
+  }
+]

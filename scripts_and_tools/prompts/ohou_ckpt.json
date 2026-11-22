@@ -1,0 +1,17 @@
+[
+  {
+    "id": "kimono",
+    "pos": "ohou, 1girl, solo, fox_ears, black_hair, red_eyes, black_kimono, wide_sleeves, black_pantyhose, high_heels, standing, full body, japanese shrine, red torii gate, pink cherry blossoms, dutch angle, looking at viewer",
+    "neg": "lineart, cel shading, flat colors, outline, sketch, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, logo, multiple girls, chibi, 2d, flat lighting"
+  },
+  {
+    "id": "office",
+    "pos": "ohou, 1girl, solo, fox_ears, black_hair, red_eyes, white shirt, black pencil skirt, office desk, window daylight, sitting, cowboy shot",
+    "neg": "lineart, cel shading, flat colors, outline, sketch, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, logo, multiple girls, chibi, 2d, flat lighting"
+  },
+  {
+    "id": "portrait",
+    "pos": "ohou, 1girl, solo, fox_ears, black_hair, red_eyes, upper body, close-up portrait, looking at viewer, studio lighting, grey background",
+    "neg": "lineart, cel shading, flat colors, outline, sketch, lowres, worst quality, low quality, bad anatomy, bad hands, extra fingers, text, signature, watermark, logo, multiple girls, chibi, 2d, flat lighting"
+  }
+]

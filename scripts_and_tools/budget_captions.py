@@ -51,15 +51,17 @@ TRIGGER = {"ohou"}
 # 而上一轮结论是「LoRA 学的是服装包」。所以风格必须压到 4 段，把预算让给服装：
 #   `semi-realistic` 与 `no lineart` 重叠（都是「非平涂」），删前者；
 #   `glossy skin` 与 `glossy latex` 重叠（都是亮面材质先验），删前者；
-#   `rim light` + `crimson and black` 合成 `crimson rim light`（黑色调由 black_* 服装词承担）；
+#   `rim light` 与 `crimson and black` 曾合成 `crimson rim light`；2026-11-23 第二轮拆回独立
+#   两段 —— 合并词在 CLIP 词表里不是独立概念，只能被当成整体硬学，推理端复用性差。
+#   代价约 +4 token，从新增的 footwear / gloves 同槽去重里回收。
 #   `shallow depth of field` 删（5 token，对画风贡献最小）。
 STYLE_MAP: dict[str, str | None] = {
     "semi-realistic digital painting": None,
     "no lineart": "no lineart",
     "glossy skin": None,
     "glossy latex outfit": "glossy latex",
-    "strong rim light": "crimson rim light",
-    "crimson and black": "crimson rim light",
+    "strong rim light": "rim light",
+    "crimson and black": "crimson and black",
     "shallow depth of field": None,
 }
 
@@ -139,9 +141,10 @@ PRIORITY: dict[str, int] = {
     "architecture": 3, "east_asian_architecture": 3, "cherry_blossoms": 3,
     "paper_lantern": 4, "lantern": 4,
     # 主体
-    "1girl": 0, "solo": 20, "fox_girl": 2, "kitsune": 2, "black_hair": 3,
+    "1girl": 0, "solo": 20, "fox_girl": 2, "kitsune": 2, "black_hair": 4,
     "multicolored_hair": 3, "very_long_hair": 4, "long_hair": 4,
-    "two-tone_hair": 5, "red_eyes": 5, "yellow_eyes": 5, "brown_eyes": 5,
+    "two-tone_hair": 3, "red_eyes": 20, "yellow_eyes": 20, "brown_eyes": 20,
+    "blue_eyes": 20,
     "blunt_bangs": 6, "colored_inner_hair": 6, "tail": 6, "fox_tail": 6,
     "multiple_tails": 7, "rabbit_tail": 7, "animal_ear_fluff": 7,
     # 服装：主体装束 > 配饰 > 细节
@@ -149,9 +152,11 @@ PRIORITY: dict[str, int] = {
     "black_leotard": 2, "red_leotard": 2, "highleg_leotard": 3, "leotard": 5,
     "strapless_leotard": 4,
     "black_kimono": 2, "black_dress": 2, "japanese_clothes": 2,
-    "black_gloves": 3, "half_gloves": 3,
+    # 鞋提到手套之前：兔女郎造型里「高跟鞋」比「黑手套」更具识别度，
+    # 而 token 预算只够 outfit 前 5 段（实测 1b38 原排序里 high_heels 排第 6 被挤掉）。
+    "high_heels": 3, "black_gloves": 4, "half_gloves": 4,
     "black_pantyhose": 4, "black_thighhighs": 5, "pantyhose": 6,
-    "high_heels": 5, "black_footwear": 6,
+    "black_footwear": 6,
     "fur-trimmed_coat": 6, "fur-trimmed_kimono": 6, "black_coat": 7, "coat": 8,
     "detached_collar": 7, "collar": 7,
     "thigh_strap": 8, "garter_straps": 8, "black_garter_straps": 8,
@@ -173,6 +178,15 @@ SLOTS: dict[str, set[str]] = {
                 "thighband_pantyhose", "fishnets"},
     "outer": {"coat", "black_coat", "fur-trimmed_coat", "fur-trimmed_kimono",
               "jacket", "cloak"},
+    # 2026-11-23 第二轮新增：鞋与手套各只留一个说法。
+    # `high_heels` + `black_footwear` 同时出现时后者纯属重复（都是「黑鞋」）；
+    # `black_gloves` + `half_gloves` 同理会，留下的那 8 token 换风格段拆词。
+    "footwear": {"high_heels", "black_footwear", "boots", "heels"},
+    "gloves": {"black_gloves", "half_gloves", "elbow_gloves"},
+    # 发色：WD14 会给同一头发出 black_hair + multicolored_hair + long_hair 三份描述。
+    # 只留最具体的那一个（多彩 > 两色 > 纯黑），省下的 2~3 token 给兔女郎套装补齐丝袜。
+    "hair_color": {"black_hair", "multicolored_hair", "two-tone_hair",
+                   "colored_inner_hair"},
 }
 
 # 每桶最多保留几段（顺序即优先级，超出从尾部丢）
@@ -341,11 +355,11 @@ def main() -> int:
           f"{'  ' + ', '.join(r['name'] for r in over) if over else ''}")
     print(f"最长 {max(r['new_tokens'] for r in rows)} / 最短 {min(r['new_tokens'] for r in rows)} token")
 
-    watch = ["ohou", "no lineart", "glossy latex", "crimson rim light",
+    watch = ["ohou", "no lineart", "glossy latex", "rim light", "crimson and black",
              "full_body", "dutch_angle", "from_below", "standing", "bar_(place)",
              "multicolored_hair", "black_pantyhose", "high_heels", "fur-trimmed_coat"]
-    # 旧 caption 的写法 → 新 caption 的写法（合并类 tag 用同义词对账）
-    ALIAS = {"crimson rim light": ("rim light", "crimson and black")}
+    # 旧 caption 的写法 → 新 caption 的写法（改写过的 tag 用同义词对账）
+    ALIAS = {"rim light": ("strong rim light",)}
     print(f"\n关注 tag 存活率（旧 → 新，共 {n} 张）：")
     for tag in watch:
         old_keys = ALIAS.get(tag, (tag,))
