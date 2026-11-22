@@ -39,10 +39,10 @@ const DESIGN_TAGS = new Set([
 ])
 
 export const TIERS = {
-  T0: { key: 'T0', name: '纯风格', desc: 'WD14 tag 全删，只留触发词 + 恒定风格词', styleRequired: true },
-  T1: { key: 'T1', name: '设计语言', desc: '只留设计/材质/结构类 tag', styleRequired: true },
-  T2: { key: 'T2', name: '概念题材', desc: '留题材/服装/物体，删身份细节/姿势/背景', styleRequired: false },
-  T3: { key: 'T3', name: '角色身份', desc: '留身份/发色/瞳色/服装，删姿势/背景/角色名', styleRequired: false },
+  T0: { key: 'T0', name: '纯风格', desc: 'WD14 tag 全删，只留触发词 + 恒定风格词（风格词可选）' },
+  T1: { key: 'T1', name: '设计语言', desc: '只留设计/材质/结构类 tag' },
+  T2: { key: 'T2', name: '概念题材', desc: '留题材/服装/物体，删身份细节/姿势/背景' },
+  T3: { key: 'T3', name: '角色身份', desc: '留身份/发色/瞳色/服装，删姿势/背景/角色名' },
 }
 
 export function tierOf(name) {

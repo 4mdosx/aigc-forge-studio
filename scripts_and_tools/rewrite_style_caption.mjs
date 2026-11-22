@@ -4,7 +4,7 @@
 // 为什么需要它：风格 LoRA 学的是「caption token ↔ 图像视觉特征」的绑定。
 // 某个 token 出现在【所有】训练图的 caption 里 → 被绑到所有图的共性 = 风格/概念；
 // 某个 token 只出现在【部分】图 → 被绑到那部分的个性 = 内容，稀释风格。
-// 所以风格 caption 必须每张图【完全相同】= 触发词 + 一组固定风格词；
+// 所以风格 caption 每张图必须【完全相同】= 触发词 + 一组固定风格词（风格词可留空，只剩触发词）；
 // WD14 那套随图变化的内容 tag（-maid / -cat_ears / -white_background）要全删。
 //
 // 用法：
@@ -82,11 +82,6 @@ const styleTags = values['style-tags']
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean)
-
-if (!styleTags.length && !values['include-content']) {
-  console.error('需要 --style-tags <逗号分隔的风格词>，或开 --include-content')
-  process.exit(1)
-}
 
 const txtFiles = readdirSync(imgDir)
   .filter((f) => f.endsWith('.txt') && !f.endsWith('.bak'))

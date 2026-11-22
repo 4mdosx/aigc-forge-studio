@@ -30,15 +30,23 @@ test('normalizeTier：大小写与留空', () => {
   assert.throws(() => normalizeTier('T9'), /未知 caption 档位/)
 })
 
-test('tier 元数据：T0/T1 风格词必填', () => {
-  assert.equal(TIERS.T0.styleRequired, true)
-  assert.equal(TIERS.T1.styleRequired, true)
-  assert.equal(TIERS.T2.styleRequired, false)
-  assert.equal(TIERS.T3.styleRequired, false)
+test('tier 元数据不再携带 styleRequired（风格词全程可选）', () => {
+  assert.equal('styleRequired' in TIERS.T0, false)
+  assert.equal('styleRequired' in TIERS.T1, false)
 })
 
 test('T0 纯风格：WD14 tag 全删，只留触发词 + 恒定风格词', () => {
   assert.equal(cap('T0'), 'zxstyle, painterly, dark cinematic lighting,')
+})
+
+test('T0/T1 风格词可留空：T0 只剩触发词，T1 只剩设计 tag', () => {
+  const noStyle = { trigger: 'zxstyle', tier: 'T0' as const, styleTags: [], charNames: CHARS }
+  assert.equal(captionFor(TAGS, noStyle), 'zxstyle,')
+
+  const t1 = { ...noStyle, tier: 'T1' as const }
+  const got = captionFor(TAGS, t1)
+  assert.match(got, /^zxstyle, flight_deck/)
+  assert.doesNotMatch(got, /painterly|1girl|white_hair/)
 })
 
 test('T1 设计语言：只留设计/机械 tag', () => {

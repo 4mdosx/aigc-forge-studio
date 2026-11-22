@@ -14,34 +14,30 @@ export type TierDef = {
   // 中文名
   name: string
   desc: string
-  // 恒定风格词是否必填（T0/T1 全靠它承载风格）
-  styleRequired: boolean
 }
 
+// 恒定风格词（styleTags）全程可选：给了就恒定写进每张 caption；
+// 不给就是「触发词 + 过滤后的 tag」，T0 不给则只剩触发词。
 export const TIERS: Record<TierName, TierDef> = {
   T0: {
     key: 'T0',
     name: '纯风格',
-    desc: 'WD14 tag 全删，只留触发词 + 恒定风格词。适合内容杂、只锁画法。',
-    styleRequired: true,
+    desc: 'WD14 tag 全删，只留触发词 + 恒定风格词（风格词可留空，此时只剩触发词）。适合内容杂、只锁画法。',
   },
   T1: {
     key: 'T1',
     name: '设计语言',
     desc: '只留设计/材质/结构类 tag（装甲、金属、机械），其余删。锁定黑金厚重这类设计特征。',
-    styleRequired: true,
   },
   T2: {
     key: 'T2',
     name: '概念题材',
     desc: '留题材/服装/物体，删人物身份细节、姿势、背景、画质。锁定「舰娘」这类题材。',
-    styleRequired: false,
   },
   T3: {
     key: 'T3',
     name: '角色身份',
     desc: '留身份/发色/瞳色/服装，删姿势构图、背景、画质、角色名。锁定某个角色。',
-    styleRequired: false,
   },
 }
 

@@ -75,7 +75,6 @@ interface CaptionTier {
   key: string
   name: string
   desc: string
-  styleRequired: boolean
 }
 
 interface ProfilesBody {
@@ -441,12 +440,11 @@ export function TrainBoard() {
           </label>
           {tier && tier !== 'T2' && tier !== 'T3' ? (
             <label>
-              恒定风格词
+              恒定风格词（可选，留空则只保留触发词）
               <input
                 value={styleTags}
                 placeholder="painterly, dark cinematic lighting, black-gold armor"
                 onChange={(event) => setStyleTags(event.target.value)}
-                required
               />
             </label>
           ) : null}

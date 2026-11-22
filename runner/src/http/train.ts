@@ -221,18 +221,6 @@ export function mountTrain(
     } catch (err) {
       throw new RunnerError(err instanceof Error ? err.message : String(err))
     }
-    if (tier && TIERS[tier].styleRequired) {
-      const words = typeof body.styleTags === 'string'
-        ? body.styleTags.split(',').map((s) => s.trim()).filter(Boolean)
-        : Array.isArray(body.styleTags)
-          ? body.styleTags.map((s) => String(s).trim()).filter(Boolean)
-          : []
-      if (words.length === 0) {
-        throw new RunnerError(
-          `${TIERS[tier].name}档必须给恒定风格词（styleTags）：这批 tag 全删，没有风格词就训不出东西`,
-        )
-      }
-    }
     const trigger = typeof body.trigger === 'string' ? body.trigger.trim() : ''
     const profileName =
       typeof body.profile === 'string' && body.profile.trim() !== ''
