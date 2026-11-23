@@ -4,7 +4,10 @@
   "profiles": {
     "seed": {
       "desc": "v1 种子池：50 图（40-60），10×2 = 20 曝光/图，约 1000 step / 35min",
-      "expectImages": [40, 60],
+      "expectImages": [
+        40,
+        60
+      ],
       "params": {
         "numRepeats": 10,
         "maxTrainEpochs": 2,
@@ -15,7 +18,10 @@
     },
     "refine-r1": {
       "desc": "回流 R1：65 图（种子 50 + 15 精选），8×2 = 16 曝光/图，约 1040 step / 35min",
-      "expectImages": [60, 70],
+      "expectImages": [
+        60,
+        70
+      ],
       "params": {
         "numRepeats": 8,
         "maxTrainEpochs": 2,
@@ -26,7 +32,10 @@
     },
     "refine-r2": {
       "desc": "回流 R2：75 图（累计，风格锚不动），6×2 = 12 曝光/图，约 900 step / 30min",
-      "expectImages": [70, 80],
+      "expectImages": [
+        70,
+        80
+      ],
       "params": {
         "numRepeats": 6,
         "maxTrainEpochs": 2,
@@ -37,7 +46,10 @@
     },
     "scene": {
       "desc": "场景专属 LoRA：50 图（共享锚 20 + 场景专属 30），10×2 = 20 曝光/图，约 1000 step / 35min",
-      "expectImages": [40, 60],
+      "expectImages": [
+        40,
+        60
+      ],
       "params": {
         "numRepeats": 10,
         "maxTrainEpochs": 2,
@@ -46,15 +58,74 @@
         "keepTokens": 1
       }
     },
+    "porcelain-scan": {
+      "desc": "质感扫描（2026-11-22）：25 图 × 12 repeats × 4 epoch，batch1 下 300 步/epoch、总 1200 步、48 曝光/图，约 40min。一次训练出四档 checkpoint（300/600/900/1200）做质感饱和曲线，不重训四遍。source 为 736px 宽时分辨率可降到 832 保高频；1024 是已验证档，先按 1024 跑。",
+      "expectImages": [
+        20,
+        28
+      ],
+      "params": {
+        "numRepeats": 12,
+        "maxTrainEpochs": 4,
+        "networkDim": 128,
+        "networkAlpha": 32,
+        "keepTokens": 1
+      }
+    },
+    "mecha-clone": {
+      "desc": "机娘类型克隆（2026-11-22）：24 图 × 12 repeats × 4 epoch = 1152 步、48 曝光/图，约 40min。数据集 mecha_clone_train 是从图库 61 张白底机娘里按 tag+色调筛出的 24 张覆面机甲少女设定图（edge<=25、sat<=30），留出 4 张在 mecha_clone_holdout 做重建测试。四档 checkpoint 288/576/864/1152 做饱和曲线。判据 = 类型迁移（无关题材也变白底覆面机娘）+ 留出重建相似度。",
+      "expectImages": [
+        22,
+        26
+      ],
+      "params": {
+        "numRepeats": 12,
+        "maxTrainEpochs": 4,
+        "networkDim": 128,
+        "networkAlpha": 32,
+        "keepTokens": 1
+      }
+    },
     "smoke": {
       "desc": "冒烟验证：2×1 = 2 曝光/图，dim32，只验证链路与产物，不用于交付",
-      "expectImages": [1, 999],
+      "expectImages": [
+        1,
+        999
+      ],
       "params": {
         "numRepeats": 2,
         "maxTrainEpochs": 1,
         "networkDim": 32,
         "networkAlpha": 8,
         "saveEveryNEpochs": 1
+      }
+    },
+    "mecha-3d-distill": {
+      "desc": "3D 渲染媒介克隆（2026-11-22）：48 图（24 张来自干净参考图的 img2img 自举蒸馏 × 水平镜像）× 6 repeats × 4 epoch = 1152 步，与 mecha-clone 步数完全相同，只换数据。目的是分离变量：mecha-clone 证明了 2D 概念图数据只能学到设计语言，本 profile 检验「把训练集换成同媒介的 3D 渲染图后，媒介是否可学」。判据 = 无 LoRA 也知道的白底 3D 质感能否迁移到咖啡馆/雨夜/肖像等无关题材。",
+      "expectImages": [
+        44,
+        52
+      ],
+      "params": {
+        "numRepeats": 6,
+        "maxTrainEpochs": 4,
+        "networkDim": 128,
+        "networkAlpha": 32,
+        "keepTokens": 1
+      }
+    },
+    "ohou-style": {
+      "desc": "ohou 角色+媒介克隆（2026-11-22）：19 张真图（Pixiv 同源，同角色两造型：8 张神社和服狐女 / 11 张酒吧兔女郎），长边 1216（原 3840x2160 16:9），已裁掉采集管道的上下白边。19x10x3=570 步。选 570 而不是 900+ 的理由：这批两两余弦中位 0.813、最近邻 0.924，同质度远高于上一轮机娘集（0.683），过拟合会比上一轮更早发生。",
+      "expectImages": [
+        19,
+        19
+      ],
+      "params": {
+        "numRepeats": 10,
+        "maxTrainEpochs": 3,
+        "networkDim": 128,
+        "networkAlpha": 32,
+        "keepTokens": 1
       }
     }
   }
