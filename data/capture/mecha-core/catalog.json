@@ -1,0 +1,266 @@
+{
+  "batch": "mecha-core",
+  "createdAt": "2026-11-23T21:30:00+08:00",
+  "updatedAt": "2026-11-23T13:28:40.237Z",
+  "line": "主线：剥离背景的高精度二次元机娘立绘 → 风格/设计语言 LoRA",
+  "styleAnchor": {
+    "kind": "existing-pool",
+    "query": "runner.sqlite: white_background + full_body + mecha",
+    "n": 49,
+    "profileFile": "style-anchor/profile.json",
+    "anchorsFile": "style-anchor/anchors.tsv",
+    "summary": "存量池那套：白底全身、机械义体/机械臂腿/机器人关节、硬表面结构、冷色点缀、低中饱和（0.158-0.401）、竖向 3:4 上下",
+    "role": "风格基准 + 配色带 + 细节密度下限。任何新采集源都要先过 profile.json 的 acceptance 三道闸"
+  },
+  "criteriaVersion": "v2",
+  "spec": "notes/11_learning/AIGC/05 资产收集规范",
+  "mediaPolicy": {
+    "rating": "general",
+    "format": "竖幅，aspect = h/w ≥ 1.15，长边 ≥ 1400",
+    "background": "白底或纯色底；角点白≥0.9 视为白底",
+    "single": "一张图一个角色，禁止换装设定表/多人物同框/UI 截图",
+    "finished": "成图，禁止线稿/灰模/草图（lapVar 会漏判，需人眼复核）",
+    "caption": "artist/copyright 不进 caption；角色名一律不写"
+  },
+  "sources": [
+    {
+      "id": "anchor-seed",
+      "kind": "seed",
+      "dir": "style-anchor",
+      "target": 49,
+      "status": "ready",
+      "note": "存量池 49 张，只作风格基准与配色带，不重复下载",
+      "existingInPool": 49,
+      "downloaded": 0
+    },
+    {
+      "id": "artist-frider",
+      "kind": "artist",
+      "tag": "frider",
+      "dir": "artists/frider",
+      "target": 50,
+      "status": "partial",
+      "styleFit": "anchor-aligned",
+      "note": "白底全身机娘，软过渡灰白调，机械部件明确；样本 4/4 竖幅，线与完成度都在线",
+      "existingInPool": 8,
+      "downloaded": 0
+    },
+    {
+      "id": "artist-huixing-chloy",
+      "kind": "artist",
+      "tag": "huixing_chloy",
+      "dir": "artists/huixing_chloy",
+      "target": 50,
+      "status": "partial",
+      "styleFit": "anchor-aligned",
+      "note": "白底/浅底全身，机械装束，日系赛璐璐偏精细；四张样本全是全身竖幅",
+      "existingInPool": 5,
+      "downloaded": 0
+    },
+    {
+      "id": "artist-aokuma",
+      "kind": "artist",
+      "tag": "aokuma_(yuuran_create)",
+      "dir": "artists/aokuma_yuuran_create",
+      "target": 40,
+      "status": "partial",
+      "styleFit": "anchor-aligned",
+      "note": "暗黑机械装甲，白底，冷硬；偏暗需盯亮度，避免把整池拉黑",
+      "existingInPool": 4,
+      "downloaded": 0
+    },
+    {
+      "id": "artist-karukan",
+      "kind": "artist",
+      "tag": "karukan_(monjya)",
+      "dir": "artists/karukan_monjya",
+      "target": 40,
+      "status": "partial",
+      "styleFit": "anchor-aligned",
+      "note": "绿白机娘+机械臂，白底全身；池内样本仅 5 张，需确认产量够不够",
+      "existingInPool": 5,
+      "downloaded": 0
+    },
+    {
+      "id": "artist-yorktown",
+      "kind": "artist",
+      "tag": "yorktown_cv-5",
+      "dir": "artists/yorktown_cv-5",
+      "target": 40,
+      "status": "partial",
+      "styleFit": "partial",
+      "note": "日系立绘做工扎实，但混线稿和半身氛围图，需按 mediaPolicy 强筛",
+      "existingInPool": 7,
+      "downloaded": 0
+    },
+    {
+      "id": "artist-oota-youjo",
+      "kind": "artist",
+      "tag": "oota_youjo",
+      "dir": "artists/oota_youjo",
+      "target": 30,
+      "status": "partial",
+      "styleFit": "partial",
+      "note": "灰白全身、人体表达好，但机械元素偏弱；用于补人体与面部，不用于补设计语言",
+      "existingInPool": 9,
+      "downloaded": 0
+    },
+    {
+      "id": "artist-soruto",
+      "kind": "artist",
+      "tag": "soruto_0w98e",
+      "dir": "artists/soruto_0w98e",
+      "target": 30,
+      "status": "partial",
+      "styleFit": "partial",
+      "note": "冷硬概念稿路线，机械结构最对味，但混多人物设定表，须逐张剔",
+      "existingInPool": 6,
+      "downloaded": 0
+    },
+    {
+      "id": "ip-punishing-gray-raven",
+      "kind": "copyright",
+      "tag": "punishing:_gray_raven",
+      "dir": "ips/punishing_gray_raven",
+      "target": 45,
+      "status": "partial",
+      "note": "存量池已有 52 张，是风格锚的最大来源；补采时优先补不同角色、不同体型",
+      "existingInPool": 52,
+      "downloaded": 0
+    },
+    {
+      "id": "ip-arknights",
+      "kind": "copyright",
+      "tag": "arknights",
+      "dir": "ips/arknights",
+      "target": 35,
+      "status": "partial",
+      "note": "厚涂感但结构严谨，与锚的冷硬段接近；注意官方立绘多带背景，需筛白底版",
+      "existingInPool": 5,
+      "downloaded": 0
+    },
+    {
+      "id": "ip-arknights-endfield",
+      "kind": "copyright",
+      "tag": "arknights:_endfield",
+      "dir": "ips/arknights_endfield",
+      "target": 25,
+      "status": "partial",
+      "note": "终末地渲染更贴 3D 硬表面，注意别混进 3D 渲染图",
+      "existingInPool": 4,
+      "downloaded": 0
+    },
+    {
+      "id": "ip-nikke",
+      "kind": "copyright",
+      "tag": "goddess_of_victory:_nikke",
+      "dir": "ips/nikke",
+      "target": 30,
+      "status": "partial",
+      "note": "韩系高光、腰臀比例偏写实；补角色多样性可以，配色要防拉高光",
+      "existingInPool": 24,
+      "downloaded": 0
+    },
+    {
+      "id": "ip-alice-gear-aegis",
+      "kind": "copyright",
+      "tag": "alice_gear_aegis",
+      "dir": "ips/alice_gear_aegis",
+      "target": 25,
+      "status": "partial",
+      "note": "机娘原生 IP，机械设计语言最扎实；画风偏明亮，进池前过饱和带",
+      "existingInPool": 16,
+      "downloaded": 0
+    },
+    {
+      "id": "ip-girls-frontline",
+      "kind": "copyright",
+      "tag": "girls'_frontline",
+      "dir": "ips/girls_frontline",
+      "target": 20,
+      "status": "partial",
+      "note": "战术装备+紧身装束，硬表面细节多；注意排除大场景插画",
+      "existingInPool": 4,
+      "downloaded": 0
+    },
+    {
+      "id": "ip-final-gear",
+      "kind": "copyright",
+      "tag": "final_gear",
+      "dir": "ips/final_gear",
+      "target": 20,
+      "status": "partial",
+      "note": "机甲少女，部件拆分清晰，适合补「设计语言」",
+      "existingInPool": 4,
+      "downloaded": 0
+    },
+    {
+      "id": "ip-frame-arms-girl",
+      "kind": "copyright",
+      "tag": "frame_arms_girl",
+      "dir": "ips/frame_arms_girl",
+      "target": 20,
+      "status": "partial",
+      "note": "官方多为模型/设定图，需剔 3D 渲染与盒绘",
+      "existingInPool": 8,
+      "downloaded": 0
+    }
+  ],
+  "rejectedSources": [
+    {
+      "tag": "esk_(sub_macguffin)",
+      "kind": "artist",
+      "reason": "样本四张全是线稿与部件分解图，无成图"
+    },
+    {
+      "tag": "gia",
+      "kind": "artist",
+      "reason": "厚涂暗调高饱和，暗背景，与白底立绘目标冲突"
+    },
+    {
+      "tag": "ryan_greythorn",
+      "kind": "artist",
+      "reason": "半身/头像占比过高，全身立绘少"
+    },
+    {
+      "tag": "war_thunder",
+      "kind": "copyright",
+      "reason": "军事写实，非二次元立绘"
+    },
+    {
+      "tag": "world_of_tanks",
+      "kind": "copyright",
+      "reason": "载具为主"
+    },
+    {
+      "tag": "battle_of_titans",
+      "kind": "copyright",
+      "reason": "3D 机甲，无人体立绘"
+    },
+    {
+      "tag": "blue_archive",
+      "kind": "copyright",
+      "reason": "萌系平涂，机械元素近乎为零；与机娘设计语言不符"
+    },
+    {
+      "tag": "azur_lane",
+      "kind": "copyright",
+      "reason": "舰装为主，人体与机械比例和锚不同；如要舰系应另开一批"
+    }
+  ],
+  "counts": {
+    "sources": 16,
+    "targetTotal": 549,
+    "haveTotal": 210,
+    "artists": 7,
+    "ips": 8,
+    "existingInPoolTotal": 210,
+    "downloadedTotal": 0,
+    "note": "existingInPool 按 tag 分别统计，来源之间有重叠：anchor 那 49 张本身多数来自战双/NIKKE/AGA，所以不能相加当净可用量"
+  },
+  "openQuestions": [
+    "画师与 IP 的配比：现在 7 画师 / 8 IP，画师目标 290 张、IP 目标 215 张。若最终要以画师为风格主轴，IP 只作角色多样性补充，应把 IP 压到 150 以内",
+    "IP 图的 IP 既视感：风格 LoRA 会连带学到角色特征，caption 必须不写角色名，且每角色张数控制在 3-5 张",
+    "存量 49 张里含少量 UI 截图与近纯机甲，作为 seed 需要先剔一遍"
+  ]
+}

@@ -15,7 +15,18 @@
 /input/
 /temp/
 /datasets/
-/data/
+/data/*
+# 采集批次的元信息要进版本库（图不进）
+!/data/capture/
+/data/capture/*
+!/data/capture/*/
+/data/capture/*/*
+!/data/capture/*/catalog.json
+!/data/capture/*/README.md
+!/data/capture/*/style-anchor/
+/data/capture/*/style-anchor/*
+!/data/capture/*/style-anchor/profile.json
+!/data/capture/*/style-anchor/anchors.tsv
 
 # ========================================
 # User data and local state

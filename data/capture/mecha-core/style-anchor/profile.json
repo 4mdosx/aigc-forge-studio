@@ -1,0 +1,35 @@
+{
+  "createdAt": "2026-11-23",
+  "source": "runner.sqlite image_assets：white_background + full_body + mecha",
+  "n": 49,
+  "normalizedTo": 1024,
+  "saturation": {
+    "p10": 0.158,
+    "median": 0.276,
+    "p90": 0.401
+  },
+  "lapVar": {
+    "p10": 399,
+    "median": 919,
+    "p90": 1939
+  },
+  "aspect": {
+    "p10": 1.0,
+    "median": 1.29,
+    "p90": 1.46
+  },
+  "cornerWhite": {
+    "p10": 0.99,
+    "median": 1.0,
+    "p90": 1.0
+  },
+  "acceptance": {
+    "satBand": [
+      0.158,
+      0.401
+    ],
+    "lapVarMin": 399,
+    "aspectMin": 1.15,
+    "note": "候选图落在 satBand 外视为配色体系不合；lapVar 低于 lapVarMin 视为低细节；aspect<1.15 视为不够竖不够立绘"
+  }
+}
