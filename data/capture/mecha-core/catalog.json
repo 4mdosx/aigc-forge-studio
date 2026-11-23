@@ -10,7 +10,13 @@
     "profileFile": "style-anchor/profile.json",
     "anchorsFile": "style-anchor/anchors.tsv",
     "summary": "存量池那套：白底全身、机械义体/机械臂腿/机器人关节、硬表面结构、冷色点缀、低中饱和（0.158-0.401）、竖向 3:4 上下",
-    "role": "风格基准 + 配色带 + 细节密度下限。任何新采集源都要先过 profile.json 的 acceptance 三道闸"
+    "role": "风格基准 + 配色带 + 细节密度下限。任何新采集源都要先过 profile.json 的 acceptance 三道闸",
+    "dataset": {
+      "name": "mecha_core_anchor",
+      "id": "72bf1c40-68c5-41f6-82e1-d408f878685b",
+      "count": 49,
+      "note": "runner.sqlite datasets 表；49 张全部入集，未做剔除。已标记 15 张疑似纯机体/带文字，待定是否移出"
+    }
   },
   "criteriaVersion": "v2",
   "spec": "notes/11_learning/AIGC/05 资产收集规范",
