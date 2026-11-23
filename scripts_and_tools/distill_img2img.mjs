@@ -147,9 +147,15 @@ const denoiseListOf = (v) => DENOISE_LIST ?? [denoiseOf(v)]
 const sources = resolveSources()
 const [W, H] = SIZE === 'auto' ? autoSize(sources[0]) : SIZE.split('x').map(Number)
 
-// 源图短标签：asset id 取末段（20261120-155720-5807 -> 5807），hash 名取末 6 位
+// 源图短标签：asset id 取末段（20261120-155720-5807 -> 5807），hash 名取末 6 位。
+// capture 管道存的是 <hash>/processed.png —— 文件名恒定，标签只能取自目录名，
+// 否则多源图会全部算出同一个 tag，按 tag 命名的产物互相覆盖（2026-11-23 修）。
 const srcTagOf = (p) => {
   const b = basename(p, extname(p))
+  if (b === 'processed' || b === 'original' || b === 'image') {
+    const dir = basename(dirname(p))
+    if (dir && !/^[0-9]{8}/.test(dir)) return dir.slice(-6)
+  }
   const tail = b.split(/[-_]/).pop() || b
   return tail.slice(-6) || 'src'
 }

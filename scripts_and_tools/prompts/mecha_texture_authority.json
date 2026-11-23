@@ -1,0 +1,13 @@
+{
+  "material": "mecha musume, 1girl, solo, standing, full body, pure white seamless background",
+  "negative": "blurry, lowres, worst quality, low quality, jpeg artifacts, bad anatomy, bad hands, extra fingers, missing fingers, extra limbs, fused legs, mutated hands, deformed, cropped, feet out of frame, text, signature, watermark, logo, busy background, scenery, gradient background, colored background, multiple girls, nude, nsfw, chibi",
+  "variants": [
+    {
+      "id": "cel",
+      "group": "X",
+      "denoise": 0.4,
+      "note": "反向探针：往基模先验的反方向推（平涂赛璐璐 + 粗黑描边），检验 repaint 的 prompt 到底有没有『换质感』的权限。若这一档也推不动，说明质感只能靠 LoRA/换基模。",
+      "pose": "flat cel shading, hard black outlines, two-tone shading, anime screentone, limited color palette, no gradients, no specular highlights, matte flat colors, masterpiece, best quality"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "material": "mecha musume, 1girl, solo, standing, full body, pure white seamless background",
+  "negative": "lineart, cel shading, flat colors, hard black outline, sketch, monochrome, watercolor, heavy impasto, muddy brush strokes, oil painting texture, lowres, worst quality, low quality, jpeg artifacts, bad anatomy, bad hands, extra fingers, missing fingers, extra limbs, fused legs, mutated hands, deformed, cropped, feet out of frame, text, signature, watermark, logo, busy background, scenery, gradient background, colored background, multiple girls, nude, nsfw, chibi",
+  "variants": [
+    {
+      "id": "gloss",
+      "group": "G",
+      "denoise": 0.45,
+      "note": "韩系半厚涂质感段。软过渡、丝光皮肤、亮漆高光、深 AO。",
+      "pose": "korean illustration style, semi-impasto digital painting, soft airbrushed gradients, silky lustrous skin shading, glossy latex sheen, polished metal specular highlights, deep ambient occlusion, painterly rendering, soft studio rim light, masterpiece, best quality, very aesthetic"
+    },
+    {
+      "id": "ctrl",
+      "group": "C",
+      "denoise": 0.45,
+      "note": "对照：只给冷硬工业厚涂的词，不带任何韩系质感词。",
+      "pose": "cold industrial hard-surface rendering, matte armor plating, high contrast flat lighting, crisp mechanical panel lines, desaturated steel tones, dry brush texture, masterpiece, best quality, very aesthetic"
+    }
+  ]
+}
