@@ -1,0 +1,12 @@
+{
+  "id": "struct-seed",
+  "kind": "seed",
+  "tag": null,
+  "styleFit": null,
+  "target": 39,
+  "existingInPool": 39,
+  "note": "原 49 张已剔掉 9 张纯机体（00/03/05/07/09/10/11/12/13）+ 用户手动删的 1 张，存 39。14 号黑红机体仍在，待定",
+  "status": "ready",
+  "managedBy": "catalog.json",
+  "updatedAt": "2026-11-23T15:06:25.996Z"
+}

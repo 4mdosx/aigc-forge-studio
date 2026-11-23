@@ -45,7 +45,13 @@ for (const s of catalog.sources) {
   const inPool = s.existingInPool ?? 0
   // 状态：seed 恒 ready；落盘够了 ready；有货但不够 partial；两处都没有 todo
   const status =
-    s.kind === 'seed' ? 'ready' : downloaded >= s.target ? 'ready' : downloaded > 0 || inPool > 0 ? 'partial' : 'todo'
+    s.kind === 'seed' || s.kind === 'pool'
+      ? 'ready'
+      : downloaded >= s.target
+        ? 'ready'
+        : downloaded > 0 || inPool > 0
+          ? 'partial'
+          : 'todo'
   if (args.dry) {
     console.log(
       `${s.id.padEnd(28)} target ${String(s.target).padStart(3)}  池内 ${String(inPool).padStart(3)}  已落 ${String(downloaded).padStart(3)}  ${status.padEnd(8)} ${s.kind}`,

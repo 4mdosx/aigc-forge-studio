@@ -1,217 +1,288 @@
 {
   "batch": "mecha-core",
   "createdAt": "2026-11-23T21:30:00+08:00",
-  "updatedAt": "2026-11-23T13:28:40.237Z",
-  "line": "主线：剥离背景的高精度二次元机娘立绘 → 风格/设计语言 LoRA",
-  "styleAnchor": {
-    "kind": "existing-pool",
-    "query": "runner.sqlite: white_background + full_body + mecha",
-    "n": 49,
-    "profileFile": "style-anchor/profile.json",
-    "anchorsFile": "style-anchor/anchors.tsv",
-    "summary": "存量池那套：白底全身、机械义体/机械臂腿/机器人关节、硬表面结构、冷色点缀、低中饱和（0.158-0.401）、竖向 3:4 上下",
-    "role": "风格基准 + 配色带 + 细节密度下限。任何新采集源都要先过 profile.json 的 acceptance 三道闸",
-    "dataset": {
-      "name": "mecha_core_anchor",
-      "id": "72bf1c40-68c5-41f6-82e1-d408f878685b",
-      "count": 49,
-      "note": "runner.sqlite datasets 表；49 张全部入集，未做剔除。已标记 15 张疑似纯机体/带文字，待定是否移出"
+  "updatedAt": "2026-11-23T15:06:26.033Z",
+  "line": "主线：剥离背景的高精度二次元机娘立绘",
+  "architecture": {
+    "mode": "two-stage",
+    "rationale": "韩系质感与机娘结构在现有池里交集为零（按质感质心排序 top120 中机娘 0 张，全池 86 张机娘无一进入该簇），无法用单只 LoRA 一次学两件事。拆成两段后每段只学一件事，冲突从『权重里打架』变成『推理时用 denoise 调』。",
+    "stages": [
+      {
+        "id": "struct",
+        "order": 1,
+        "role": "底图：白底全身机娘的构图、机械结构、人体比例",
+        "model": "LoRA A（结构），unet_only，dim 64",
+        "dataset": "mecha_core_anchor",
+        "profile": "style-anchor/profile.json",
+        "note": "质感不纯可以容忍——底图的质感会被第二阶段 repaint 覆盖，只要骨架与比例对"
+      },
+      {
+        "id": "gloss",
+        "order": 2,
+        "role": "质感：韩系半厚涂、亮面材质、软边、写实人体表达",
+        "model": "LoRA B（质感，权重 0.4-0.6）或 IPAdapter",
+        "dataset": "mecha_core_style",
+        "profile": "style-anchor/profile-gloss.json",
+        "input": "阶段 1 输出的底图",
+        "params": "img2img，denoise 0.40-0.50",
+        "note": "denoise 低于 0.35 质感刷不上去（hires 那轮实测 0.35 等于没做），高于 0.55 会改构图与机械结构"
+      }
+    ],
+    "measured": {
+      "crossClusterCosine": 0.69,
+      "intraGlossCosine": 0.668,
+      "intraStructCosine": 0.603,
+      "saturation": {
+        "struct": 0.276,
+        "gloss": 0.284
+      },
+      "lapVar": {
+        "struct": 919,
+        "gloss": 538
+      },
+      "conclusion": "两簇的差异不在配色（饱和度几乎相同），而在细节密度差 41%。repaint 调的正是这一个轴，所以两段式的风险边界清晰。"
     }
   },
-  "criteriaVersion": "v2",
+  "criteriaVersion": "v3",
   "spec": "notes/11_learning/AIGC/05 资产收集规范",
   "mediaPolicy": {
-    "rating": "general",
+    "rating": "struct 段只要 general；gloss 段放开到 sensitive（高质量全在 sensitive：NIKKE general 4156 vs sensitive 31516），不开 explicit",
     "format": "竖幅，aspect = h/w ≥ 1.15，长边 ≥ 1400",
-    "background": "白底或纯色底；角点白≥0.9 视为白底",
+    "background": "struct 段必须白底或纯色底；gloss 段不限（repaint 不需要背景干净）",
     "single": "一张图一个角色，禁止换装设定表/多人物同框/UI 截图",
-    "finished": "成图，禁止线稿/灰模/草图（lapVar 会漏判，需人眼复核）",
+    "finished": "成图，禁止线稿/灰模/草图",
     "caption": "artist/copyright 不进 caption；角色名一律不写"
   },
   "sources": [
     {
-      "id": "anchor-seed",
+      "id": "struct-seed",
+      "line": "struct",
       "kind": "seed",
       "dir": "style-anchor",
-      "target": 49,
+      "target": 39,
+      "existingInPool": 39,
       "status": "ready",
-      "note": "存量池 49 张，只作风格基准与配色带，不重复下载",
-      "existingInPool": 49,
+      "note": "原 49 张已剔掉 9 张纯机体（00/03/05/07/09/10/11/12/13）+ 用户手动删的 1 张，存 39。14 号黑红机体仍在，待定",
+      "downloaded": 0
+    },
+    {
+      "id": "gloss-seed",
+      "line": "gloss",
+      "kind": "seed",
+      "dir": "gloss-seed",
+      "target": 12,
+      "existingInPool": 12,
+      "status": "ready",
+      "note": "用户挑的 12 张韩系质感图（dataset mecha_core_style）。03 号橙红大背景建议剔，饱和 0.639 会污染配色带",
+      "downloaded": 0
+    },
+    {
+      "id": "gloss-pool",
+      "line": "gloss",
+      "kind": "pool",
+      "dir": "gloss-pool",
+      "target": 68,
+      "existingInPool": 68,
+      "status": "ready",
+      "note": "按 12 张质心检索 top120，其中非 explicit 68 张、白底+竖幅+非explicit 20 张。质感 LoRA 用这 68 张足够，不要求白底全身",
       "downloaded": 0
     },
     {
       "id": "artist-frider",
+      "line": "struct",
       "kind": "artist",
       "tag": "frider",
       "dir": "artists/frider",
       "target": 50,
-      "status": "partial",
-      "styleFit": "anchor-aligned",
-      "note": "白底全身机娘，软过渡灰白调，机械部件明确；样本 4/4 竖幅，线与完成度都在线",
       "existingInPool": 8,
+      "status": "partial",
+      "styleFit": "struct-aligned",
+      "note": "白底全身机娘，软过渡灰白调，机械部件明确",
       "downloaded": 0
     },
     {
       "id": "artist-huixing-chloy",
+      "line": "struct",
       "kind": "artist",
       "tag": "huixing_chloy",
       "dir": "artists/huixing_chloy",
       "target": 50,
-      "status": "partial",
-      "styleFit": "anchor-aligned",
-      "note": "白底/浅底全身，机械装束，日系赛璐璐偏精细；四张样本全是全身竖幅",
       "existingInPool": 5,
+      "status": "partial",
+      "styleFit": "struct-aligned",
+      "note": "白底/浅底全身，机械装束，线条干净利落",
       "downloaded": 0
     },
     {
       "id": "artist-aokuma",
+      "line": "struct",
       "kind": "artist",
       "tag": "aokuma_(yuuran_create)",
       "dir": "artists/aokuma_yuuran_create",
       "target": 40,
-      "status": "partial",
-      "styleFit": "anchor-aligned",
-      "note": "暗黑机械装甲，白底，冷硬；偏暗需盯亮度，避免把整池拉黑",
       "existingInPool": 4,
+      "status": "partial",
+      "styleFit": "struct-aligned",
+      "note": "暗黑机械装甲，白底，结构清晰；偏暗需盯亮度",
       "downloaded": 0
     },
     {
       "id": "artist-karukan",
+      "line": "struct",
       "kind": "artist",
       "tag": "karukan_(monjya)",
       "dir": "artists/karukan_monjya",
       "target": 40,
-      "status": "partial",
-      "styleFit": "anchor-aligned",
-      "note": "绿白机娘+机械臂，白底全身；池内样本仅 5 张，需确认产量够不够",
       "existingInPool": 5,
+      "status": "partial",
+      "styleFit": "struct-aligned",
+      "note": "绿白机娘+机械臂，白底全身；池内样本仅 5 张，需确认产量",
       "downloaded": 0
     },
     {
       "id": "artist-yorktown",
+      "line": "struct",
       "kind": "artist",
       "tag": "yorktown_cv-5",
       "dir": "artists/yorktown_cv-5",
       "target": 40,
+      "existingInPool": 7,
       "status": "partial",
       "styleFit": "partial",
-      "note": "日系立绘做工扎实，但混线稿和半身氛围图，需按 mediaPolicy 强筛",
-      "existingInPool": 7,
+      "note": "做工扎实但混线稿与半身氛围图，需强筛",
       "downloaded": 0
     },
     {
       "id": "artist-oota-youjo",
+      "line": "struct",
       "kind": "artist",
       "tag": "oota_youjo",
       "dir": "artists/oota_youjo",
       "target": 30,
+      "existingInPool": 9,
       "status": "partial",
       "styleFit": "partial",
-      "note": "灰白全身、人体表达好，但机械元素偏弱；用于补人体与面部，不用于补设计语言",
-      "existingInPool": 9,
+      "note": "人体与面部好，机械偏弱；补人体不补设计语言",
       "downloaded": 0
     },
     {
       "id": "artist-soruto",
+      "line": "struct",
       "kind": "artist",
       "tag": "soruto_0w98e",
       "dir": "artists/soruto_0w98e",
       "target": 30,
+      "existingInPool": 6,
       "status": "partial",
       "styleFit": "partial",
-      "note": "冷硬概念稿路线，机械结构最对味，但混多人物设定表，须逐张剔",
-      "existingInPool": 6,
+      "note": "机械结构最对味，但混多人物设定表，须逐张剔",
       "downloaded": 0
     },
     {
       "id": "ip-punishing-gray-raven",
+      "line": "struct",
       "kind": "copyright",
       "tag": "punishing:_gray_raven",
       "dir": "ips/punishing_gray_raven",
       "target": 45,
-      "status": "partial",
-      "note": "存量池已有 52 张，是风格锚的最大来源；补采时优先补不同角色、不同体型",
       "existingInPool": 52,
-      "downloaded": 0
-    },
-    {
-      "id": "ip-arknights",
-      "kind": "copyright",
-      "tag": "arknights",
-      "dir": "ips/arknights",
-      "target": 35,
       "status": "partial",
-      "note": "厚涂感但结构严谨，与锚的冷硬段接近；注意官方立绘多带背景，需筛白底版",
-      "existingInPool": 5,
-      "downloaded": 0
-    },
-    {
-      "id": "ip-arknights-endfield",
-      "kind": "copyright",
-      "tag": "arknights:_endfield",
-      "dir": "ips/arknights_endfield",
-      "target": 25,
-      "status": "partial",
-      "note": "终末地渲染更贴 3D 硬表面，注意别混进 3D 渲染图",
-      "existingInPool": 4,
+      "note": "白底全身立绘最多，是 struct 段主力",
       "downloaded": 0
     },
     {
       "id": "ip-nikke",
+      "line": "struct",
       "kind": "copyright",
       "tag": "goddess_of_victory:_nikke",
       "dir": "ips/nikke",
-      "target": 30,
-      "status": "partial",
-      "note": "韩系高光、腰臀比例偏写实；补角色多样性可以，配色要防拉高光",
+      "target": 45,
       "existingInPool": 24,
+      "status": "partial",
+      "note": "唯一同时具备机娘结构与成熟比例的 IP，是「把尺度顶上去」的关键来源。它自带韩系质感，放 struct 段会让底图偏韩系——但这正好让第二阶段少走一步",
+      "downloaded": 0
+    },
+    {
+      "id": "ip-arknights",
+      "line": "struct",
+      "kind": "copyright",
+      "tag": "arknights",
+      "dir": "ips/arknights",
+      "target": 35,
+      "existingInPool": 5,
+      "status": "partial",
+      "note": "结构严谨，需筛白底版",
+      "downloaded": 0
+    },
+    {
+      "id": "ip-arknights-endfield",
+      "line": "struct",
+      "kind": "copyright",
+      "tag": "arknights:_endfield",
+      "dir": "ips/arknights_endfield",
+      "target": 25,
+      "existingInPool": 4,
+      "status": "partial",
+      "note": "硬表面结构，注意别混进 3D 渲染图",
       "downloaded": 0
     },
     {
       "id": "ip-alice-gear-aegis",
+      "line": "struct",
       "kind": "copyright",
       "tag": "alice_gear_aegis",
       "dir": "ips/alice_gear_aegis",
       "target": 25,
-      "status": "partial",
-      "note": "机娘原生 IP，机械设计语言最扎实；画风偏明亮，进池前过饱和带",
       "existingInPool": 16,
+      "status": "partial",
+      "note": "机械设计最扎实，画风偏明亮",
       "downloaded": 0
     },
     {
       "id": "ip-girls-frontline",
+      "line": "struct",
       "kind": "copyright",
       "tag": "girls'_frontline",
       "dir": "ips/girls_frontline",
       "target": 20,
-      "status": "partial",
-      "note": "战术装备+紧身装束，硬表面细节多；注意排除大场景插画",
       "existingInPool": 4,
+      "status": "partial",
+      "note": "战术装备细节多，排除大场景插画",
       "downloaded": 0
     },
     {
       "id": "ip-final-gear",
+      "line": "struct",
       "kind": "copyright",
       "tag": "final_gear",
       "dir": "ips/final_gear",
       "target": 20,
-      "status": "partial",
-      "note": "机甲少女，部件拆分清晰，适合补「设计语言」",
       "existingInPool": 4,
+      "status": "partial",
+      "note": "部件拆分清晰，适合补设计语言",
       "downloaded": 0
     },
     {
       "id": "ip-frame-arms-girl",
+      "line": "struct",
       "kind": "copyright",
       "tag": "frame_arms_girl",
       "dir": "ips/frame_arms_girl",
       "target": 20,
-      "status": "partial",
-      "note": "官方多为模型/设定图，需剔 3D 渲染与盒绘",
       "existingInPool": 8,
+      "status": "partial",
+      "note": "官方多为设定稿，剔 3D 与盒绘",
       "downloaded": 0
     }
   ],
+  "discovery": {
+    "glossArtists": {
+      "status": "pending",
+      "method": "从 NIKKE / 战双 的 general 池反推画师，取 top20 逐个抓 4 张目检",
+      "result": "9 个候选里只有 takamatu_hajime 一个有半厚涂质感，其余偏草稿或平涂。general 池太小是主因",
+      "next": "放开到 sensitive 重挖：NIKKE sensitive 31516 张 vs general 4156 张，高质量图几乎全在 sensitive"
+    }
+  },
   "rejectedSources": [
     {
       "tag": "esk_(sub_macguffin)",
@@ -246,27 +317,27 @@
     {
       "tag": "blue_archive",
       "kind": "copyright",
-      "reason": "萌系平涂，机械元素近乎为零；与机娘设计语言不符"
+      "reason": "萌系平涂，机械元素近乎为零"
     },
     {
       "tag": "azur_lane",
       "kind": "copyright",
-      "reason": "舰装为主，人体与机械比例和锚不同；如要舰系应另开一批"
+      "reason": "舰装为主，比例与目标不同；要舰系应另开批次"
     }
   ],
   "counts": {
-    "sources": 16,
-    "targetTotal": 549,
-    "haveTotal": 210,
-    "artists": 7,
-    "ips": 8,
-    "existingInPoolTotal": 210,
-    "downloadedTotal": 0,
-    "note": "existingInPool 按 tag 分别统计，来源之间有重叠：anchor 那 49 张本身多数来自战双/NIKKE/AGA，所以不能相加当净可用量"
+    "sources": 18,
+    "structSources": 16,
+    "glossSources": 2,
+    "newTarget": 515,
+    "readyNow": 39,
+    "readyNowGloss": 80,
+    "note": "readyNow 只算能直接当种子的存量（struct 39 / gloss 80 = 12 seed + 68 pool）；newTarget 是还要新采的量，未含池内可复用部分"
   },
   "openQuestions": [
-    "画师与 IP 的配比：现在 7 画师 / 8 IP，画师目标 290 张、IP 目标 215 张。若最终要以画师为风格主轴，IP 只作角色多样性补充，应把 IP 压到 150 以内",
-    "IP 图的 IP 既视感：风格 LoRA 会连带学到角色特征，caption 必须不写角色名，且每角色张数控制在 3-5 张",
-    "存量 49 张里含少量 UI 截图与近纯机甲，作为 seed 需要先剔一遍"
+    "repaint 的 denoise 甜点：0.40-0.50 是估的，要实测边界（能改质感的最小值 / 开始改结构的最大值）",
+    "struct 段质感不纯到什么程度仍能被 repaint 拉回：战双那批是冷硬厚涂，与韩系差最远，建议先拿它单独试 repaint",
+    "gloss 段是否扩采：68 张够训质感 LoRA；若 repaint 后质感仍不足，按 sensitive 放开重挖画师",
+    "IP 配比：已定不压，维持原目标"
   ]
 }
