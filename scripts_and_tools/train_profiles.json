@@ -127,6 +127,20 @@
         "networkAlpha": 32,
         "keepTokens": 1
       }
+    },
+    "gloss": {
+      "desc": "韩系半厚涂质感 LoRA（2026-11-24）：40 张 × 12 repeats × 4 epoch = 1920 步、48 曝光/图，约 65min。数据来自 gloss_pool 68 张：剔掉末尾 14 张 3D CG 渲染（塑料高光、红黑霓虹、横构图），cos>0.90 近重复组每组抽到 ≤4 张，再补 style 独有的 5 张种子。**无触发词**——触发词实测无效（11-22），而这个 LoRA 的用法是低 denoise 下无条件改先验，本来也不需要开关。caption 用 budget_captions_generic.py 按 75 token 重排，风格词（shiny_clothes / shiny_skin / wet / realistic）全部剔除，让光泽沉进权重而不是被 caption 解释掉。四档 checkpoint 480/960/1440/1920 做饱和曲线。判据 = 套在机娘 struct 底图上、denoise 0.30–0.40，看 dd_gloss 能不能从 prompt 时代的 +0.007 推上去。",
+      "expectImages": [
+        38,
+        42
+      ],
+      "params": {
+        "numRepeats": 12,
+        "maxTrainEpochs": 4,
+        "networkDim": 128,
+        "networkAlpha": 32,
+        "keepTokens": 0
+      }
     }
   }
 }

@@ -1,0 +1,13 @@
+{
+  "material": "mecha musume, 1girl, solo, standing, full body, pure white seamless background",
+  "negative": "lineart, cel shading, flat colors, hard black outline, sketch, monochrome, watercolor, lowres, worst quality, low quality, jpeg artifacts, bad anatomy, bad hands, extra fingers, missing fingers, extra limbs, fused legs, mutated hands, deformed, cropped, feet out of frame, text, signature, watermark, logo, busy background, scenery, gradient background, colored background, multiple girls, nude, nsfw, chibi",
+  "variants": [
+    {
+      "id": "neu",
+      "group": "N",
+      "denoise": 0.30,
+      "note": "中性内容描述，一句质感词都不给。LoRA 与无 LoRA 用同一条 prompt，差值即权重效应。",
+      "pose": "standing, looking at viewer, masterpiece, best quality, very aesthetic"
+    }
+  ]
+}
