@@ -18,15 +18,29 @@
 /data/*
 # 采集批次的元信息要进版本库（图不进）
 !/data/capture/
+# 机设配方库是元信息（不含图），跟采集元信息同理进版本库
+!/data/mech/
 /data/capture/*
-!/data/capture/*/
+!/data/capture/
+# 机设配方库是元信息（不含图），跟采集元信息同理进版本库
+!/data/mech/*/
 /data/capture/*/*
-!/data/capture/*/catalog.json
-!/data/capture/*/README.md
-!/data/capture/*/style-anchor/
+!/data/capture/
+# 机设配方库是元信息（不含图），跟采集元信息同理进版本库
+!/data/mech/*/catalog.json
+!/data/capture/
+# 机设配方库是元信息（不含图），跟采集元信息同理进版本库
+!/data/mech/*/README.md
+!/data/capture/
+# 机设配方库是元信息（不含图），跟采集元信息同理进版本库
+!/data/mech/*/style-anchor/
 /data/capture/*/style-anchor/*
-!/data/capture/*/style-anchor/*.json
-!/data/capture/*/style-anchor/*.tsv
+!/data/capture/
+# 机设配方库是元信息（不含图），跟采集元信息同理进版本库
+!/data/mech/*/style-anchor/*.json
+!/data/capture/
+# 机设配方库是元信息（不含图），跟采集元信息同理进版本库
+!/data/mech/*/style-anchor/*.tsv
 
 # ========================================
 # User data and local state

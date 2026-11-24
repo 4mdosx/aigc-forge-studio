@@ -1,0 +1,167 @@
+{
+  "version": 1,
+  "note": "机设配方库。style + armor + palette 拼成 positive；配 default 参数可直接出图。armor 段里的 tag 全部按 danbooru post_count 校验过（见 live_count 字段），0 存量的词不要往里加——模型没学过，写了也不会生效。",
+  "style": "masterpiece, best quality, absurdres, 1girl, solo, mecha musume, full body, looking at viewer",
+  "negative": "lineart, cel shading, flat colors, hard black outline, sketch, monochrome, watercolor, rust, weathering, matte, muddy, lowres, worst quality, low quality, jpeg artifacts, bad anatomy, bad hands, extra fingers, missing fingers, extra limbs, fused legs, deformed, cropped, feet out of frame, text, signature, watermark, logo, busy background, scenery, colored background, multiple girls, nude, nsfw, chibi, jacket, coat, parka, hoodie, cardigan, plain bodysuit only, naked robot, full robot",
+  "defaults": {
+    "width": 832,
+    "height": 1216,
+    "steps": 30,
+    "cfg": 5,
+    "sampler": "euler_ancestral",
+    "pose": "data/pose/synthetic/stand-a/bone.png",
+    "depth": "data/pose/synthetic/stand-a/depth.png",
+    "depthStrength": 0.7,
+    "lora": [
+      { "name": "struct_pool_v3-struct-struct-az-261124-042.safetensors", "strength": 0.8 },
+      { "name": "gloss_train-gloss-gloss-az-261123-163.safetensors", "strength": 1.0 }
+    ],
+    "hires": { "scale": 1.5, "denoise": 0.45 }
+  },
+  "palettes": {
+    "white_gold": "white and gold armor",
+    "white_blue": "white and blue armor",
+    "white_silver": "white and silver armor",
+    "black_crimson": "black and crimson armor",
+    "dark_red": "dark red armor",
+    "silver_black": "black and silver armor",
+    "royal_blue": "royal blue and silver armor",
+    "olive": "military olive green armor",
+    "purple": "dark purple armor",
+    "gunmetal": "gunmetal gray armor"
+  },
+  "designs": [
+    {
+      "id": "knight",
+      "name": "重装骑士",
+      "family": "heavy",
+      "armor": "(power_armor:1.3), heavy plate armor, (massive pauldrons:1.2), breastplate, armored_dress, armored_skirt, greaves, armored_boots, gauntlets, helmet, visor",
+      "defaultPalette": "white_gold",
+      "status": "verified",
+      "note": "全套板甲 + 裙甲 + 带冠盔，覆盖最完整的一档。金色比白色更稳，白色容易糊成灰。",
+      "live_count": { "power_armor": 9013, "pauldrons": 55298, "breastplate": 42364, "armored_dress": 18170, "greaves": 14258, "armored_boots": 25819, "gauntlets": 70727, "helmet": 118055, "visor": 2178 }
+    },
+    {
+      "id": "scout",
+      "name": "轻装侦察",
+      "family": "light",
+      "armor": "(exoskeleton:1.3), (mechanical_arms:1.1), (mechanical_legs:1.1), robot_joints, black bodysuit, visor, thin mechanical frame, exposed actuators, sensor array on head",
+      "defaultPalette": null,
+      "status": "verified",
+      "note": "骨架外露、几乎不加板甲。是「轻」这一极的基准，也用来反衬重装。",
+      "live_count": { "exoskeleton": 1185, "mechanical_arms": 26271, "mechanical_legs": 8034, "robot_joints": 14583, "bodysuit": 190585 }
+    },
+    {
+      "id": "flight",
+      "name": "飞行突击",
+      "family": "aerial",
+      "armor": "(mechanical_wings:1.4), jetpack, power_armor, armored_boots, gauntlets, visor, swept back wings",
+      "defaultPalette": "white_blue",
+      "status": "verified",
+      "note": "四片刃状翼 + 目镜头盔。翼摆在背后两侧会吃掉一点横向画布，832 宽够用。",
+      "live_count": { "mechanical_wings": 9193, "jetpack": 1510, "power_armor": 9013 }
+    },
+    {
+      "id": "arty",
+      "name": "重炮支援",
+      "family": "heavy",
+      "armor": "(power_armor:1.3), shoulder_armor, (gatling_gun:1.2), missile_pod, cannon, breastplate, greaves, heavy armored frame",
+      "defaultPalette": "olive",
+      "status": "verified",
+      "note": "军绿重甲 + 手持炮管。武器词会把炮画进手里，不需要单独描述握持。",
+      "live_count": { "shoulder_armor": 108600, "gatling_gun": 3280, "missile_pod": 1860, "cannon": 19760 }
+    },
+    {
+      "id": "beast",
+      "name": "兽机",
+      "family": "beast",
+      "armor": "(mechanical_legs:1.3), (mechanical_tail:1.2), mechanical_wings, gauntlets, sharp armor plating, clawed feet, beast frame",
+      "defaultPalette": "dark_red",
+      "status": "verified",
+      "note": "机械尾 + 爪足 + 尖锐甲片。三个 seed 里有一个会掉成银白，配色不如形态稳。",
+      "live_count": { "mechanical_tail": 8330, "mechanical_legs": 8034 }
+    },
+    {
+      "id": "multi",
+      "name": "多臂",
+      "family": "asymmetric",
+      "armor": "(extra_arms:1.4), (mechanical_arms:1.2), robot_joints, visor, four arms, articulated manipulators",
+      "defaultPalette": "silver_black",
+      "status": "verified",
+      "note": "四条手臂成立（两条举、两条垂在腰侧）。extra_arms 1.4 是必要权重，1.2 以下会被 mecha musume 的主体体型压掉。",
+      "live_count": { "extra_arms": 16494, "mechanical_arms": 26271 }
+    },
+    {
+      "id": "valkyrie",
+      "name": "女武神",
+      "family": "ceremonial",
+      "armor": "(valkyrie:1.2), (winged_helmet:1.3), power_armor, cape, breastplate, armored_boots, gauntlets, gold trim, feathered mechanical wings",
+      "defaultPalette": "white_silver",
+      "status": "verified",
+      "note": "翼盔 + 披风 + 长裙甲。披风往两侧展开，是这一档最显眼的轮廓特征。",
+      "live_count": { "valkyrie": 1428, "winged_helmet": 4910, "cape": 314875 }
+    },
+    {
+      "id": "samurai",
+      "name": "和风武士",
+      "family": "ceremonial",
+      "armor": "(japanese_armor:1.3), (samurai:1.2), (horned_helmet:1.2), armored_skirt, breastplate, mechanical_arms, layered plate lamellar",
+      "defaultPalette": "black_crimson",
+      "status": "verified",
+      "note": "层叠札甲 + 前立角盔。白裙会自己长出来，想要纯甲化就在 negative 补 white skirt。",
+      "live_count": { "japanese_armor": 27708, "samurai": 3992, "horned_helmet": 6946 }
+    },
+    {
+      "id": "ewing",
+      "name": "能量翼",
+      "family": "aerial",
+      "armor": "(energy_wings:1.4), (fin_funnels:1.2), floating funnels, power_armor, visor, glowing light wings, sleek white armor, cyan energy",
+      "defaultPalette": null,
+      "status": "verified",
+      "note": "光翼 + 悬浮浮游炮。fin_funnels 只有 431 条，靠 1.2 权重和 floating 拉住了。",
+      "live_count": { "energy_wings": 6481, "fin_funnels": 431 }
+    },
+    {
+      "id": "command",
+      "name": "指挥型",
+      "family": "ceremonial",
+      "armor": "(cape:1.3), power_armor, shoulder_armor, breastplate, visor, gauntlets, long flowing cape, commander",
+      "defaultPalette": "royal_blue",
+      "status": "verified",
+      "note": "大披风盖住半个画面，气派最足。披风会把腿遮到膝盖以下，介意就别用。",
+      "live_count": { "cape": 314875 }
+    },
+    {
+      "id": "cyclops",
+      "name": "独眼重机",
+      "family": "heavy",
+      "armor": "(mechanical_eyes:1.4), (glowing_eye:1.2), mechanical_head, robot head, visor, power_armor, shoulder_cannon, heavy armor, single glowing optic",
+      "defaultPalette": "gunmetal",
+      "status": "partial",
+      "note": "第一版用 cyclops 只出了人形头盔。改 mechanical_eyes 后出的是「发光 visor 横条」，比独眼更像机甲指挥官，但不算严格独眼。想硬要独眼得靠 img2img 从参考图带。",
+      "live_count": { "mechanical_eyes": 3255, "glowing_eye": 16036, "shoulder_cannon": 2160, "cyclops": 3772 }
+    },
+    {
+      "id": "centaur",
+      "name": "机械半人马",
+      "family": "multi_leg",
+      "armor": "(centaur:1.4), (mechanical_legs:1.2), horse lower body, four mechanical legs, mechanical_arms, power_armor, armored horse body",
+      "defaultPalette": "purple",
+      "status": "verified",
+      "requiresNoCn": true,
+      "note": "必须 --no-cn（或用 --pose-strength 0.5）。骨架 1.0 + depth 0.7 会锁死两条人腿，全关之后四条机械腿才长得出来。这是「非人形机设」的通则：openpose 只认识人形拓扑。",
+      "live_count": { "centaur": 3139, "mechanical_legs": 8034 }
+    },
+    {
+      "id": "spiderlegs",
+      "name": "蜘蛛腿",
+      "family": "multi_leg",
+      "armor": "(extra_legs:1.5), (mechanical_legs:1.3), spider like lower body, four mechanical legs, mechanical_arms, power_armor",
+      "defaultPalette": "purple",
+      "status": "verified",
+      "requiresNoCn": true,
+      "note": "同样必须 --no-cn。额外腿从腰侧长出，会占掉两侧画布，上身会被挤窄。",
+      "live_count": { "extra_legs": 817 }
+    }
+  ]
+}
