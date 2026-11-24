@@ -25,6 +25,9 @@ import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { createComfy } from './lib/comfy.mjs'
+import { createGraphConverter } from './lib/graph.mjs'
+
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const REPO = resolve(scriptDir, '..')
 
@@ -58,171 +61,6 @@ const NEGATIVE = [
 
 const POSE_IMAGE = 'mecha_pose_stand-a.png'
 const DEPTH_IMAGE = 'mecha_depth_stand-a.png'
-
-// ---------- API -> UI converter（抄自 freeze_mecha_workflow.mjs，勿改） ----------
-function isLink(v) {
-  return Array.isArray(v) && v.length === 2 && typeof v[0] === 'string' && Number.isInteger(v[1]) && /^\d+$/.test(v[0])
-}
-
-const SEED_NAMES = new Set(['seed', 'noise_seed'])
-const LINK_ONLY_TYPES = new Set([
-  'MODEL', 'CLIP', 'VAE', 'LATENT', 'IMAGE', 'MASK', 'CONDITIONING', 'CONTROL_NET', 'IPADAPTER', 'CLIP_VISION',
-])
-
-let info = {}
-
-function toUI(apiNodes, opts = {}) {
-  const idNum = (s) => Number(s)
-  const nodeIds = Object.keys(apiNodes).map(idNum).sort((a, b) => a - b)
-  const links = []
-  let nextLink = 1
-
-  const linkByTarget = new Map()
-  for (const id of nodeIds) {
-    const nd = apiNodes[String(id)]
-    for (const [arg, v] of Object.entries(nd.inputs || {})) {
-      if (!isLink(v)) continue
-      const [srcId, srcSlot] = [Number(v[0]), v[1]]
-      const srcClass = apiNodes[v[0]]?.class_type
-      const outNames = info[srcClass]?.output_name || info[srcClass]?.output || []
-      const type = outNames[srcSlot] || 'unknown'
-      const linkId = nextLink++
-      links.push([linkId, srcId, srcSlot, id, 0, type])
-      linkByTarget.set(`${id}:${arg}`, linkId)
-    }
-  }
-
-  const nodes = []
-  let order = 0
-  for (const id of nodeIds) {
-    const nd = apiNodes[String(id)]
-    const def = info[nd.class_type]
-    if (!def) throw new Error(`unknown node class: ${nd.class_type}`)
-    const req = Object.keys(def.input.required || {})
-    const opt = Object.keys(def.input.optional || {})
-    const argOrder = [...req, ...opt]
-    const inputs = []
-    const widgets = []
-    // runner 的 promptFromUi 只认 widgets_values_named（取值真相源），
-    // ComfyUI 前端只认 widgets_values（位置数组）——两者必须同写。
-    const named = {}
-    let targetSlot = 0
-
-    for (const arg of argOrder) {
-      const v = nd.inputs?.[arg]
-      const spec = (def.input.required || {})[arg] || (def.input.optional || {})[arg]
-      const specType = Array.isArray(spec) ? spec[0] : spec
-      const linked = isLink(v)
-      // 未赋值的纯连线输入（如 ControlNetApplyAdvanced 的可选 vae）不写进 inputs。
-      if (!linked && v === undefined && typeof specType === 'string' && LINK_ONLY_TYPES.has(specType)) continue
-      const linkId = linked ? linkByTarget.get(`${id}:${arg}`) : null
-      if (linked) {
-        const l = links.find((x) => x[0] === linkId)
-        if (l) l[3] = targetSlot
-      }
-      const uiInput = {
-        name: arg,
-        type: Array.isArray(specType) ? specType : String(specType),
-        link: linkId ?? null,
-      }
-      if (Array.isArray(specType)) uiInput.widget = { name: arg }
-      inputs.push(uiInput)
-      targetSlot++
-
-      if (!linked && v !== undefined) {
-        widgets.push(v)
-        named[arg] = v
-        if (SEED_NAMES.has(arg) && typeof v === 'number') widgets.push('fixed')
-      }
-    }
-
-    const outNames = def.output_name || def.output || []
-    const outputs = outNames.map((name, i) => ({
-      name,
-      type: (def.output || [])[i] || name,
-      links: links.filter((l) => l[1] === id && l[2] === i).map((l) => l[0]),
-    }))
-
-    nodes.push({
-      id,
-      type: nd.class_type,
-      title: nd._title || undefined,
-      pos: opts.pos ? opts.pos(id, nd) : [60 + (order % 5) * 340, 60 + Math.floor(order / 5) * 420],
-      size: [300, 140],
-      flags: {},
-      order: order++,
-      mode: 0,
-      inputs,
-      outputs,
-      properties: { 'Node name for S&R': nd.class_type },
-      widgets_values: widgets,
-      widgets_values_named: named,
-    })
-  }
-
-  return {
-    id: opts.id,
-    revision: 0,
-    last_node_id: Math.max(...nodeIds),
-    last_link_id: links.length,
-    nodes,
-    links,
-    groups: [],
-    config: {},
-    extra: { info: opts.extra || '' },
-    version: 0.4,
-  }
-}
-
-function fromUI(ui) {
-  const linkById = new Map(ui.links.map((l) => [l[0], l]))
-  const api = {}
-  for (const node of ui.nodes) {
-    const def = info[node.type]
-    const argOrder = [...Object.keys(def.input.required || {}), ...Object.keys(def.input.optional || {})]
-    const inputs = {}
-    let wi = 0
-    for (let i = 0; i < node.inputs.length; i++) {
-      const inp = node.inputs[i]
-      const arg = inp.name ?? argOrder[i]
-      if (inp.link != null) {
-        const l = linkById.get(inp.link)
-        inputs[arg] = [String(l[1]), l[2]]
-        continue
-      }
-      const spec = (def.input.required || {})[arg] || (def.input.optional || {})[arg]
-      const st = Array.isArray(spec) ? spec[0] : spec
-      if (typeof st === 'string' && LINK_ONLY_TYPES.has(st)) continue
-      inputs[arg] = node.widgets_values[wi++]
-      if (SEED_NAMES.has(arg) && typeof inputs[arg] === 'number') wi++
-    }
-    api[String(node.id)] = { class_type: node.type, inputs }
-  }
-  return api
-}
-
-function assertRoundTrip(apiGraph, ui) {
-  const norm = (o) =>
-    JSON.stringify(
-      Object.fromEntries(
-        Object.entries(o).map(([k, v]) => [
-          k,
-          {
-            class_type: v.class_type,
-            inputs: Object.fromEntries(
-              Object.entries(v.inputs || {}).filter(([, x]) => x !== undefined).sort(([a], [b]) => a.localeCompare(b)),
-            ),
-          },
-        ]),
-      ),
-    )
-  const a = norm(apiGraph)
-  const b = norm(fromUI(ui))
-  if (a !== b) {
-    throw new Error(`UI->API roundtrip mismatch\n  original: ${a.slice(0, 900)}\n  roundtrip: ${b.slice(0, 900)}`)
-  }
-  console.log('  ROUNDTRIP OK')
-}
 
 // ---------- 图 1：cn（选 pose，双 ControlNet） ----------
 // 节点标题绑定 generate.ts cnSpec，改标题等于改协议。
@@ -445,29 +283,23 @@ async function runnerSync(wf) {
 }
 
 async function main() {
-  info = await (await fetch(`${COMFY}/object_info`)).json()
+  const comfy = createComfy(COMFY)
+  const info = await comfy.objectInfo()
+  const conv = createGraphConverter(info)
   console.log(`ComfyUI ${COMFY}  runner ${RUNNER}  dry=${DRY} noRunner=${NO_RUNNER}`)
 
   const results = []
   for (const wf of WORKFLOWS) {
     const graph = wf.graph()
-    const ui = toUI(graph, { id: wf.id, extra: wf.extra })
+    const ui = conv.apiToUi(graph, { id: wf.id, extra: wf.extra })
     console.log(`\n=== ${wf.file}: ${ui.nodes.length} nodes, ${ui.links.length} links`)
-    assertRoundTrip(graph, ui)
+    conv.assertRoundTrip(graph, ui)
+    console.log('  ROUNDTRIP OK')
 
     if (!DRY) {
-      const res = await fetch(`${COMFY}/userdata/workflows%2F${wf.file}?overwrite=true`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(ui),
-      })
-      const text = await res.text()
-      console.log(`  userdata HTTP ${res.status}: ${text.slice(0, 120)}`)
-      if (!res.ok) throw new Error(`写入 ${wf.file} 失败`)
-
-      const back = await (await fetch(`${COMFY}/userdata/workflows%2F${wf.file}`)).text()
-      const parsed = JSON.parse(back)
-      console.log(`  读回校验: nodes=${parsed.nodes?.length ?? 0} bytes=${back.length}`)
+      await comfy.writeUserdata(wf.file, ui)
+      const parsed = await comfy.readUserdata(wf.file)
+      console.log(`  userdata 写入并读回: nodes=${parsed.nodes?.length ?? 0}`)
       if (!parsed.nodes?.length) throw new Error('读回为空')
     }
 
