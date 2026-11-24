@@ -141,6 +141,16 @@
         "networkAlpha": 32,
         "keepTokens": 0
       }
+    },
+    "struct": {
+      "desc": "冷硬工业厚涂机娘结构 LoRA（2026-11-24 起）。与 gloss 的分工：gloss 学画法（半厚涂、软过渡、亮面材质），struct 学设计语言（重甲分件、机械关节、立绘构图、人体比例）。dim 取 64 而非 128 —— 结构信息比质感稀疏，参数给多了会顺手把画风也学进去，两段就变成互斥。无触发词，caption 剔净风格词，理由同 gloss。判据不是余弦像不像，是「用这个 LoRA 直出时，不用写满装备词也能长出重甲」，以及组内同质度能不能从 0.60 抬到 0.72+。",
+      "params": {
+        "numRepeats": 12,
+        "maxTrainEpochs": 4,
+        "networkDim": 64,
+        "networkAlpha": 16,
+        "keepTokens": 0
+      }
     }
   }
 }
