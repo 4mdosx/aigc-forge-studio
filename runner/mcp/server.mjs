@@ -437,8 +437,9 @@ const TOOLS = [
       '走前端「快速出图」那两条固定配方，不需要知道 work 和槽位：\n' +
       '- kind="cn"：双 ControlNet（骨架 1.0 + 深度 0.7），必须给 pose，全身入画稳定；\n' +
       '- kind="base"：纯文生图，构图自由但容易裁脚、比例飘。\n' +
-      '两条都是 zero + gloss 1.0 + struct 0.8 / 832×1216 / 30 步 / cfg 5，不带 hires。' +
-      '要成品精度用 run_work("mecha")。返回 task 对象。',
+      '两条都是 zero + gloss 1.0 + struct 0.8 / 832×1216 / 30 步 / cfg 5，**都不带 hires**。' +
+      '想逐槽调强度、batch、seed 用 run_work("mecha")；想要 1248×1824 的精度目前只能走 ' +
+      'scripts_and_tools/hires_face_probe.mjs（hires 还没冻进工作流）。返回 task 对象。',
     inputSchema: {
       type: 'object',
       properties: {

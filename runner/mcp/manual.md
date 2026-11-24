@@ -10,10 +10,14 @@
 |---|---|---|---|
 | 快速出图·有姿态 | quick_generate(kind="cn") | 要指定姿势、要全身入画、要稳定 | 骨架 1.0 + 深度 0.7 双 ControlNet |
 | 快速出图·无姿态 | quick_generate(kind="base") | 只想看「机设想得对不对」，构图随便 | 无 CN，纯文生图，构图看运气 |
-| 定案工作流 | run_work(work="mecha") | 要高质量成品、要能逐槽调参 | 同 cn，另加 hires 二次采样 |
+| 定案工作流 | run_work(work="mecha") | 要逐槽调参（强度 / batch / seed / 画布） | 同 cn，另可整组参数化 |
 
 三条都跑同一套底子：`animagine-xl-4.0-zero` + gloss LoRA 1.0（画法）+ struct_pool_v3 0.8（机设语言），
-832×1216，30 步，cfg 5。区别只在构图控制和后处理。
+832×1216，30 步，cfg 5。区别只在构图控制和可调参数的粒度。
+
+**三条都不带 hires。** 目前没有冻结「hires 二次采样」的工作流：hires 1.5x + denoise 0.45
+还留在 `scripts_and_tools/hires_face_probe.mjs` 里，要出 1248×1824 的图得走那个脚本，
+或者按同样结构另建一版工作流（denoise 0.55 数字更高但肩甲出锯齿、脸被磨平，别选）。
 
 ## 2. 五分钟上手
 
