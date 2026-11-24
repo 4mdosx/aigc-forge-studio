@@ -44,8 +44,19 @@ if (!POSE) {
   process.exit(1)
 }
 
-const LORA = arg('lora')
-const LORA_S = Number(arg('lora-strength', '0.9'))
+// --lora 可重复，按出现顺序串成 LoraLoader 链。每个可写成 `name@strength`，
+// 不写 @ 就用 --lora-strength（默认 0.9）。
+const LORA_MULTI = []
+for (let i = 0; i < process.argv.length; i++) {
+  if (process.argv[i] !== '--lora') continue
+  const raw = process.argv[i + 1]
+  if (!raw || raw.startsWith('--')) continue
+  const at = raw.lastIndexOf('@')
+  if (at > 0) LORA_MULTI.push({ name: raw.slice(0, at), strength: Number(raw.slice(at + 1)) })
+  else LORA_MULTI.push({ name: raw, strength: Number(arg('lora-strength', '0.9')) })
+}
+const LORA = LORA_MULTI[0]?.name
+const LORA_S = LORA_MULTI[0]?.strength ?? 0.9
 const SEEDS = arg('seeds', '7301').split(',').map((s) => Number(s.trim()))
 const [W, H] = arg('size', '832x1216').split('x').map(Number)
 const STEPS = Number(arg('steps', '30'))
@@ -96,14 +107,17 @@ async function uploadImage(p) {
 function build(poseRef, depthRef, seed) {
   const wf = {}
   wf['1'] = { class_type: 'CheckpointLoaderSimple', inputs: { ckpt_name: CKPT } }
-  const modelSrc = LORA ? ['2', 0] : ['1', 0]
-  const clipSrc = LORA ? ['2', 1] : ['1', 1]
-  if (LORA) {
-    wf['2'] = {
+  let modelSrc = ['1', 0]
+  let clipSrc = ['1', 1]
+  LORA_MULTI.forEach((l, idx) => {
+    const id = String(20 + idx)
+    wf[id] = {
       class_type: 'LoraLoader',
-      inputs: { lora_name: LORA, strength_model: LORA_S, strength_clip: LORA_S, model: ['1', 0], clip: ['1', 1] },
+      inputs: { lora_name: l.name, strength_model: l.strength, strength_clip: l.strength, model: modelSrc, clip: clipSrc },
     }
-  }
+    modelSrc = [id, 0]
+    clipSrc = [id, 1]
+  })
   wf['6'] = { class_type: 'CLIPTextEncode', inputs: { text: POSITIVE, clip: clipSrc } }
   wf['7'] = { class_type: 'CLIPTextEncode', inputs: { text: NEGATIVE, clip: clipSrc } }
   wf['11'] = { class_type: 'LoadImage', inputs: { image: poseRef } }
@@ -151,7 +165,7 @@ async function main() {
   const poseRef = await uploadImage(POSE)
   const depthRef = DEPTH ? await uploadImage(DEPTH) : null
 
-  const manifest = { run: RUN, tag: TAG, lora: LORA || null, loraStrength: LORA ? LORA_S : 0, size: [W, H], steps: STEPS, cfg: CFG, sampler: SAMPLER, pose: POSE, depth: DEPTH || null, cn: { pose: CN_POSE_S, depth: CN_DEPTH_S }, positive: POSITIVE, negative: NEGATIVE, results: [] }
+  const manifest = { run: RUN, tag: TAG, lora: LORA_MULTI.length ? LORA_MULTI.map((l) => `${l.name}@${l.strength}`).join(' + ') : null, size: [W, H], steps: STEPS, cfg: CFG, sampler: SAMPLER, pose: POSE, depth: DEPTH || null, cn: { pose: CN_POSE_S, depth: CN_DEPTH_S }, positive: POSITIVE, negative: NEGATIVE, results: [] }
   const mfPath = join(RUN_DIR, `manifest-${TAG}.json`)
   if (existsSync(mfPath)) {
     const old = JSON.parse(readFileSync(mfPath, 'utf8'))
