@@ -87,12 +87,67 @@ def _variant(name: str) -> dict[str, tuple[float, float]]:
             p[k] = (x - 0.012, y)
         p['nose'] = (0.512, 0.075)
         p['neck'] = (0.507, 0.140)
+    elif name == 'weapon-axe':
+        # 竖持长柄斧：右手在腹前握柄（斧柄自手向上延伸过头顶），左手自然下垂微张。
+        # 参考 #17。武器靠 prompt 画，骨架只负责手的高度与握距。
+        p['relb'] = (0.398, 0.262)
+        p['rwri'] = (0.412, 0.352)
+        p['lelb'] = (0.614, 0.336)
+        p['lwri'] = (0.640, 0.492)
+        p['rknee'] = (0.420, 0.706); p['lknee'] = (0.580, 0.706)
+        p['rank'] = (0.408, 0.925); p['lank'] = (0.592, 0.925)
+    elif name == 'weapon-gun-low':
+        # 单手枪口斜向地面、左手叉腰。参考 #22。右腕低于右肘，枪往画面左下走。
+        p['relb'] = (0.396, 0.322)
+        p['rwri'] = (0.414, 0.458)
+        p['lelb'] = (0.632, 0.318)
+        p['lwri'] = (0.548, 0.472)
+    elif name == 'weapon-sword-cross':
+        # 长剑横在身前：右腕拉到中线、胸口高度，剑身横跨身体；左手握拳在左腰。
+        # 参考 #36。
+        p['relb'] = (0.406, 0.300)
+        p['rwri'] = (0.470, 0.336)
+        p['lelb'] = (0.626, 0.328)
+        p['lwri'] = (0.634, 0.448)
+        p['rknee'] = (0.432, 0.712); p['lknee'] = (0.568, 0.712)
+    elif name == 'weapon-spear-plant':
+        # 长枪竖插在地：右臂向下外伸、腕在胯侧，左手抬到胸前。参考 #49。
+        p['relb'] = (0.376, 0.324)
+        p['rwri'] = (0.356, 0.502)
+        p['lelb'] = (0.618, 0.302)
+        p['lwri'] = (0.556, 0.338)
+        p['rknee'] = (0.418, 0.704); p['lknee'] = (0.582, 0.704)
+        p['rank'] = (0.398, 0.925); p['lank'] = (0.602, 0.925)
+    elif name == 'weapon-shoulder':
+        # 3/4 侧身，右臂上举把重武器扛在肩后（腕在肩上方），左臂前伸。参考 #23。
+        for k in ('rsho', 'relb', 'rwri', 'rhip', 'rknee', 'rank', 'rear', 'reye'):
+            x, y = p[k]
+            p[k] = (x + 0.018, y)
+        for k in ('lsho', 'lelb', 'lwri', 'lhip', 'lknee', 'lank', 'lear', 'leye'):
+            x, y = p[k]
+            p[k] = (x - 0.010, y)
+        p['nose'] = (0.510, 0.075)
+        p['neck'] = (0.506, 0.140)
+        p['relb'] = (0.402, 0.246)
+        p['rwri'] = (0.424, 0.186)
+        p['lelb'] = (0.574, 0.314)
+        p['lwri'] = (0.510, 0.372)
+    elif name == 'weapon-dual':
+        # 双手各持短刃向两侧下方展开，双腿开立。参考 #42 的双持。
+        p['relb'] = (0.360, 0.330)
+        p['rwri'] = (0.334, 0.462)
+        p['lelb'] = (0.640, 0.330)
+        p['lwri'] = (0.666, 0.462)
+        p['rknee'] = (0.416, 0.704); p['lknee'] = (0.584, 0.704)
+        p['rank'] = (0.396, 0.925); p['lank'] = (0.604, 0.925)
     else:
         raise ValueError(f'未知姿态 {name}')
     return p
 
 
-VARIANTS = ['stand-a', 'stand-hands', 'stand-hip', 'stand-open', 'stand-3q']
+VARIANTS = ['stand-a', 'stand-hands', 'stand-hip', 'stand-open', 'stand-3q',
+            'weapon-axe', 'weapon-gun-low', 'weapon-sword-cross',
+            'weapon-spear-plant', 'weapon-shoulder', 'weapon-dual']
 
 
 def render(points, W: int, H: int, hr: float, bottom: float) -> Image.Image:
