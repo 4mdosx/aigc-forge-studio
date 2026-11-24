@@ -119,7 +119,62 @@ OUTFIT_KEYS = (
 )
 
 
+# ---- struct 模式 ----------------------------------------------------------
+# struct LoRA 学的是「机娘结构 + 立绘构图」。默认桶序把它学到的东西全挤掉了：
+# mechanical_arms 不在任何服装词表里，落到兜底桶最后被截断，armor 又要跟
+# bodysuit/leotard 抢 OUTFIT 桶的位置。实测 37 张里 mechanical_arms 20 张、
+# armor 14 张，预算跑完只剩个位数。所以 struct 单独一套桶序。
+MECH_STRUCT = {
+    'mecha_musume', 'mecha', 'robot', 'cyborg', 'android', 'gynoid',
+    'mechanical_arms', 'mechanical_legs', 'mechanical_wings', 'mechanical_tail',
+    'mechanical_horns', 'mechanical_hands', 'robot_joints', 'exoskeleton',
+    'prosthesis', 'prosthetic_arm', 'prosthetic_leg', 'prosthetic',
+    'armor', 'shoulder_armor', 'shoulder_spikes', 'armored_boots', 'armored_dress',
+    'gauntlets', 'greaves', 'pauldrons', 'helmet', 'headgear', 'visor',
+    'science_fiction', 'cyberpunk', 'spikes', 'panel_lines', 'mechanical_parts',
+    'weapon', 'holding_weapon', 'gun', 'handgun', 'rifle', 'sword', 'katana',
+    'holster', 'holstered', 'harness', 'wings', 'tail',
+}
+STRUCT_HEADS = ('mechanical', 'mecha', 'prosthetic', 'armor', 'robot', 'cyber')
+
+# struct 模式额外剔掉的画法词：这些是 gloss 的职责，写进 struct 的 caption
+# 会让结构 LoRA 顺手把某一家的笔触也学进去，两段就打架。
+STRUCT_DROP = {
+    'oil_painting', 'watercolor_(medium)', 'watercolor', 'traditional_media',
+    'sketch', 'lineart', 'monochrome', 'greyscale', 'grayscale',
+    'flat_color', 'cel_shading', 'thick_outlines', 'realistic', 'semi-realistic',
+    'photorealistic', '3d', 'render', 'bloom', 'depth_of_field', 'lens_flare',
+    'chromatic_aberration', 'motion_blur', 'shiny_clothes', 'shiny_skin',
+}
+
+MODE = 'gloss'
+
+
+def is_struct(tag: str) -> bool:
+    return tag in MECH_STRUCT or any(tag.startswith(h + '_') or tag.endswith('_' + h)
+                                    for h in STRUCT_HEADS)
+
+
 def bucket_of(tag: str) -> int:
+    if MODE == 'struct':
+        if tag in COMPOSITION or tag == 'tachi-e':
+            return 0
+        if tag in ('1girl', '1boy', 'solo', 'multiple_girls'):
+            return 2   # 身份锚，别被外观桶拖到最后
+        if is_struct(tag):
+            return 1
+        if any(tag == k or tag.endswith('_' + k) or tag.startswith(k + '_') for k in OUTFIT_KEYS):
+            return 2
+        if any(k in tag for k in BODY_KEYS):
+            return 3
+        if tag in SCENE:
+            return 4
+        if any(k in tag for k in APPEARANCE_KEYS):
+            return 6   # 发色/瞳色/表情对结构无用，丢最后
+        if tag in PROP or any(k in tag for k in ('holding_', 'food', 'drink')):
+            return 5
+        return 5
+    # gloss / 通用：构图→外观→服装→体型→道具→场景
     if tag in COMPOSITION:
         return 0
     if any(k in tag for k in APPEARANCE_KEYS):
@@ -178,7 +233,11 @@ def main() -> int:
     ap.add_argument('--out', default='')
     ap.add_argument('--limit', type=int, default=75)
     ap.add_argument('--dry', action='store_true')
+    ap.add_argument('--mode', choices=('gloss', 'struct'), default='gloss',
+                    help='struct：结构词优先、外观词垫底、剔画法词')
     args = ap.parse_args()
+    global MODE
+    MODE = args.mode
 
     root = Path(args.dir)
     pairs = load_pairs(root)
@@ -192,7 +251,8 @@ def main() -> int:
 
     cleaned = []
     for path, tags in pairs:
-        tags = [t for t in tags if t not in DROP and t not in STYLE_DROP]
+        extra = STRUCT_DROP if MODE == 'struct' else set()
+        tags = [t for t in tags if t not in DROP and t not in STYLE_DROP and t not in extra]
         tags = collapse(tags)
         tags = cap_family(tags)
         cleaned.append((path, tags))

@@ -38,9 +38,9 @@ if (!RUN) {
   process.exit(1)
 }
 const POSE = arg('pose')
-const DEPTH = arg('depth')
-if (!POSE || !DEPTH) {
-  console.error('缺 --pose / --depth（骨架图与深度图各一张）')
+const DEPTH = arg('depth') // 可缺省：只挂 openpose，不加 depth 分支
+if (!POSE) {
+  console.error('缺 --pose（骨架图）')
   process.exit(1)
 }
 
@@ -107,16 +107,23 @@ function build(poseRef, depthRef, seed) {
   wf['6'] = { class_type: 'CLIPTextEncode', inputs: { text: POSITIVE, clip: clipSrc } }
   wf['7'] = { class_type: 'CLIPTextEncode', inputs: { text: NEGATIVE, clip: clipSrc } }
   wf['11'] = { class_type: 'LoadImage', inputs: { image: poseRef } }
-  wf['25'] = { class_type: 'LoadImage', inputs: { image: depthRef } }
   wf['16'] = { class_type: 'ControlNetLoader', inputs: { control_net_name: CN_POSE } }
-  wf['22'] = { class_type: 'ControlNetLoader', inputs: { control_net_name: CN_DEPTH } }
   wf['17'] = {
     class_type: 'ControlNetApplyAdvanced',
     inputs: { positive: ['6', 0], negative: ['7', 0], control_net: ['16', 0], image: ['11', 0], strength: CN_POSE_S, start_percent: 0, end_percent: 1 },
   }
-  wf['23'] = {
-    class_type: 'ControlNetApplyAdvanced',
-    inputs: { positive: ['17', 0], negative: ['17', 1], control_net: ['22', 0], image: ['25', 0], strength: CN_DEPTH_S, start_percent: 0, end_percent: 1 },
+  // depth 分支可选：不给 depth 时 23 号节点就是用骨架单独 conditioning
+  let cond = ['17', 0]
+  let condNeg = ['17', 1]
+  if (depthRef) {
+    wf['25'] = { class_type: 'LoadImage', inputs: { image: depthRef } }
+    wf['22'] = { class_type: 'ControlNetLoader', inputs: { control_net_name: CN_DEPTH } }
+    wf['23'] = {
+      class_type: 'ControlNetApplyAdvanced',
+      inputs: { positive: ['17', 0], negative: ['17', 1], control_net: ['22', 0], image: ['25', 0], strength: CN_DEPTH_S, start_percent: 0, end_percent: 1 },
+    }
+    cond = ['23', 0]
+    condNeg = ['23', 1]
   }
   wf['50'] = { class_type: 'EmptyLatentImage', inputs: { width: W, height: H, batch_size: 1 } }
   wf['4'] = {
@@ -128,8 +135,8 @@ function build(poseRef, depthRef, seed) {
       cfg: CFG,
       sampler_name: SAMPLER,
       scheduler: 'normal',
-      positive: ['23', 0],
-      negative: ['23', 1],
+      positive: cond,
+      negative: condNeg,
       latent_image: ['50', 0],
       denoise: 1,
     },
@@ -142,9 +149,9 @@ function build(poseRef, depthRef, seed) {
 async function main() {
   console.log(`run=${RUN} tag=${TAG} lora=${LORA || '(无)'}@${LORA_S} ${W}x${H} steps=${STEPS} cfg=${CFG}`)
   const poseRef = await uploadImage(POSE)
-  const depthRef = await uploadImage(DEPTH)
+  const depthRef = DEPTH ? await uploadImage(DEPTH) : null
 
-  const manifest = { run: RUN, tag: TAG, lora: LORA || null, loraStrength: LORA ? LORA_S : 0, size: [W, H], steps: STEPS, cfg: CFG, sampler: SAMPLER, pose: POSE, depth: DEPTH, cn: { pose: CN_POSE_S, depth: CN_DEPTH_S }, positive: POSITIVE, negative: NEGATIVE, results: [] }
+  const manifest = { run: RUN, tag: TAG, lora: LORA || null, loraStrength: LORA ? LORA_S : 0, size: [W, H], steps: STEPS, cfg: CFG, sampler: SAMPLER, pose: POSE, depth: DEPTH || null, cn: { pose: CN_POSE_S, depth: CN_DEPTH_S }, positive: POSITIVE, negative: NEGATIVE, results: [] }
   const mfPath = join(RUN_DIR, `manifest-${TAG}.json`)
   if (existsSync(mfPath)) {
     const old = JSON.parse(readFileSync(mfPath, 'utf8'))
