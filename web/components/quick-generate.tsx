@@ -32,6 +32,7 @@ interface PoseEntry {
 const SOURCE_LABEL: Record<string, string> = {
   'openpose-lib': '公开库',
   img2pose: '自生成',
+  synthetic: '自绘',
 }
 
 const GEN_STATUS_LABEL: Record<string, string> = {
@@ -49,8 +50,9 @@ const WORKFLOW_LABEL = {
   base: 'baseline_ax4z_lora_v1',
 }
 
-// pose 动作类目中文名（与 manifest poseNames 的 8 组对齐）
+// pose 动作类目中文名（与 manifest poseNames 的 8 组对齐；mecha 是自绘姿态组）
 const GROUP_LABEL: Record<string, string> = {
+  mecha: '机娘站姿',
   standing: '站立',
   sitting: '坐姿',
   kneeling: '跪姿',
@@ -167,6 +169,12 @@ export function QuickGenerate() {
     return [...counts.entries()].sort(([a], [b]) => a.localeCompare(b))
   }, [poses])
 
+  // 切到某个来源后只剩一个动作类目时直接选中，省一次点击（自绘只有「机娘站姿」一组）
+  useEffect(() => {
+    if (group !== '') return
+    if (groups.length === 1 && groups[0]) setGroup(groups[0][0])
+  }, [groups, group])
+
   // 当前分组下的 pose，再按搜索词过滤 id / name / tags
   const visiblePoses = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -267,7 +275,7 @@ export function QuickGenerate() {
           <label>
             LoRA
             <select value={loraName} onChange={(event) => setLoraName(event.target.value)}>
-              <option value="">工作流默认</option>
+              <option value="">默认（gloss 1.0 + struct 0.8）</option>
               {loras.map((name) => (
                 <option key={name} value={name}>
                   {name}
@@ -297,8 +305,11 @@ export function QuickGenerate() {
           )}
         </div>
         <p className="muted quick-gen-note">
-          走 <code>{workflow}</code>。
-          {poseId ? ' pose 的骨架图与深度图自动上传，尺寸按 pose 变体。' : ' seed 随机。'}
+          走 <code>{workflow}</code>：zero + gloss 1.0 + struct 0.8，832×1216 / 30 步 / cfg 5。
+          {poseId
+            ? ' 骨架 1.0 + 深度 0.7，pose 的骨架图与深度图自动上传，尺寸按 pose 变体。'
+            : ' 无 CN，seed 随机。'}
+          {' 手选 LoRA 会顶掉 gloss，struct 仍按 0.8 叠加。'}
         </p>
       </div>
 

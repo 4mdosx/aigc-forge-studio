@@ -7,7 +7,7 @@ import { branchOf, revisionById, workflowByName } from './db.ts'
 import { RunnerError } from './errors.ts'
 import { createJobRaw } from './jobFactory.ts'
 import { joinPrompt, readRollConfig } from './rollConfig.ts'
-import { matchNode, type AdapterMap } from './workflow/binding.ts'
+import { matchNode, type AdapterMap, type Binding } from './workflow/binding.ts'
 import type { Runner } from './task/queue.ts'
 import type { Prompt } from './workflow/graph.ts'
 
@@ -18,6 +18,7 @@ export type GenerateKind = 'cn' | 'base'
 export interface GenerateInput {
   prompt: string
   repeat: number
+  // 留空 = 不覆盖 workflow 里的 LoRA（快速出图默认 gloss 1.0 + struct 0.8）
   loraName: string
   poseName?: string
 }
@@ -95,7 +96,9 @@ export function parseGenerateInput(
   ) {
     throw new RunnerError('repeat must be an integer between 1 and 16')
   }
-  const loraName = requiredString(raw.loraName, 'loraName')
+  // loraName 可缺省（2026-11-24）：不传就是沿用 workflow 里的 LoRA。
+  // 快速出图的图里已经绑好 gloss 1.0 + struct 0.8，前端「默认」选项不该被迫传值。
+  const loraName = typeof raw.loraName === 'string' ? raw.loraName.trim() : ''
   const poseName =
     typeof raw.poseName === 'string' ? raw.poseName.trim() : ''
   if (spec(kind).withPose && poseName === '') {
@@ -137,8 +140,8 @@ export async function createGeneration(
 
   const overrides: Record<string, unknown> = {
     batch: input.repeat,
-    lora_name: input.loraName,
   }
+  if (input.loraName !== '') overrides.lora_name = input.loraName
   if (s.withPose) {
     Object.assign(overrides, await poseOverrides(runner, input.poseName ?? ''))
   }
@@ -243,8 +246,12 @@ function buildPayload(
   if (!Object.hasOwn(payload, 'negative')) {
     throw new RunnerError('workflow adapter has no negative input')
   }
-  payload.positive = joinPrompt(config.workflowPositive, prompt)
-  payload.negative = joinPrompt(config.workflowNegative, '')
+  // 词序（2026-11-24）：workflow 自带的文本优先，roll_config 只作兜底。
+  // 快速出图的图里写死了定案正负面（质感和机设全押在负面里的 rust/weathering/
+  // segmented armor），用 roll_config 去覆盖会把这些词整段丢掉；roll_config 仍然
+  // 服务 dice 那条独立的拼接路径，不在这里共用。
+  payload.positive = joinPrompt(textOf(api, adapter.inputs.positive) || config.workflowPositive, prompt)
+  payload.negative = textOf(api, adapter.inputs.negative) || config.workflowNegative
   for (const [key, value] of Object.entries(overrides)) {
     if (key === 'positive' || key === 'negative') continue
     if (!Object.hasOwn(payload, key)) continue
@@ -258,4 +265,11 @@ function fillable(value: unknown): boolean {
   if (Array.isArray(value)) return false
   if (typeof value === 'object') return false
   return true
+}
+
+// 取 workflow 里绑定节点上现存的文本（正/负面），空字符串表示图没写词。
+function textOf(api: Prompt, binding: Binding | undefined): string {
+  if (!binding || !binding.input) return ''
+  const value = matchNode(api, binding).node.inputs[binding.input]
+  return typeof value === 'string' ? value.trim() : ''
 }

@@ -96,6 +96,12 @@ test('parseGenerateInput validates prompt, repeat, loraName and pose rules', () 
     repeat: 2,
     loraName: 'style.safetensors',
   }), { prompt: '1girl', repeat: 2, loraName: 'style.safetensors' })
+  // loraName 可缺省：沿用 workflow 里绑好的 LoRA
+  assert.deepEqual(parseGenerateInput('base', { prompt: '1girl', repeat: 1 }), {
+    prompt: '1girl',
+    repeat: 1,
+    loraName: '',
+  })
   assert.deepEqual(parseGenerateInput('cn', {
     prompt: '1girl',
     repeat: 1,
@@ -144,8 +150,10 @@ test('createGeneration(base) writes job with head version and stores recipe sepa
   assert.equal(job.work_id, null)
   assert.equal(job.label, 'Base')
   const payload = JSON.parse(job.input_json as string) as Record<string, unknown>
-  assert.equal(payload.positive, 'masterpiece, 1girl, solo')
-  assert.equal(payload.negative, 'lowres')
+  // workflow 自带词优先（2026-11-24）：GRAPH_BASE 的 'old positive' / 'old negative'
+  // 压过 roll_config 的 'masterpiece' / 'lowres'
+  assert.equal(payload.positive, 'old positive, 1girl, solo')
+  assert.equal(payload.negative, 'old negative')
   assert.equal(payload.batch, 3)
   assert.equal(payload.lora_name, 'style.safetensors')
   assert.equal(payload.seed, 'random')
@@ -159,8 +167,37 @@ test('createGeneration(base) writes job with head version and stores recipe sepa
   assert.deepEqual(JSON.parse(recipe.input_json as string), input)
 })
 
-test('createGeneration(cn) uploads pose files and maps pose_image/depth_image', async () => {
-  const root = '/tmp/aigc-generate-test'
+test('createGeneration keeps the workflow LoRA when loraName is omitted', async () => {
+  const runner = testRunner()
+  seedWorkflow(runner.db, 'baseline_ax4z_lora_v1', GRAPH_BASE)
+  seedRollConfig(runner.db)
+  const input = parseGenerateInput('base', { prompt: '1girl', repeat: 1 })
+  const { jobId } = await createGeneration(runner, 'base', input)
+  const job = runner.db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId) as Record<string, unknown>
+  const payload = JSON.parse(job.input_json as string) as Record<string, unknown>
+  assert.equal(payload.lora_name, 'old.safetensors')
+})
+
+test('createGeneration falls back to roll_config when the workflow text is empty', async () => {
+  const runner = testRunner()
+  const emptyText = structuredClone(GRAPH_BASE) as Record<string, { inputs: Record<string, unknown> }>
+  emptyText['10'].inputs.text = '   '
+  emptyText['11'].inputs.text = ''
+  seedWorkflow(runner.db, 'baseline_ax4z_lora_v1', emptyText)
+  seedRollConfig(runner.db)
+  const input = parseGenerateInput('base', {
+    prompt: '1girl',
+    repeat: 1,
+    loraName: 'style.safetensors',
+  })
+  const { jobId } = await createGeneration(runner, 'base', input)
+  const job = runner.db.prepare('SELECT * FROM jobs WHERE id = ?').get(jobId) as Record<string, unknown>
+  const payload = JSON.parse(job.input_json as string) as Record<string, unknown>
+  assert.equal(payload.positive, 'masterpiece, 1girl')
+  assert.equal(payload.negative, 'lowres')
+})
+
+test('createGeneration(cn) uploads pose files and maps pose_image/depth_image', async () => {  const root = '/tmp/aigc-generate-test'
   mkdirSync(join(root, 'pose'), { recursive: true })
   writeFileSync(join(root, 'pose', 'manifest.json'), JSON.stringify({
     poses: [{
