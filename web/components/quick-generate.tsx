@@ -50,6 +50,15 @@ const WORKFLOW_LABEL = {
   base: 'baseline_ax4z_lora_v1',
 }
 
+// LoRA 下拉只列「能真正决定画法」的成品。
+// 训练中间分片（xxx-000001 这种）只是 sd-scripts 每 epoch 的存档，效果比最终版差；
+// wan2.2 是视频 LoRA、More_brightness / dlss 是画质工具，都不是画风。
+const LORA_ARTIFACT = /-\d{6}\.safetensors$/
+const LORA_IRRELEVANT = /^(wan2\.2|More_brightness|dlss)/i
+// struct_pool 已经在图里以 0.8 挂在结构槽上，从下拉再选一次等于顶掉 gloss
+// 并把它自己叠两层，所以单列一组并标出来。
+const LORA_STRUCT = /^struct_pool/i
+
 // pose 动作类目中文名（与 manifest poseNames 的 8 组对齐；mecha 是自绘姿态组）
 const GROUP_LABEL: Record<string, string> = {
   mecha: '机娘站姿',
@@ -192,6 +201,17 @@ export function QuickGenerate() {
     [poses, poseId],
   )
 
+  // LoRA 分成「可换的画风」和「已在图里的结构 LoRA」，滤掉分片与无关项
+  const loraGroups = useMemo(() => {
+    const usable = loras.filter(
+      (name) => !LORA_ARTIFACT.test(name) && !LORA_IRRELEVANT.test(name),
+    )
+    return {
+      style: usable.filter((name) => !LORA_STRUCT.test(name)),
+      struct: usable.filter((name) => LORA_STRUCT.test(name)),
+    }
+  }, [loras])
+
   const chooseGroup = (name: string) => {
     setGroup(name)
     setPoseId('')
@@ -276,11 +296,22 @@ export function QuickGenerate() {
             LoRA
             <select value={loraName} onChange={(event) => setLoraName(event.target.value)}>
               <option value="">默认（gloss 1.0 + struct 0.8）</option>
-              {loras.map((name) => (
-                <option key={name} value={name}>
-                  {name}
-                </option>
-              ))}
+              <optgroup label="换画风：顶掉 gloss，struct 仍 0.8">
+                {loraGroups.style.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </optgroup>
+              {loraGroups.struct.length > 0 ? (
+                <optgroup label="结构 LoRA：已在图里，别选">
+                  {loraGroups.struct.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </optgroup>
+              ) : null}
             </select>
           </label>
         </div>
