@@ -82,8 +82,10 @@ function parseArgs(argv) {
     else if (a === '--out') out.out = next()
     else if (a === '--min-long') out.minLong = Number(next())
     else if (a === '--max-mb') out.maxMB = Number(next())
+    else if (a === '--meta') out.meta = true
     else if (a === '--help' || a === '-h') {
-      console.log('node danbooru_candidates.mjs --batch <id> [--pages N] [--tags "a|b"] [--min-long 1200]')
+      console.log('node danbooru_candidates.mjs --batch <id> [--pages N] [--tags "a|b"] [--min-long 1200] [--meta]')
+      console.log('  匿名账号最多 2 个 tag，metatag 也占名额；--meta 只在 base 只有 1 个 tag 时用')
       process.exit(0)
     } else throw new Error(`未知参数 ${a}`)
   }
@@ -198,7 +200,10 @@ async function main() {
   const seen = new Set()
 
   for (const base of baseTags) {
-    const query = `${base} order:${args.order} rating:general`
+    // 匿名账号 tag 上限是 2 个，且 metatag 也占名额 —— `order:score rating:general`
+    // 会把两个名额全吃掉，任何 2-tag 的 base 都 422。rating 在 keep() 里已经本地
+    // 过滤，order 在合并后本地按 score 排，所以这里不需要任何 metatag。
+    const query = args.meta ? `${base} order:${args.order} rating:general` : base
     let pagesDone = 0
     for (let page = 1; page <= args.pages; page += 1) {
       const url = `${API}/posts.json?tags=${encodeURIComponent(query)}&limit=200&page=${page}`

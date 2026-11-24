@@ -1,156 +1,156 @@
 {
-  "_doc": "train_animagine.mjs 的训练 profile。只写与 runner STABLE_PRESET 不同的字段，其余继承。runner 会把请求体 merge 到 preset 上：{...STABLE_PRESET, ...body}。继承档 = resolution 1024 / batchSize 1 / dim128 alpha32 / unetLr 4e-4 / TE lr 5e-5 / constant / warmup 100 / saveEveryNEpochs 1 / clipSkip 2 / minSnrGamma 5 / sdpa / unetOnly / sdxl / TE cache 开 / shuffle 关 / keepTokens 0。cacheTextEncoderOutputs 与 shuffleCaption 互斥，别同时开。",
-  "_experiment": "见 /Users/token/workspace/AIGC/research/style-lora-multiscene-experiment.md。曝光次数 = numRepeats × maxTrainEpochs，安全区 15-20。",
-  "profiles": {
-    "seed": {
-      "desc": "v1 种子池：50 图（40-60），10×2 = 20 曝光/图，约 1000 step / 35min",
-      "expectImages": [
-        40,
-        60
-      ],
-      "params": {
-        "numRepeats": 10,
-        "maxTrainEpochs": 2,
-        "networkDim": 128,
-        "networkAlpha": 32,
-        "keepTokens": 1
-      }
-    },
-    "refine-r1": {
-      "desc": "回流 R1：65 图（种子 50 + 15 精选），8×2 = 16 曝光/图，约 1040 step / 35min",
-      "expectImages": [
-        60,
-        70
-      ],
-      "params": {
-        "numRepeats": 8,
-        "maxTrainEpochs": 2,
-        "networkDim": 128,
-        "networkAlpha": 32,
-        "keepTokens": 1
-      }
-    },
-    "refine-r2": {
-      "desc": "回流 R2：75 图（累计，风格锚不动），6×2 = 12 曝光/图，约 900 step / 30min",
-      "expectImages": [
-        70,
-        80
-      ],
-      "params": {
-        "numRepeats": 6,
-        "maxTrainEpochs": 2,
-        "networkDim": 128,
-        "networkAlpha": 32,
-        "keepTokens": 1
-      }
-    },
-    "scene": {
-      "desc": "场景专属 LoRA：50 图（共享锚 20 + 场景专属 30），10×2 = 20 曝光/图，约 1000 step / 35min",
-      "expectImages": [
-        40,
-        60
-      ],
-      "params": {
-        "numRepeats": 10,
-        "maxTrainEpochs": 2,
-        "networkDim": 128,
-        "networkAlpha": 32,
-        "keepTokens": 1
-      }
-    },
-    "porcelain-scan": {
-      "desc": "质感扫描（2026-11-22）：25 图 × 12 repeats × 4 epoch，batch1 下 300 步/epoch、总 1200 步、48 曝光/图，约 40min。一次训练出四档 checkpoint（300/600/900/1200）做质感饱和曲线，不重训四遍。source 为 736px 宽时分辨率可降到 832 保高频；1024 是已验证档，先按 1024 跑。",
-      "expectImages": [
-        20,
-        28
-      ],
-      "params": {
-        "numRepeats": 12,
-        "maxTrainEpochs": 4,
-        "networkDim": 128,
-        "networkAlpha": 32,
-        "keepTokens": 1
-      }
-    },
-    "mecha-clone": {
-      "desc": "机娘类型克隆（2026-11-22）：24 图 × 12 repeats × 4 epoch = 1152 步、48 曝光/图，约 40min。数据集 mecha_clone_train 是从图库 61 张白底机娘里按 tag+色调筛出的 24 张覆面机甲少女设定图（edge<=25、sat<=30），留出 4 张在 mecha_clone_holdout 做重建测试。四档 checkpoint 288/576/864/1152 做饱和曲线。判据 = 类型迁移（无关题材也变白底覆面机娘）+ 留出重建相似度。",
-      "expectImages": [
-        22,
-        26
-      ],
-      "params": {
-        "numRepeats": 12,
-        "maxTrainEpochs": 4,
-        "networkDim": 128,
-        "networkAlpha": 32,
-        "keepTokens": 1
-      }
-    },
-    "smoke": {
-      "desc": "冒烟验证：2×1 = 2 曝光/图，dim32，只验证链路与产物，不用于交付",
-      "expectImages": [
-        1,
-        999
-      ],
-      "params": {
-        "numRepeats": 2,
-        "maxTrainEpochs": 1,
-        "networkDim": 32,
-        "networkAlpha": 8,
-        "saveEveryNEpochs": 1
-      }
-    },
-    "mecha-3d-distill": {
-      "desc": "3D 渲染媒介克隆（2026-11-22）：48 图（24 张来自干净参考图的 img2img 自举蒸馏 × 水平镜像）× 6 repeats × 4 epoch = 1152 步，与 mecha-clone 步数完全相同，只换数据。目的是分离变量：mecha-clone 证明了 2D 概念图数据只能学到设计语言，本 profile 检验「把训练集换成同媒介的 3D 渲染图后，媒介是否可学」。判据 = 无 LoRA 也知道的白底 3D 质感能否迁移到咖啡馆/雨夜/肖像等无关题材。",
-      "expectImages": [
-        44,
-        52
-      ],
-      "params": {
-        "numRepeats": 6,
-        "maxTrainEpochs": 4,
-        "networkDim": 128,
-        "networkAlpha": 32,
-        "keepTokens": 1
-      }
-    },
-    "ohou-style": {
-      "desc": "ohou 角色+媒介克隆（2026-11-22）：19 张真图（Pixiv 同源，同角色两造型：8 张神社和服狐女 / 11 张酒吧兔女郎），长边 1216（原 3840x2160 16:9），已裁掉采集管道的上下白边。19x10x3=570 步。选 570 而不是 900+ 的理由：这批两两余弦中位 0.813、最近邻 0.924，同质度远高于上一轮机娘集（0.683），过拟合会比上一轮更早发生。",
-      "expectImages": [
-        19,
-        19
-      ],
-      "params": {
-        "numRepeats": 10,
-        "maxTrainEpochs": 3,
-        "networkDim": 128,
-        "networkAlpha": 32,
-        "keepTokens": 1
-      }
-    },
-    "gloss": {
-      "desc": "韩系半厚涂质感 LoRA（2026-11-24）：40 张 × 12 repeats × 4 epoch = 1920 步、48 曝光/图，约 65min。数据来自 gloss_pool 68 张：剔掉末尾 14 张 3D CG 渲染（塑料高光、红黑霓虹、横构图），cos>0.90 近重复组每组抽到 ≤4 张，再补 style 独有的 5 张种子。**无触发词**——触发词实测无效（11-22），而这个 LoRA 的用法是低 denoise 下无条件改先验，本来也不需要开关。caption 用 budget_captions_generic.py 按 75 token 重排，风格词（shiny_clothes / shiny_skin / wet / realistic）全部剔除，让光泽沉进权重而不是被 caption 解释掉。四档 checkpoint 480/960/1440/1920 做饱和曲线。判据 = 套在机娘 struct 底图上、denoise 0.30–0.40，看 dd_gloss 能不能从 prompt 时代的 +0.007 推上去。",
-      "expectImages": [
-        38,
-        42
-      ],
-      "params": {
-        "numRepeats": 12,
-        "maxTrainEpochs": 4,
-        "networkDim": 128,
-        "networkAlpha": 32,
-        "keepTokens": 0
-      }
-    },
-    "struct": {
-      "desc": "冷硬工业厚涂机娘结构 LoRA（2026-11-24 起）。与 gloss 的分工：gloss 学画法（半厚涂、软过渡、亮面材质），struct 学设计语言（重甲分件、机械关节、立绘构图、人体比例）。dim 取 64 而非 128 —— 结构信息比质感稀疏，参数给多了会顺手把画风也学进去，两段就变成互斥。无触发词，caption 剔净风格词，理由同 gloss。判据不是余弦像不像，是「用这个 LoRA 直出时，不用写满装备词也能长出重甲」，以及组内同质度能不能从 0.60 抬到 0.72+。",
-      "params": {
-        "numRepeats": 12,
-        "maxTrainEpochs": 4,
-        "networkDim": 64,
-        "networkAlpha": 16,
-        "keepTokens": 0
-      }
-    }
+ "_doc": "train_animagine.mjs 的训练 profile。只写与 runner STABLE_PRESET 不同的字段，其余继承。runner 会把请求体 merge 到 preset 上：{...STABLE_PRESET, ...body}。继承档 = resolution 1024 / batchSize 1 / dim128 alpha32 / unetLr 4e-4 / TE lr 5e-5 / constant / warmup 100 / saveEveryNEpochs 1 / clipSkip 2 / minSnrGamma 5 / sdpa / unetOnly / sdxl / TE cache 开 / shuffle 关 / keepTokens 0。cacheTextEncoderOutputs 与 shuffleCaption 互斥，别同时开。",
+ "_experiment": "见 /Users/token/workspace/AIGC/research/style-lora-multiscene-experiment.md。曝光次数 = numRepeats × maxTrainEpochs，安全区 15-20。",
+ "profiles": {
+  "seed": {
+   "desc": "v1 种子池：50 图（40-60），10×2 = 20 曝光/图，约 1000 step / 35min",
+   "expectImages": [
+    40,
+    60
+   ],
+   "params": {
+    "numRepeats": 10,
+    "maxTrainEpochs": 2,
+    "networkDim": 128,
+    "networkAlpha": 32,
+    "keepTokens": 1
+   }
+  },
+  "refine-r1": {
+   "desc": "回流 R1：65 图（种子 50 + 15 精选），8×2 = 16 曝光/图，约 1040 step / 35min",
+   "expectImages": [
+    60,
+    70
+   ],
+   "params": {
+    "numRepeats": 8,
+    "maxTrainEpochs": 2,
+    "networkDim": 128,
+    "networkAlpha": 32,
+    "keepTokens": 1
+   }
+  },
+  "refine-r2": {
+   "desc": "回流 R2：75 图（累计，风格锚不动），6×2 = 12 曝光/图，约 900 step / 30min",
+   "expectImages": [
+    70,
+    80
+   ],
+   "params": {
+    "numRepeats": 6,
+    "maxTrainEpochs": 2,
+    "networkDim": 128,
+    "networkAlpha": 32,
+    "keepTokens": 1
+   }
+  },
+  "scene": {
+   "desc": "场景专属 LoRA：50 图（共享锚 20 + 场景专属 30），10×2 = 20 曝光/图，约 1000 step / 35min",
+   "expectImages": [
+    40,
+    60
+   ],
+   "params": {
+    "numRepeats": 10,
+    "maxTrainEpochs": 2,
+    "networkDim": 128,
+    "networkAlpha": 32,
+    "keepTokens": 1
+   }
+  },
+  "porcelain-scan": {
+   "desc": "质感扫描（2026-11-22）：25 图 × 12 repeats × 4 epoch，batch1 下 300 步/epoch、总 1200 步、48 曝光/图，约 40min。一次训练出四档 checkpoint（300/600/900/1200）做质感饱和曲线，不重训四遍。source 为 736px 宽时分辨率可降到 832 保高频；1024 是已验证档，先按 1024 跑。",
+   "expectImages": [
+    20,
+    28
+   ],
+   "params": {
+    "numRepeats": 12,
+    "maxTrainEpochs": 4,
+    "networkDim": 128,
+    "networkAlpha": 32,
+    "keepTokens": 1
+   }
+  },
+  "mecha-clone": {
+   "desc": "机娘类型克隆（2026-11-22）：24 图 × 12 repeats × 4 epoch = 1152 步、48 曝光/图，约 40min。数据集 mecha_clone_train 是从图库 61 张白底机娘里按 tag+色调筛出的 24 张覆面机甲少女设定图（edge<=25、sat<=30），留出 4 张在 mecha_clone_holdout 做重建测试。四档 checkpoint 288/576/864/1152 做饱和曲线。判据 = 类型迁移（无关题材也变白底覆面机娘）+ 留出重建相似度。",
+   "expectImages": [
+    22,
+    26
+   ],
+   "params": {
+    "numRepeats": 12,
+    "maxTrainEpochs": 4,
+    "networkDim": 128,
+    "networkAlpha": 32,
+    "keepTokens": 1
+   }
+  },
+  "smoke": {
+   "desc": "冒烟验证：2×1 = 2 曝光/图，dim32，只验证链路与产物，不用于交付",
+   "expectImages": [
+    1,
+    999
+   ],
+   "params": {
+    "numRepeats": 2,
+    "maxTrainEpochs": 1,
+    "networkDim": 32,
+    "networkAlpha": 8,
+    "saveEveryNEpochs": 1
+   }
+  },
+  "mecha-3d-distill": {
+   "desc": "3D 渲染媒介克隆（2026-11-22）：48 图（24 张来自干净参考图的 img2img 自举蒸馏 × 水平镜像）× 6 repeats × 4 epoch = 1152 步，与 mecha-clone 步数完全相同，只换数据。目的是分离变量：mecha-clone 证明了 2D 概念图数据只能学到设计语言，本 profile 检验「把训练集换成同媒介的 3D 渲染图后，媒介是否可学」。判据 = 无 LoRA 也知道的白底 3D 质感能否迁移到咖啡馆/雨夜/肖像等无关题材。",
+   "expectImages": [
+    44,
+    52
+   ],
+   "params": {
+    "numRepeats": 6,
+    "maxTrainEpochs": 4,
+    "networkDim": 128,
+    "networkAlpha": 32,
+    "keepTokens": 1
+   }
+  },
+  "ohou-style": {
+   "desc": "ohou 角色+媒介克隆（2026-11-22）：19 张真图（Pixiv 同源，同角色两造型：8 张神社和服狐女 / 11 张酒吧兔女郎），长边 1216（原 3840x2160 16:9），已裁掉采集管道的上下白边。19x10x3=570 步。选 570 而不是 900+ 的理由：这批两两余弦中位 0.813、最近邻 0.924，同质度远高于上一轮机娘集（0.683），过拟合会比上一轮更早发生。",
+   "expectImages": [
+    19,
+    19
+   ],
+   "params": {
+    "numRepeats": 10,
+    "maxTrainEpochs": 3,
+    "networkDim": 128,
+    "networkAlpha": 32,
+    "keepTokens": 1
+   }
+  },
+  "gloss": {
+   "desc": "韩系半厚涂质感 LoRA（2026-11-24）：40 张 × 12 repeats × 4 epoch = 1920 步、48 曝光/图，约 65min。数据来自 gloss_pool 68 张：剔掉末尾 14 张 3D CG 渲染（塑料高光、红黑霓虹、横构图），cos>0.90 近重复组每组抽到 ≤4 张，再补 style 独有的 5 张种子。**无触发词**——触发词实测无效（11-22），而这个 LoRA 的用法是低 denoise 下无条件改先验，本来也不需要开关。caption 用 budget_captions_generic.py 按 75 token 重排，风格词（shiny_clothes / shiny_skin / wet / realistic）全部剔除，让光泽沉进权重而不是被 caption 解释掉。四档 checkpoint 480/960/1440/1920 做饱和曲线。判据 = 套在机娘 struct 底图上、denoise 0.30–0.40，看 dd_gloss 能不能从 prompt 时代的 +0.007 推上去。",
+   "expectImages": [
+    38,
+    42
+   ],
+   "params": {
+    "numRepeats": 12,
+    "maxTrainEpochs": 4,
+    "networkDim": 128,
+    "networkAlpha": 32,
+    "keepTokens": 0
+   }
+  },
+  "struct": {
+   "desc": "冷硬工业厚涂机娘结构 LoRA（2026-11-24 起，v3 数据重训）。与 gloss 的分工：gloss 学画法（半厚涂、软过渡、亮面材质），struct 学设计语言（重甲分件、机械关节、立绘构图、人体比例）。dim 取 64 而非 128 —— 结构信息比质感稀疏，参数给多了会顺手把画风也学进去。无触发词，caption 剔净风格词，理由同 gloss。判据不是余弦像不像，是「不写满装备词也能长出重甲」。注意：struct 是题材层，多样性是好事，不该卡组内同质度 —— 该卡的是条件纯度（白底/全身/单人/有机械）与设计签名配比。v1 失败不是数据脏，是 37 张里 25 张来自同一批 Pinterest 采集（全 white_coat + mechanical_arms），模型把那套制服当成了机娘默认装。v3 用 build_struct_v3.py 按设计签名限流，white_coat 归零。",
+   "params": {
+    "numRepeats": 12,
+    "maxTrainEpochs": 4,
+    "networkDim": 64,
+    "networkAlpha": 16,
+    "keepTokens": 0
+   }
   }
+ }
 }
