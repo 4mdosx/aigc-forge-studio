@@ -2,12 +2,13 @@ import type { Hono } from 'hono'
 import type { DatabaseSync } from 'node:sqlite'
 import { randomUUID as uuid } from 'node:crypto'
 
-import { RunnerError } from '../errors.ts'
-
-import type { Runner } from '../task/queue.ts'
-import { adapterFit, suggestAdapter } from '../workflow/binding.ts'
 import { workflowByName } from '../db.ts'
+import { RunnerError } from '../errors.ts'
+import type { Runner } from '../task/queue.ts'
+import { createTask, runContext } from '../task/records.ts'
+import { adapterFit, suggestAdapter } from '../workflow/binding.ts'
 import type { Prompt } from '../workflow/graph.ts'
+import { poseOverrides } from '../work/poseFiles.ts'
 import {
   attachWorkflow,
   createWork,
@@ -21,7 +22,13 @@ import {
   workByName,
   type WorkLink,
 } from '../work/works.ts'
-import { jsonObject, stringField } from './request.ts'
+import {
+  jsonObject,
+  objectField,
+  optionalVersion,
+  stringField,
+  taskJson,
+} from './request.ts'
 
 export function mountWorks(app: Hono, runner: Runner): void {
   app.get('/works', (c) => {
@@ -75,6 +82,71 @@ export function mountWorks(app: Hono, runner: Runner): void {
   app.delete('/works/:name', (c) => {
     deleteWork(runner.db, c.req.param('name'))
     return c.json({ ok: true })
+  })
+
+  // 按 work 跑一次：把「取 head 版本 + 找版本绑定的 adapter + 组装 payload」
+  // 三件事收回服务端，调用方只交 payload。这是脚本/agent 的通用入口——
+  // /generate/* 只覆盖两条固定配方，别的 workflow 以前只能靠离线脚本
+  // （run_work_workflow.mjs）自己转 UI→API 再直打 ComfyUI。
+  app.post('/works/:name/run', async (c) => {
+    const body = await jsonObject(c.req)
+    const work = workByName(runner.db, c.req.param('name'))
+    const links = linksOf(runner.db, work.id)
+    if (links.length === 0)
+      throw new RunnerError(`work ${work.name} has no workflow`, 404)
+    const workflowName =
+      body.workflowName === undefined
+        ? links[0].name
+        : stringField(body, 'workflowName')
+    if (!links.some((link) => link.name === workflowName))
+      throw new RunnerError(
+        `workflow ${workflowName} is not in work ${work.name}`,
+        404,
+      )
+    const version = optionalVersion(body)
+    const payload =
+      body.payload === undefined ? {} : objectField(body, 'payload')
+    // pose 便捷入口：manifest 里的 pose id → 上传骨架/深度图并覆盖画布尺寸。
+    // 工作流没有这几个槽位就直接报错——别让调用方以为姿态生效了。
+    if (body.pose !== undefined) {
+      const { adapter } = runContext(runner.db, work.name, workflowName, version)
+      const overrides = await poseOverrides(
+        runner,
+        stringField(body, 'pose'),
+      )
+      const missing = Object.keys(overrides).filter(
+        (key) => !adapter.inputs[key],
+      )
+      if (missing.length > 0)
+        throw new RunnerError(
+          `workflow ${workflowName} has no ${missing.join('/')} slot in its adapter`,
+          400,
+        )
+      Object.assign(payload, overrides)
+    }
+    const task =
+      body.task === undefined
+        ? `${work.name}-${uuid().slice(0, 8)}`
+        : stringField(body, 'task')
+    const parentTaskId =
+      body.parentTaskId === undefined
+        ? undefined
+        : stringField(body, 'parentTaskId')
+    const row = createTask(
+      runner.db,
+      {
+        task,
+        workName: work.name,
+        workflowName,
+        ...(version === undefined ? {} : { version }),
+        payload,
+        ...(parentTaskId === undefined ? {} : { parentTaskId }),
+      },
+      runner.now(),
+      runner.randomSeed,
+      runner.dataDir,
+    )
+    return c.json(taskJson(runner.db, row), 201)
   })
 
   app.post('/works/:name/semantic', async (c) => {

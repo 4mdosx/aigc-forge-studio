@@ -11,7 +11,9 @@
     "test": "node --test src",
     "check": "tsc --noEmit",
     "format": "prettier --write src",
-    "format:check": "prettier --check src"
+    "format:check": "prettier --check src",
+    "mcp": "node mcp/server.mjs",
+    "mcp:selftest": "node mcp/selftest.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
@@ -22,6 +24,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.8",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "hono": "^4.13.18",
     "onnxruntime-node": "^1.31.1",
     "openai": "^7.56.0",

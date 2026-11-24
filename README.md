@@ -158,14 +158,18 @@ curl --json '{"revisionId":"<revision>","expectedHead":"<current head>"}' http:/
 
 Adapter 用 `class_type` 锁定节点。写了 `name` 时再按节点标题筛选，结果必须恰好一个。`id` 只校验锁定到的节点，变了就失败，需要改 Adapter，这次修改不产生新版本。输入键要和所属 Work 的语义字段一致。`seed` 不传或传 `random` 时生成 `0` 到 `2^32-1` 的整数；传入数字则固定这个值。实际写入的整数记在任务的 `input_json`。
 
-队列只跑出图。`POST /tasks` 写入 `pending` 后立即返回。出图按实例列表分配，一台实例同时只有一条 `running` 任务。实例连不上时任务留在 `pending`；`/prompt` 拒绝时写成 `failed`。客户端查询只读数据库。任务完成后只记录路径，不把文件下载到 Runner。
+队列只跑出图。`POST /works/:name/run` 写入 `pending` 后立即返回。出图按实例列表分配，一台实例同时只能有一条 `running` 任务。实例连不上时任务留在 `pending`；`/prompt` 拒绝时写成 `failed`。客户端查询只读数据库。任务完成后只记录路径，不把文件下载到 Runner。
 
 ```bash
-curl --json '{"task":"text2img","workName":"picture","workflowName":"character-generator","payload":{"text":"a knight","seed":"random"}}' http://127.0.0.1:8787/tasks
+curl --json '{"payload":{"text":"a knight","seed":"random"},"task":"text2img"}' http://127.0.0.1:8787/works/picture/run
 curl http://127.0.0.1:8787/tasks/<task id>
 curl -X POST http://127.0.0.1:8787/tasks/<task id>/cancel
 curl http://127.0.0.1:8787/revisions/<revision id>/tasks
 ```
+
+`/works/:name/run` 的入参只有 `payload`，其余都在服务端解析：`workflow` 缺省取该 Work 挂的第一个，`version` 缺省取 `main` 头，该版本绑定的 Adapter 从 `work_workflows` 取。**payload 里没交的槽位沿用工作流当前值**，所以调用方只交要改的那几个键；交了 Adapter 不认识的键会直接报 `unknown input`。`pose` 是便捷入口：传 manifest 里的姿态 id，服务端把骨架图和深度图上传到 ComfyUI 并覆盖 `width` / `height`；工作流没有这两个槽位时报 400，不静默忽略。
+
+`/generate/cn` 与 `/generate/base` 是两条固定配方的快捷方式（机娘快速出图），参数只有 `prompt`、`repeat`、`loraName`、`poseName`；workflow 名和 Adapter 写在 `runner/src/generate.ts` 里，对调用方不可见。
 
 状态是 `pending`、`running`、`completed`、`failed`、`timeout`、`cancelled`。出图超时从 `started_at` 起算，默认 600 秒，不算排队。超时后写成 `timeout`，不再查看，也不取消 ComfyUI 上的执行。`pending` 的取消只改 Runner 状态；`running` 的任务会调用该实例的 `POST /api/jobs/{prompt_id}/cancel`。
 
@@ -200,6 +204,39 @@ npm run check
 ```
 
 `npm test` 不连 GPU，也不读 `user/default/workflows`。`npm run check` 做类型检查。
+
+## MCP
+
+`runner/mcp/` 是一个 stdio MCP 服务，把上面这些接口收成给 agent 用的工具集。它不重写业务逻辑：版本解析、Adapter 匹配、姿态上传、prompt 组装都在 Runner 里，这里只转发和裁剪。
+
+```bash
+cd runner
+npm install            # 含 @modelcontextprotocol/sdk
+node mcp/server.mjs    # stdio；RUNNER_URL 默认 http://127.0.0.1:8787
+node mcp/selftest.mjs  # 不连 GPU 的自检：列工具 + 调只读工具
+```
+
+客户端配置（`~/.workbuddy/mcp.json` 之类）：
+
+```json
+{
+  "mcpServers": {
+    "aigc-runner": {
+      "command": "node",
+      "args": ["/Users/token/workspace/AIGC/aigc-forge-studio/runner/mcp/server.mjs"],
+      "env": { "RUNNER_URL": "http://127.0.0.1:8787" }
+    }
+  }
+}
+```
+
+16 个工具，分三组：
+
+- **发现**：`runner_manual`（整篇手册）、`runner_status`、`list_works`、`describe_work`（某个 Work 的完整入参槽位表，含每个槽的节点与当前值）、`list_workflows`、`list_poses`、`list_loras`
+- **生成**：`run_work`（按 Work 跑一次，主力）、`quick_generate`（两条快速配方）、`sweep`（因子笛卡尔积批量对照）
+- **查询**：`get_task`、`list_tasks`、`wait_tasks`、`list_outputs`、`trace_output`、`list_datasets`
+
+自说明的重点在 `runner/mcp/manual.md` 与每个工具的 `description`：什么场景用哪个工具、payload 每个键什么语义、六类常见报错对应什么原因、哪些事别做（别直连 ComfyUI、别写 SQLite）。手册跟服务一起进版本库，改行为就改它。
 
 ## Web
 

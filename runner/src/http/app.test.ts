@@ -414,3 +414,52 @@ function fakeClient(
     }),
   } as unknown as ComfyClient
 }
+
+test('POST /works/:name/run takes the work head and its bound adapter', async () => {
+  const client = fakeClient('http://gpu-a', [], () => null)
+  const runner = testRunner([client])
+  const app = createApp(runner)
+
+  const created = await app.request('/workflows', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: 'character-generator',
+      comfyPath: 'character-generator.json',
+    }),
+  })
+  assert.equal(created.status, 201)
+  await attach(app, 'character-generator')
+
+  const queued = await app.request('/works/picture/run', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      payload: { text: 'a knight', seed: 'random' },
+      task: 'run-by-work',
+    }),
+  })
+  assert.equal(queued.status, 201)
+  const task = (await queued.json()) as {
+    id: string
+    task: string
+    status: string
+    workName: string
+    workflowName: string
+    version: string | null
+  }
+  // 不传 version 就是 main head；workflow 缺省取 work 挂的第一个
+  assert.equal(task.task, 'run-by-work')
+  assert.equal(task.status, 'pending')
+  assert.equal(task.workName, 'picture')
+  assert.equal(task.workflowName, 'character-generator')
+  assert.match(task.version ?? '', versionId)
+
+  // 不在这个 work 里的 workflow 直接拒掉，避免跑到别人家的 adapter 上
+  const foreign = await app.request('/works/picture/run', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ workflowName: 'nope', payload: {} }),
+  })
+  assert.equal(foreign.status, 404)
+})

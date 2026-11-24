@@ -17,7 +17,12 @@ import {
 } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import { comfyFilePath, viewTarget } from '../path.ts'
-import { applyAdapter, matchNode, parseAdapter } from '../workflow/binding.ts'
+import {
+  applyAdapter,
+  matchNode,
+  parseAdapter,
+  type AdapterMap,
+} from '../workflow/binding.ts'
 import type { Prompt } from '../workflow/graph.ts'
 import { applyCompose } from '../work/promptCompose.ts'
 import {
@@ -36,21 +41,26 @@ export interface TaskInput {
   parentTaskId?: string
 }
 
-export function createTask(
+// 一次运行需要的全部上下文：work 挂的 workflow、要跑的版本、该版本绑定的 adapter。
+// 路由层要先看一眼 adapter 有哪些槽位（比如有没有 pose_image 才决定能不能收 pose），
+// 和 createTask 共用同一段解析，避免「路由按一套规则判断、执行按另一套」。
+export interface RunContext {
+  work: { id: string; name: string }
+  workflow: { id: string; name: string; comfy_path: string }
+  revision: RevisionRow
+  adapter: AdapterMap
+  api: Prompt
+}
+
+export function runContext(
   db: DatabaseSync,
-  input: TaskInput,
-  now: Date,
-  randomSeed: () => number,
-  dataDir?: string,
-): TaskRow {
-  const task = required(input.task, 'task')
-  if (input.parentTaskId) taskById(db, input.parentTaskId)
-  const work = workByName(db, required(input.workName, 'workName'))
-  const workflow = workflowByName(
-    db,
-    required(input.workflowName, 'workflowName'),
-  )
-  const revision = revisionForRun(db, workflow.id, input.version)
+  workName: string,
+  workflowName: string,
+  version?: string,
+): RunContext {
+  const work = workByName(db, workName)
+  const workflow = workflowByName(db, workflowName)
+  const revision = revisionForRun(db, workflow.id, version)
   const link = linkOf(db, work.id, workflow.id)
   if (!link) throw new RunnerError('workflow is not in this work')
   const history = db
@@ -66,8 +76,30 @@ export function createTask(
   )
   if (!resolved.adapter)
     throw new RunnerError('workflow version has no adapter')
-  const adapter = resolved.adapter
-  const api = JSON.parse(revision.api_json) as Prompt
+  return {
+    work: { id: work.id, name: work.name },
+    workflow: { id: workflow.id, name: workflow.name, comfy_path: workflow.comfy_path },
+    revision,
+    adapter: resolved.adapter,
+    api: JSON.parse(revision.api_json) as Prompt,
+  }
+}
+
+export function createTask(
+  db: DatabaseSync,
+  input: TaskInput,
+  now: Date,
+  randomSeed: () => number,
+  dataDir?: string,
+): TaskRow {
+  const task = required(input.task, 'task')
+  if (input.parentTaskId) taskById(db, input.parentTaskId)
+  const { work, workflow, revision, adapter, api } = runContext(
+    db,
+    required(input.workName, 'workName'),
+    required(input.workflowName, 'workflowName'),
+    input.version,
+  )
   const payload = { ...(input.payload ?? {}) }
   if (dataDir) {
     applyCompose(api, adapter, payload, dataDir)
@@ -76,6 +108,16 @@ export function createTask(
     adapter.prompt?.compose
   ) {
     throw new RunnerError('prompt.compose requires runner dataDir')
+  }
+  // 缺省值回填：没交的槽位取工作流里的当前值，调用方只交要改的那几个 key。
+  // 与 /generate/* 的 buildPayload 同语义；seed 不回填，交给 randomSeed。
+  for (const [key, binding] of Object.entries(adapter.inputs)) {
+    if (payload[key] !== undefined || binding.input === undefined) continue
+    // seed 交给 randomSeed；带 map 的槽位（step -> lora 文件名）现值是映射后的结果，
+    // 回填后再过一遍 map 会炸，所以也不回填。
+    if (binding.input === 'seed' || binding.map) continue
+    const current = matchNode(api, binding).node.inputs[binding.input]
+    if (current !== undefined) payload[key] = current
   }
   const applied = applyAdapter(api, adapter, payload, randomSeed)
   const id = randomUUID()
