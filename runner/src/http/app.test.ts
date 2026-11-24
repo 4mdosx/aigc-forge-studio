@@ -150,15 +150,21 @@ test('commit, queue one task per instance, and record paths', async () => {
     { path: 'temp/preview.png', name: '', id: '8' },
   ])
 
-  const headRevisionId = (runner.db.prepare("SELECT head_revision_id FROM jobs WHERE id = ?").get(queued.jobId) as { head_revision_id: string }).head_revision_id
+  const headRevisionId = (
+    runner.db
+      .prepare('SELECT head_revision_id FROM jobs WHERE id = ?')
+      .get(queued.jobId) as { head_revision_id: string }
+  ).head_revision_id
   const listed = await app.request(`/revisions/${headRevisionId}/tasks`)
   assert.equal(listed.status, 200)
   const files = await app.request(`/tasks/${queued.jobId}/files/output/a.png`)
   assert.equal(files.status, 200)
+  // WHATWG URL 在构造 Request 时就把 `%2e%2e` 归一化掉了，handler 收到的是
+  // `/files/secret.png`。既然不属于这条任务的产物表，就是 404。
   const escaped = await app.request(
     `/tasks/${queued.jobId}/files/output/%2e%2e/secret.png`,
   )
-  assert.equal(escaped.status, 400)
+  assert.equal(escaped.status, 404)
 })
 
 test('a second instance runs the next pending task', async () => {
@@ -462,4 +468,103 @@ test('POST /works/:name/run takes the work head and its bound adapter', async ()
     body: JSON.stringify({ workflowName: 'nope', payload: {} }),
   })
   assert.equal(foreign.status, 404)
+})
+
+test('file list and download are self-describing: index, name, or full path all resolve', async () => {
+  const submitted: Prompt[] = []
+  let history: HistoryEntry | null = null
+  const runner = testRunner([
+    fakeClient('http://gpu-a', submitted, () => history),
+  ])
+  const app = createApp(runner)
+  await app.request('/workflows', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name: 'character-generator',
+      comfyPath: 'character-generator.json',
+    }),
+  })
+  await attach(app, 'character-generator')
+
+  const queued = queueJob(runner, 'character-generator', 'text2img', {
+    text: 'a knight',
+    seed: 'random',
+  })
+  await tick(runner)
+  history = {
+    status: { status_str: 'success', completed: true },
+    outputs: {
+      '9': {
+        images: [
+          { filename: 'a.png', subfolder: 'batch', type: 'output' },
+          { filename: 'b.png', subfolder: 'batch', type: 'output' },
+        ],
+      },
+    },
+  }
+  await tick(runner)
+
+  const detail = (await (
+    await app.request(`/tasks/${queued.jobId}`)
+  ).json()) as {
+    outputPath: string
+    outputPaths: string[]
+    filesUrl: string
+  }
+  // 老字段仍是「字符串形式的数组」，新字段是真数组
+  assert.equal(detail.outputPath, '["output/batch/a.png","output/batch/b.png"]')
+  assert.deepEqual(detail.outputPaths, [
+    'output/batch/a.png',
+    'output/batch/b.png',
+  ])
+  assert.equal(detail.filesUrl, `/tasks/${queued.jobId}/files`)
+
+  const listed = (await (await app.request(detail.filesUrl)).json()) as {
+    taskId: string
+    status: string
+    count: number
+    paths: string[]
+    files: Array<{
+      index: number
+      name: string
+      path: string
+      url: string
+      downloadUrl: string
+      contentType: string
+      cached: boolean
+    }>
+  }
+  assert.equal(listed.count, 2)
+  assert.deepEqual(listed.paths, ['output/batch/a.png', 'output/batch/b.png'])
+  assert.equal(listed.files[1]?.url, `/tasks/${queued.jobId}/files/1`)
+  assert.equal(listed.files[0]?.name, 'a.png')
+  assert.equal(listed.files[0]?.contentType, 'image/png')
+
+  // 序号 / 文件名 / 完整路径三种写法都能直接取到字节
+  for (const selector of ['1', 'b.png', 'output/batch/b.png']) {
+    const got = await app.request(`/tasks/${queued.jobId}/files/${selector}`)
+    assert.equal(got.status, 200, selector)
+    assert.equal(got.headers.get('content-type'), 'image/png')
+  }
+
+  const attachment = await app.request(
+    `/tasks/${queued.jobId}/files/0?download=1`,
+  )
+  assert.equal(attachment.status, 200)
+  assert.equal(
+    attachment.headers.get('content-disposition'),
+    'attachment; filename="a.png"',
+  )
+
+  // 第一次读过之后本地就有副本了，第二次不再依赖 ComfyUI
+  const cached = await app.request(`/tasks/${queued.jobId}/files/0`)
+  assert.equal(cached.headers.get('x-runner-source'), 'cache')
+  assert.ok(cached.headers.get('etag'))
+
+  const outOfRange = await app.request(`/tasks/${queued.jobId}/files/9`)
+  assert.equal(outOfRange.status, 404)
+  const failed = (await outOfRange.json()) as { error: string }
+  assert.match(failed.error, /no file "9"/)
+  assert.match(failed.error, /0=output\/batch\/a\.png/)
 })

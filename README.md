@@ -189,10 +189,27 @@ curl http://127.0.0.1:8787/chats/<id>
 curl -F file=@face.png -F path=jobs/face.png http://127.0.0.1:8787/files
 curl http://127.0.0.1:8787/files/jobs/face.png
 curl http://127.0.0.1:8787/tasks/<task id>/files
-curl http://127.0.0.1:8787/tasks/<task id>/files/output/a.png
+curl http://127.0.0.1:8787/tasks/<task id>/files/0
+curl "http://127.0.0.1:8787/tasks/<task id>/files/0?download=1"
 ```
 
-按 task 下载只允许这条任务已经记下的路径，并从它记录的那台实例读取。
+按 task 下载只允许这条任务已经记下的路径。清单给的是可以直接用的定位：
+
+```json
+{"taskId":"…","status":"completed","count":2,
+ "paths":["output/2026-11-24/gen-x/character_00001_.png", "…"],
+ "files":[{"index":0,"name":"character_00001_.png","path":"output/…/character_00001_.png",
+           "url":"/tasks/<id>/files/0","downloadUrl":"/tasks/<id>/files/0?download=1",
+           "contentType":"image/png","size":970657,"cached":true}]}
+```
+
+单文件支持三种写法：序号 `/files/0`、文件名 `/files/character_00001_.png`、完整路径
+`/files/output/…/character_00001_.png`。解析不到时 404，错误信息里带完整可用清单。
+
+读取顺序是「本地副本 → ComfyUI → 顺手存一份」。第一次下载会把字节写到
+`data/output/<原路径>`（与审批通过时复制的位置一致），之后推理机离线也能取到同一张图，
+响应头 `x-runner-source` 标明本次是 `cache` 还是 `comfy`。`?refresh=1` 强制回源。
+任务对象同时给出 `outputPaths`（真数组）与 `filesUrl`，`outputPath` 作为历史字段保留。
 
 ### 开发
 

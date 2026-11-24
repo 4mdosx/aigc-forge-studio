@@ -94,8 +94,12 @@ function poseThumb(pose: PoseEntry, mode: ThumbMode): { src: string; gen: number
   return { src, gen: pick.gen ?? [] }
 }
 
-function outputPaths(value: string | null | undefined): string[] {
+function outputPaths(task: { outputPath?: string | null; outputPaths?: string[] } | null | undefined): string[] {
+  if (!task) return []
+  if (Array.isArray(task.outputPaths) && task.outputPaths.length > 0) return task.outputPaths
+  const value = task.outputPath
   if (!value) return []
+  // 老字段：repeat=1 是字符串，repeat>1 是字符串化的 JSON 数组
   if (value.startsWith('[')) {
     try {
       const parsed = JSON.parse(value) as unknown
@@ -484,7 +488,7 @@ export function QuickGenerate() {
                 <span className="muted quick-gen-task-id">{task.id}</span>
                 {task.status === 'completed' ? (
                   <span className="dice-gen-thumbs">
-                    {outputPaths(task.outputPath).map((path) => (
+                    {outputPaths(task).map((path) => (
                       // eslint-disable-next-line @next/next/no-img-element
                       <ZoomImage
                         key={path}

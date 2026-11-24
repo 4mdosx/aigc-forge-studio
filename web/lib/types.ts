@@ -97,6 +97,10 @@ export interface Task {
   comfyBaseURL: string | null
   error: string | null
   outputPath: string | null
+  /** runner 给的真数组；outputPath 是历史字段（repeat>1 时是字符串化的 JSON） */
+  outputPaths?: string[]
+  /** 产物清单端点：带 index / url / size / cached */
+  filesUrl?: string | null
   process: Array<{ path: string; name: string; id: string }> | null
   createdAt: string
   startedAt: string | null

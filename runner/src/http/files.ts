@@ -4,37 +4,63 @@ import { type ComfyClient } from '../comfy/client.ts'
 import { taskById } from '../db.ts'
 import { RunnerError } from '../errors.ts'
 import { relativePath, splitRelative, viewTarget } from '../path.ts'
-import { assertStoredPath, storedPaths } from '../task/records.ts'
+import {
+  fileItems,
+  readStoredFile,
+  selectStoredPath,
+} from '../task/outputFiles.ts'
 import type { Runner } from '../task/queue.ts'
 import { bytesOf, editor, jsonObject, stringField } from './request.ts'
 
 export function mountFiles(app: Hono, runner: Runner): void {
+  // 清单：除了路径，还给出 index 定位的 url、类型、字节数、是否已缓存到本地。
+  // 请求方不需要知道 output/<date>/<task>/ 这套命名，也不需要再拼一次路径。
   app.get('/tasks/:id/files', (c) => {
     const task = taskById(runner.db, c.req.param('id'))
-    return c.json({ files: storedPaths(task) })
+    const files = fileItems(runner, task)
+    return c.json({
+      taskId: task.id,
+      status: task.status,
+      count: files.length,
+      paths: files.map((item) => item.path),
+      files,
+    })
   })
 
+  // 单文件：`/files/0`（序号）、`/files/<文件名>`、`/files/<完整 path>` 都认。
+  // ?download=1 走 attachment；?refresh=1 跳过本地副本强制回源。
   app.get('/tasks/:id/files/*', async (c) => {
     const task = taskById(runner.db, c.req.param('id'))
-    const path = relativePath(
-      c.req.path.slice(`/tasks/${task.id}/files/`.length),
-    )
-    assertStoredPath(task, path)
-    if (!task.comfy_base_url)
-      throw new RunnerError('task has no ComfyUI instance', 404)
-    const client = runner.clients.find(
-      (item) => item.baseURL === task.comfy_base_url,
-    )
-    if (!client) throw new RunnerError('task instance is not configured', 404)
-    const target = viewTarget(path)
-    const file = await client.viewFile(
-      target.type,
-      target.subfolder,
-      target.filename,
-    )
-    return c.body(bytesOf(file.bytes), 200, {
-      'content-type': file.contentType,
+    // 用原始 URL 而不是 c.req.path：后者已被规范化，`output/../x` 会提前塌成
+    // `x`，路径穿越就成了「找不到文件」。这里先还原再交给 relativePath 判非法。
+    const raw = c.req.raw.url
+    const marker = `/tasks/${task.id}/files/`
+    const at = raw.indexOf(marker)
+    const rawSelector = (at >= 0 ? raw.slice(at + marker.length) : '').split(
+      '?',
+    )[0]
+    const selector = relativePath(rawSelector ?? '')
+    const path = selectStoredPath(task, selector)
+    const file = await readStoredFile(runner, task, path, {
+      refresh: c.req.query('refresh') !== undefined,
     })
+
+    if (c.req.header('if-none-match') === file.etag) {
+      return c.body(null, 304, { etag: file.etag })
+    }
+
+    const headers: Record<string, string> = {
+      'content-type': file.contentType,
+      'cache-control': 'private, max-age=0, must-revalidate',
+      etag: file.etag,
+      // cache=本地副本 / comfy=本次从推理机取的（同时已落盘）
+      'x-runner-source': file.cached ? 'cache' : 'comfy',
+    }
+    if (c.req.query('download') !== undefined) {
+      const name = (path.split('/').pop() ?? 'download').replace(/["\\]/g, '_')
+      headers['content-disposition'] = `attachment; filename="${name}"`
+    }
+    return c.body(bytesOf(file.bytes), 200, headers)
   })
 
   app.get('/files', async (c) => {
@@ -70,8 +96,7 @@ export function mountFiles(app: Hono, runner: Runner): void {
       throw new RunnerError('paths must be a non-empty array')
     }
     if (paths.length > 16) throw new RunnerError('too many paths')
-    const kind =
-      body.kind === undefined ? 'misc' : stringField(body, 'kind')
+    const kind = body.kind === undefined ? 'misc' : stringField(body, 'kind')
     if (!/^[a-z][a-z0-9_-]*$/i.test(kind)) {
       throw new RunnerError('kind must be a simple name (letters/digits/-/_)')
     }

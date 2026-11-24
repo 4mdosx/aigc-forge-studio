@@ -195,15 +195,28 @@ async function taskWithFiles(id) {
   if (task.status === 'completed') {
     try {
       const listed = await api(`/tasks/${enc(id)}/files`)
-      files = (listed.files ?? []).map((path) => ({
-        path,
-        url: `${RUNNER}/tasks/${id}/files/${path}`,
+      // runner 现在直接给序号 url（/tasks/<id>/files/0），这里只补成绝对地址。
+      // 顺带保留完整 path，方便要和磁盘布局对齐的场景。
+      files = (listed.files ?? []).map((item) => ({
+        index: item.index,
+        name: item.name,
+        path: item.path,
+        url: `${RUNNER}${item.url}`,
+        downloadUrl: `${RUNNER}${item.downloadUrl}`,
+        contentType: item.contentType,
+        size: item.size,
+        cached: item.cached,
       }))
     } catch {
       // 产物文件表在个别旧任务上缺失，不该让查询失败
     }
   }
-  return { ...task, files }
+  return {
+    ...task,
+    outputPaths: task.outputPaths ?? [],
+    filesUrl: task.filesUrl ? `${RUNNER}${task.filesUrl}` : null,
+    files,
+  }
 }
 
 // ---------------------------------------------------------------- 工具定义
@@ -629,6 +642,7 @@ const TOOLS = [
           status: task.status,
           error: task.error ?? null,
           outputPath: task.outputPath ?? null,
+          outputPaths: task.outputPaths ?? [],
           files: task.files ?? [],
           elapsedMs:
             task.completedAt && task.createdAt

@@ -8,7 +8,10 @@ import { ZoomImage } from './zoom-image'
 import { fail, messageOf } from '@/lib/notify'
 import { terminal, type Task } from '@/lib/types'
 
-function outputPaths(value: string | null | undefined): string[] {
+function outputPaths(task: { outputPath?: string | null; outputPaths?: string[] } | null | undefined): string[] {
+  if (!task) return []
+  if (Array.isArray(task.outputPaths) && task.outputPaths.length > 0) return task.outputPaths
+  const value = task.outputPath
   if (!value) return []
   if (value.startsWith('[')) {
     try {
@@ -70,7 +73,7 @@ export function TaskDetail({ id, embedded = false }: { id: string; embedded?: bo
 
   const paths = [
     ...new Set([
-      ...outputPaths(task?.outputPath),
+      ...outputPaths(task),
       ...(task?.process?.map((item) => item.path) ?? []),
     ]),
   ]

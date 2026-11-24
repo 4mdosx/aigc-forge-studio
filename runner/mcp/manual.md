@@ -56,8 +56,16 @@ workflow 有版本（8 位 id）和分支，**默认永远跑 main head**。`ver
 
 任务终态（completed / failed / cancelled / timeout）后：
 
-- `get_task(id)` 返回 `outputPath`（ComfyUI 侧的 output/... 路径）和 `files`（同目录全部文件）。
-- 下载 URL 形如 `{{RUNNER}}/tasks/<id>/files/output/2026-11-24/<task>/xxx_00001_.png`。
+- `get_task(id)` 返回 `outputPaths`（数组，这次产出的全部文件）、`filesUrl`（清单端点）和
+  `files`（每条带 `index` / `path` / `url` / `downloadUrl` / `size` / `cached`）。
+  **直接用 `files[i].url`，别自己拼路径。** `outputPath` 是历史字段：repeat>1 时它是
+  字符串化的 JSON 数组，parse 起来容易翻车。
+- 下载 URL 三种写法等价：`{{RUNNER}}/tasks/<id>/files/0`（序号）、`.../files/xxx_00001_.png`
+  （文件名）、`.../files/output/2026-11-24/<task>/xxx_00001_.png`（完整路径）。
+  加 `?download=1` 变成附件下载；加 `?refresh=1` 跳过本地副本强制回源。
+- 第一次下载会把字节缓存到 runner 本地 `data/output/<原路径>`，之后推理机重启或清缓存
+  都还能取到同一张图（响应头 `x-runner-source: cache`）。要判断某张图是否已缓存，
+  看清单里的 `cached` —— 列表返回 `size` 为 null 就说明还没拉过本地副本。
 - `list_outputs` 是「最近出过什么图」的画廊视图，`trace_output(path)` 能从一张图反查
   是哪个任务、什么 payload 产出的（做重绘时拿素材段用）。
 

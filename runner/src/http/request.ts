@@ -5,6 +5,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { ComfyClient } from '../comfy/client.ts'
 import { isVersionId, type TaskRow } from '../db.ts'
 import { RunnerError } from '../errors.ts'
+import { storedPaths } from '../task/records.ts'
 import type { Runner } from '../task/queue.ts'
 
 export function editor(runner: Runner): ComfyClient {
@@ -48,7 +49,11 @@ export function taskJson(
     promptId: task.prompt_id,
     comfyBaseURL: task.comfy_base_url,
     error: task.error,
+    // outputPath 是历史字段：repeat=1 时是字符串，repeat>1 时是「字符串形式的 JSON 数组」。
+    // 新代码一律读 outputPaths（真正的数组）；下载地址见 filesUrl。
     outputPath: task.output_path,
+    outputPaths: storedPaths(task),
+    filesUrl: `/tasks/${task.id}/files`,
     process: task.process_json
       ? (JSON.parse(task.process_json) as unknown)
       : null,
