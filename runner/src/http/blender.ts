@@ -1,14 +1,17 @@
 import type { Hono } from 'hono'
 import { join } from 'node:path'
 
-import type { BlenderRuntime } from '../blender/runtime.ts'
+import { createTools } from '../blender/mcp-tools.ts'
+import { runPlugin } from '../blender/plugin-exec.ts'
 import {
   listPlugins,
   listSceneTemplates,
   readEntryCode,
   readManifest,
   readSources,
+  resolveEntryPath,
 } from '../blender/plugins.ts'
+import type { BlenderRuntime } from '../blender/runtime.ts'
 import {
   finishRun,
   getRun,
@@ -81,19 +84,21 @@ export function mountBlender(app: Hono, blender: BlenderRuntime): void {
       variables,
       repoRoot,
     })
-    const code = buildCode({
-      source: readEntryCode(blender.dataDir, pluginId),
-      entry: manifest.entry,
-      variables,
-      run: record,
-      scene,
-      templatePath: scene
-        ? listSceneTemplates(blender.dataDir).find((item) => item.name === scene)?.file
-        : undefined,
-      dataDir: blender.dataDir,
-    })
+    const template = scene
+      ? listSceneTemplates(blender.dataDir).find((item) => item.name === scene)
+      : undefined
     try {
-      const log = await blender.execute(code)
+      const mcp = createTools(blender)
+      if (template) await mcp.scene.open(join(blender.dataDir, 'scenes', template.file))
+      if (scene && !template) await mcp.scene.select(scene)
+      const log = await runPlugin(resolveEntryPath(blender.dataDir, pluginId), {
+        vars: variables,
+        scene,
+        runId: record.id,
+        pluginId,
+        outputDir: join(blender.dataDir, 'runs', record.id, 'output'),
+        mcp,
+      })
       return c.json(finishRun(blender.dataDir, record.id, { status: 'ok', log }))
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -148,47 +153,4 @@ function normalizeVariables(
     result[key] = value
   }
   return result
-}
-
-function b64(text: string): string {
-  return Buffer.from(text, 'utf8').toString('base64')
-}
-
-interface BuildInput {
-  source: string
-  entry: string
-  variables: Record<string, unknown>
-  run: { id: string; outputDir: string; pluginId: string; scene: string | null }
-  scene: string | null
-  templatePath?: string
-  dataDir: string
-}
-
-function buildCode(input: BuildInput): string {
-  const vars = b64(JSON.stringify(input.variables))
-  const ctx = b64(
-    JSON.stringify({
-      runId: input.run.id,
-      pluginId: input.run.pluginId,
-      scene: input.scene,
-      outputDir: join(input.dataDir, 'runs', input.run.id, 'output'),
-    }),
-  )
-  const source = b64(input.source)
-  const template = input.templatePath
-    ? b64(join(input.dataDir, 'scenes', input.templatePath))
-    : null
-  const scene = input.scene && !input.templatePath ? b64(input.scene) : null
-  return `import base64, json, os, bpy
-def _decode(value):
-    return base64.b64decode(value).decode('utf-8')
-VARS = json.loads(_decode('${vars}'))
-CTX = json.loads(_decode('${ctx}'))
-${template ? `bpy.ops.wm.open_mainfile(filepath=_decode('${template}'))` : ''}
-${scene ? `scene_name = _decode('${scene}')
-if scene_name not in bpy.data.scenes:
-    raise RuntimeError('scene not found: ' + scene_name)
-bpy.context.window.scene = bpy.data.scenes[scene_name]` : ''}
-exec(compile(_decode('${source}'), '${input.entry.replaceAll("'", "")}', 'exec'), globals())
-`
 }

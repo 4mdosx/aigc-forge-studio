@@ -21,6 +21,7 @@ export interface BlenderStatus {
 export interface BlenderRuntime {
   readonly dataDir: string
   readonly config: BlenderConfig
+  callTool(name: string, args?: Record<string, unknown>): Promise<unknown>
   execute(code: string): Promise<string>
   status(): Promise<BlenderStatus>
   close(): Promise<void>
@@ -90,7 +91,10 @@ export function createBlenderRuntime(
     return result
   }
 
-  async function execute(code: string): Promise<string> {
+  async function callTool(
+    name: string,
+    args: Record<string, unknown> = {},
+  ): Promise<unknown> {
     return serialize(async () => {
       const current = await connect()
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -101,21 +105,10 @@ export function createBlenderRuntime(
         )
       })
       try {
-        const result = await Promise.race([
-          current.callTool({
-            name: 'execute_blender_code',
-            arguments: { code, user_prompt: 'aigc-runner plugin execution' },
-          }),
+        return await Promise.race([
+          current.callTool({ name, arguments: args }),
           timeout,
         ])
-        const text = textOf(result.content)
-        // blender-mcp 的 execute_blender_code 把异常吞成普通文本返回，isError 仍是 false。
-        // 不认这层，工作台会把「连不上 Blender」显示成「已连接但没 Scene」。
-        if (result.isError || /^(Error executing code|Error:)/.test(text.trim())) {
-          await drop()
-          throw new RunnerError(`Blender 执行失败：${text.trim()}`, 500)
-        }
-        return text
       } catch (err) {
         if (err instanceof RunnerError) {
           if (err.status === 504) await drop()
@@ -123,7 +116,7 @@ export function createBlenderRuntime(
         }
         await drop()
         throw new RunnerError(
-          `Blender 执行失败：${err instanceof Error ? err.message : String(err)}`,
+          `Blender 工具 ${name} 调用失败：${err instanceof Error ? err.message : String(err)}`,
           502,
         )
       } finally {
@@ -132,9 +125,25 @@ export function createBlenderRuntime(
     })
   }
 
+  async function execute(code: string): Promise<string> {
+    const result = await callTool('execute_blender_code', {
+      code,
+      user_prompt: 'aigc-runner plugin execution',
+    })
+    const value = result as { content?: unknown; isError?: boolean }
+    const text = textOf(value.content)
+    // blender-mcp 的 execute_blender_code 把异常吞成普通文本返回，isError 仍是 false。
+    // 不认这层，工作台会把「连不上 Blender」显示成「已连接但没 Scene」。
+    if (value.isError || /^(Error executing code|Error:)/.test(text.trim())) {
+      throw new RunnerError(`Blender 执行失败：${text.trim()}`, 500)
+    }
+    return text
+  }
+
   return {
     dataDir: resolve(repoRoot, config.dataDir),
     config,
+    callTool,
     execute,
     async status(): Promise<BlenderStatus> {
       const code = `import bpy, json

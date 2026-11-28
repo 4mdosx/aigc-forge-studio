@@ -9,7 +9,20 @@ import type { BlenderRuntime, BlenderStatus } from '../blender/runtime.ts'
 import { RunnerError } from '../errors.ts'
 import { mountBlender } from './blender.ts'
 
-function fixture(): { dataDir: string; app: Hono; codes: string[] } {
+const SOURCE = `export async function run(ctx) {
+  ctx.log('vars=' + JSON.stringify(ctx.vars))
+  await ctx.mcp.objects.boxes([
+    { name: 'Probe_1', location: [0, 0, 0], size: [1, 1, 1] }
+  ])
+}
+`
+
+interface ToolCall {
+  name: string
+  args: Record<string, unknown>
+}
+
+function fixture(): { dataDir: string; app: Hono; calls: ToolCall[] } {
   const dataDir = mkdtempSync(join(tmpdir(), 'aigc-blender-'))
   const plugin = join(dataDir, 'plugins', 'probe')
   mkdirSync(join(plugin, 'scripts'), { recursive: true })
@@ -20,8 +33,8 @@ function fixture(): { dataDir: string; app: Hono; codes: string[] } {
       id: 'probe',
       name: 'Probe',
       description: 'test plugin',
-      entry: 'scripts/main.py',
-      files: ['scripts/main.py'],
+      entry: 'scripts/main.ts',
+      files: ['scripts/main.ts'],
       variables: {
         count: { type: 'number', label: 'Count', default: 2, min: 1, max: 5 },
         enabled: { type: 'boolean', default: true },
@@ -29,9 +42,9 @@ function fixture(): { dataDir: string; app: Hono; codes: string[] } {
       },
     }),
   )
-  writeFileSync(join(plugin, 'scripts', 'main.py'), 'print(VARS)\n')
+  writeFileSync(join(plugin, 'scripts', 'main.ts'), SOURCE)
   writeFileSync(join(dataDir, 'scenes', 'template.blend'), 'stub')
-  const codes: string[] = []
+  const calls: ToolCall[] = []
   const status: BlenderStatus = {
     connected: true,
     scenes: [
@@ -50,10 +63,14 @@ function fixture(): { dataDir: string; app: Hono; codes: string[] } {
       env: {},
       timeout: 10,
     },
-    execute: async (code) => {
-      codes.push(code)
-      return 'Code executed successfully: done\n'
+    callTool: async (name, args = {}) => {
+      calls.push({ name, args })
+      return {
+        content: [{ type: 'text', text: 'Code executed successfully: done\n' }],
+        isError: false,
+      }
     },
+    execute: async () => 'Code executed successfully: done\n',
     status: async () => status,
     close: async () => undefined,
   }
@@ -65,10 +82,10 @@ function fixture(): { dataDir: string; app: Hono; codes: string[] } {
     ),
   )
   mountBlender(app, fake)
-  return { dataDir, app, codes }
+  return { dataDir, app, calls }
 }
 
-test('lists plugins and reads source', async () => {
+test('lists plugins and reads TypeScript source', async () => {
   const { app } = fixture()
   const listed = (await (await app.request('/blender/plugins')).json()) as {
     plugins: Array<{ id: string }>
@@ -80,7 +97,8 @@ test('lists plugins and reads source', async () => {
   const detail = (await (await app.request('/blender/plugins/probe')).json()) as {
     sources: Array<{ path: string; content: string }>
   }
-  assert.equal(detail.sources[0]?.content, 'print(VARS)\n')
+  assert.equal(detail.sources[0]?.path, 'scripts/main.ts')
+  assert.equal(detail.sources[0]?.content, SOURCE)
 })
 
 test('merges live scenes with .blend templates', async () => {
@@ -99,8 +117,8 @@ test('merges live scenes with .blend templates', async () => {
   )
 })
 
-test('runs with injected variables and records the run', async () => {
-  const { app, codes, dataDir } = fixture()
+test('runs a TypeScript plugin through MCP and records the run', async () => {
+  const { app, calls, dataDir } = fixture()
   const response = await app.request('/blender/run', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -115,11 +133,16 @@ test('runs with injected variables and records the run', async () => {
     id: string
     status: string
     variables: Record<string, unknown>
+    log: string
   }
   assert.equal(run.status, 'ok')
   assert.deepEqual(run.variables, { count: 4, enabled: true, label: 'wing' })
-  assert.match(codes[0] ?? '', /VARS = json\.loads/)
-  assert.match(codes[0] ?? '', /bpy\.context\.window\.scene/)
+  assert.match(run.log, /"count":4/)
+  assert.ok(calls.some((item) => item.name === 'execute_blender_code'))
+  assert.ok(
+    calls.some((item) => /scene not found/.test(String(item.args.code))),
+    'scene selection should go through MCP',
+  )
   const stored = JSON.parse(
     readFileSync(join(dataDir, 'runs', run.id, 'run.json'), 'utf8'),
   ) as { status: string }

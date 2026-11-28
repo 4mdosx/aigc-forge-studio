@@ -89,14 +89,12 @@ Desktop.ini
 # ========================================
 /node_modules/
 /runner/node_modules/
-/web/sd/node_modules/
-/web/blender/node_modules/
+/web/node_modules/
 /trainer/node_modules/
 /trainer/data/
-/web/sd/.next/
-/web/blender/.next/
-/web/sd/tsconfig.tsbuildinfo
-/web/blender/tsconfig.tsbuildinfo
+/web/.next/
+/web/tsconfig.tsbuildinfo
+/web/data/
 /runner/runner.sqlite
 
 # ========================================

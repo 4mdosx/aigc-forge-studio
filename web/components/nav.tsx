@@ -13,6 +13,7 @@ export function Nav() {
   const dice = path.startsWith('/dice')
   const library = path.startsWith('/library') || path.startsWith('/workflows')
   const settings = path.startsWith('/settings')
+  const blender = path.startsWith('/blender')
   return (
     <nav>
       <Link className={home ? 'active' : ''} href="/">
@@ -38,6 +39,9 @@ export function Nav() {
       </Link>
       <Link className={settings ? 'active' : ''} href="/settings">
         设置
+      </Link>
+      <Link className={blender ? 'active' : ''} href="/blender">
+        Blender
       </Link>
     </nav>
   )

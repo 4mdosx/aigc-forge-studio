@@ -2,14 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { ApiError, runnerApi } from '@/lib/api'
+import { ApiError, runnerApi } from '@/blender/lib/api'
 import type {
   PluginDetail,
   PluginSummary,
   RunRecord,
   ScenesPayload,
   StatusPayload,
-} from '@/lib/types'
+} from '@/blender/lib/types'
+
+import styles from './blender-workbench.module.css'
 
 export function BlenderWorkbench() {
   const [status, setStatus] = useState<StatusPayload | null>(null)
@@ -102,37 +104,47 @@ export function BlenderWorkbench() {
   }
 
   return (
-    <main className="shell">
-      <header className="top">
-        <a className="brand" href="http://127.0.0.1:3000">
+    <main className={styles.shell}>
+      <header className={styles.top}>
+        <a className={styles.brand} href="/">
           GOF <small>Blender Workbench</small>
         </a>
-        <span className={status?.connected ? 'status' : 'status off'}>
+        <span
+          className={
+            status?.connected
+              ? styles.status
+              : `${styles.status} ${styles.off}`
+          }
+        >
           {status?.connected
             ? `Blender 已连接 · ${status.activeScene ?? '无 Scene'}`
             : 'Blender 未连接'}
         </span>
-        <button className="quiet" onClick={() => void refreshMeta()}>
+        <button className={styles.quiet} onClick={() => void refreshMeta()}>
           刷新
         </button>
-        <span className="hint">源码在 data/blender-plugin，工作台只读</span>
+        <span className={styles.hint}>源码在 data/blender-plugin，工作台只读</span>
       </header>
 
-      {error && <p className="error">{error}</p>}
-      {status?.error && <p className="error">{status.error}</p>}
+      {error && <p className={styles.error}>{error}</p>}
+      {status?.error && <p className={styles.error}>{status.error}</p>}
 
-      <div className="layout">
-        <section className="panel">
-          <div className="panel-head">
+      <div className={styles.layout}>
+        <section className={styles.panel}>
+          <div className={styles.panelHead}>
             <h2>Plugins</h2>
-            <span className="count">{plugins.length}</span>
+            <span className={styles.count}>{plugins.length}</span>
           </div>
-          <div className="panel-body">
-            {plugins.length === 0 && <p className="empty">未发现插件</p>}
+          <div className={styles.panelBody}>
+            {plugins.length === 0 && <p className={styles.empty}>未发现插件</p>}
             {plugins.map((item) => (
               <button
                 key={item.id}
-                className={item.id === activeId ? 'item active' : 'item'}
+                className={
+                  item.id === activeId
+                    ? `${styles.item} ${styles.active}`
+                    : styles.item
+                }
                 onClick={() => setActiveId(item.id)}
               >
                 {item.name}
@@ -142,14 +154,18 @@ export function BlenderWorkbench() {
           </div>
         </section>
 
-        <section className="panel">
-          <div className="panel-head">
+        <section className={styles.panel}>
+          <div className={styles.panelHead}>
             <h2>Code</h2>
-            <div className="tabs">
+            <div className={styles.tabs}>
               {detail?.sources.map((item) => (
                 <button
                   key={item.path}
-                  className={item.path === activeFile ? 'tab active' : 'tab'}
+                  className={
+                    item.path === activeFile
+                      ? `${styles.tab} ${styles.active}`
+                      : styles.tab
+                  }
                   onClick={() => setActiveFile(item.path)}
                 >
                   {item.path.split('/').at(-1)}
@@ -157,25 +173,25 @@ export function BlenderWorkbench() {
               ))}
             </div>
           </div>
-          <pre className="code">
+          <pre className={styles.code}>
             {activeSource
               ? activeSource.content.split('\n').map((line, index) => (
-                  <div className="line" key={index}>
-                    <span className="num">{index + 1}</span>
-                    <span className="src">{line}</span>
+                  <div className={styles.line} key={index}>
+                    <span className={styles.num}>{index + 1}</span>
+                    <span className={styles.src}>{line}</span>
                   </div>
                 ))
               : '// 选择插件查看源码'}
           </pre>
         </section>
 
-        <section className="panel inspector">
-          <div className="panel-head">
+        <section className={`${styles.panel} ${styles.inspector}`}>
+          <div className={styles.panelHead}>
             <h2>Run</h2>
-            {detail && <span className="count">{detail.manifest.entry}</span>}
+            {detail && <span className={styles.count}>{detail.manifest.entry}</span>}
           </div>
-          <div className="panel-body">
-            <div className="field">
+          <div className={styles.panelBody}>
+            <div className={styles.field}>
               <label>
                 <span>Scene</span>
                 <span>{scenes?.filepath || '当前 .blend'}</span>
@@ -197,13 +213,13 @@ export function BlenderWorkbench() {
             </div>
 
             {Object.entries(detail?.manifest.variables ?? {}).map(([key, spec]) => (
-              <div className="field" key={key}>
+              <div className={styles.field} key={key}>
                 <label>
                   <span>{spec.label ?? key}</span>
                   <span>{spec.type}</span>
                 </label>
                 {spec.type === 'boolean' ? (
-                  <div className="checkbox">
+                  <div className={styles.checkbox}>
                     <input
                       type="checkbox"
                       checked={values[key] === true}
@@ -246,7 +262,7 @@ export function BlenderWorkbench() {
             ))}
 
             <button
-              className="primary"
+              className={styles.primary}
               disabled={!activeId || busy || !status?.connected}
               onClick={() => void run()}
             >
@@ -255,10 +271,10 @@ export function BlenderWorkbench() {
 
             {currentRun && (
               <>
-                <p className="run-meta">
+                <p className={styles.runMeta}>
                   {currentRun.id} · {currentRun.status}
                 </p>
-                <pre className="log">
+                <pre className={styles.log}>
                   {currentRun.error ?? currentRun.log ?? '（无输出）'}
                 </pre>
               </>
@@ -266,13 +282,13 @@ export function BlenderWorkbench() {
 
             {runs.length > 0 && (
               <>
-                <div className="panel-head" style={{ padding: '0.8rem 0 0.3rem' }}>
+                <div className={styles.panelHead} style={{ padding: '0.8rem 0 0.3rem' }}>
                   <h2>Recent runs</h2>
                 </div>
                 {runs.map((item) => (
                   <button
                     key={item.id}
-                    className="item"
+                    className={styles.item}
                     onClick={() => setCurrentRun(item)}
                   >
                     {item.id}

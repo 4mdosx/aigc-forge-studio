@@ -134,6 +134,11 @@ export function readSources(dataDir: string, id: string): SourceFile[] {
   return result
 }
 
+export function resolveEntryPath(dataDir: string, id: string): string {
+  const manifest = readManifest(dataDir, id)
+  return safePath(pluginDir(dataDir, id), manifest.entry)
+}
+
 export function readEntryCode(dataDir: string, id: string): string {
   const manifest = readManifest(dataDir, id)
   const path = safePath(pluginDir(dataDir, id), manifest.entry)

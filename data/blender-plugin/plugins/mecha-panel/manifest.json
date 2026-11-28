@@ -1,10 +1,10 @@
 {
   "id": "mecha-panel",
   "name": "机甲面板生成器",
-  "description": "在 Blender 当前 Scene 里按参数生成一组可编辑的机械面板。源码在工作台只读，改动请直接编辑 scripts/main.py。",
-  "entry": "scripts/main.py",
+  "description": "在 Blender 当前 Scene 里按参数生成一组可编辑的机械面板。源码在工作台只读，改动请直接编辑 scripts/main.ts。",
+  "entry": "scripts/main.ts",
   "files": [
-    "scripts/main.py"
+    "scripts/main.ts"
   ],
   "variables": {
     "count": {
