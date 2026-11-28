@@ -21,9 +21,11 @@ const root = dirname(fileURLToPath(import.meta.url))
 const execFileAsync = promisify(execFile)
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 const webPort = 3000
+const blenderWebPort = 3001
 const tags = {
   runner: ['bold', 'cyan'],
   web: ['bold', 'magenta'],
+  blender: ['bold', 'blue'],
   critic: ['bold', 'yellow'],
 }
 
@@ -77,22 +79,30 @@ async function main() {
       label: serviceLabel('runner+web', `${browseHost(runner.host)}:${runner.port} · ${webPort}`),
     },
     {
+      value: 'blender-web',
+      label: serviceLabel('blender-web', `127.0.0.1:${blenderWebPort}`),
+    },
+    {
       value: 'critic',
       label: serviceLabel('critic', `${critic.host}:${critic.port}`),
     },
   ])
 
   const ids = new Set(selected)
+  // Blender 工作台要通过 runner 代理调 MCP，选了它就必须带 runner+web。
+  if (ids.has('blender-web')) ids.add('runner+web')
   const background = mode !== 'dev'
   const script = mode === 'deploy' ? 'start' : 'dev'
   let runnerCwd = ''
   let webCwd = ''
+  let blenderWebCwd = ''
   let python = ''
   try {
     if (ids.has('runner+web')) {
       runnerCwd = nodeApp('runner')
-      webCwd = nodeApp('web')
+      webCwd = nodeApp('web/sd')
     }
+    if (ids.has('blender-web')) blenderWebCwd = nodeApp('web/blender')
     if (ids.has('critic')) python = pythonBin()
   } catch (err) {
     log.error(err instanceof Error ? err.message : String(err))
@@ -103,6 +113,8 @@ async function main() {
     log.step('构建 web')
     try {
       await runOnce('web', npm, ['run', 'build'], webCwd)
+      if (ids.has('blender-web'))
+        await runOnce('blender', npm, ['run', 'build'], blenderWebCwd)
     } catch (err) {
       log.error(err instanceof Error ? err.message : String(err))
       stop(1)
@@ -116,6 +128,9 @@ async function main() {
     lines.push(`runner  http://${browseHost(runner.host)}:${runner.port}`)
     lines.push(`web     http://127.0.0.1:${webPort}`)
   }
+  if (ids.has('blender-web')) {
+    lines.push(`blender http://127.0.0.1:${blenderWebPort}`)
+  }
   if (ids.has('critic')) {
     lines.push(`critic  http://${critic.host}:${critic.port}`)
   }
@@ -127,6 +142,7 @@ async function main() {
       await freePort('runner', runner.port)
       await freePort('web', webPort)
     }
+    if (ids.has('blender-web')) await freePort('blender', blenderWebPort)
     if (ids.has('critic')) await freePort('critic', critic.port)
   } catch (err) {
     log.error(err instanceof Error ? err.message : String(err))
@@ -138,6 +154,9 @@ async function main() {
     start('runner', npm, ['run', script], runnerCwd)
     start('web', npm, ['run', script], webCwd)
   }
+  if (ids.has('blender-web')) {
+    start('blender', npm, ['run', script], blenderWebCwd)
+  }
   if (ids.has('critic')) {
     start('critic', python, [
       join(root, 'critic', 'server.py'),
@@ -147,8 +166,14 @@ async function main() {
   }
 
   if (background) {
-    const logs = ['runner', 'web', 'critic']
-      .filter((name) => name === 'critic' ? ids.has('critic') : ids.has('runner+web'))
+    const logs = ['runner', 'web', 'blender', 'critic']
+      .filter((name) =>
+        name === 'critic'
+          ? ids.has('critic')
+          : name === 'blender'
+            ? ids.has('blender-web')
+            : ids.has('runner+web'),
+      )
       .map((name) => join(root, 'data', 'logs', `cli-${name}.log`))
     log.message(logs.join('\n'))
     process.exit(0)
@@ -164,6 +189,7 @@ async function stopServices() {
   const targets = [
     ['runner', runner.port],
     ['web', webPort],
+    ['blender', blenderWebPort],
     ['critic', critic.port],
   ]
   let stopped = 0

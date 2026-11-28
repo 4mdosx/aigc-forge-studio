@@ -3,6 +3,14 @@ import { dirname, join, resolve } from 'node:path'
 
 import { RunnerError } from './errors.ts'
 
+export interface BlenderConfig {
+  dataDir: string
+  command: string
+  args: string[]
+  env: Record<string, string>
+  timeout: number
+}
+
 export interface AppConfig {
   comfyui: {
     baseURL: string
@@ -17,6 +25,7 @@ export interface AppConfig {
     db: string
     dataDir: string
   }
+  blender: BlenderConfig | null
 }
 
 export function loadConfig(path: string): AppConfig {
@@ -53,7 +62,63 @@ export function loadConfig(path: string): AppConfig {
       db: dbOf(runner),
       dataDir: dataDirOf(runner),
     },
+    blender: blenderOf(raw, path),
   }
+}
+
+// blender 段是可选的：没配就不挂 Blender 路由，工作台上显示「未配置」。
+function blenderOf(raw: object, path: string): BlenderConfig | null {
+  const value = (raw as Record<string, unknown>).blender
+  if (value === undefined || value === null) return null
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RunnerError(`blender must be an object in ${path}`)
+  }
+  const sectionValue = value as Record<string, unknown>
+  const mcpRaw = sectionValue.mcp
+  let command = 'uvx'
+  let args = ['--python', '3.11', 'blender-mcp']
+  let env: Record<string, string> = {}
+  if (mcpRaw !== undefined) {
+    if (!mcpRaw || typeof mcpRaw !== 'object' || Array.isArray(mcpRaw)) {
+      throw new RunnerError(`blender.mcp must be an object in ${path}`)
+    }
+    const mcp = mcpRaw as Record<string, unknown>
+    if (mcp.command !== undefined) {
+      if (typeof mcp.command !== 'string' || mcp.command.trim() === '') {
+        throw new RunnerError(`blender.mcp.command must be a string in ${path}`)
+      }
+      command = mcp.command.trim()
+    }
+    if (mcp.args !== undefined) {
+      if (!Array.isArray(mcp.args) || mcp.args.some((x) => typeof x !== 'string')) {
+        throw new RunnerError(`blender.mcp.args must be string[] in ${path}`)
+      }
+      args = mcp.args as string[]
+    }
+    if (mcp.env !== undefined) {
+      if (!mcp.env || typeof mcp.env !== 'object' || Array.isArray(mcp.env)) {
+        throw new RunnerError(`blender.mcp.env must be an object in ${path}`)
+      }
+      env = {}
+      for (const [key, item] of Object.entries(mcp.env)) {
+        if (typeof item !== 'string') {
+          throw new RunnerError(`blender.mcp.env.${key} must be a string in ${path}`)
+        }
+        env[key] = item
+      }
+    }
+  }
+  const dataDir =
+    typeof sectionValue.dataDir === 'string' && sectionValue.dataDir.trim() !== ''
+      ? sectionValue.dataDir.trim()
+      : 'data/blender-plugin'
+  const timeout =
+    typeof sectionValue.timeout === 'number' &&
+    Number.isInteger(sectionValue.timeout) &&
+    sectionValue.timeout > 0
+      ? sectionValue.timeout
+      : 120
+  return { dataDir, command, args, env, timeout }
 }
 
 export function findRepoRoot(starts: string[]): string {

@@ -39,6 +39,11 @@
 # 机设配方库是元信息（不含图），跟采集元信息同理进版本库
 !/data/mech/*/style-anchor/*.json
 !/data/capture/
+# Blender 插件真相源：manifest 与脚本进版本库，运行产物与 .blend 二进制不进
+!/data/blender-plugin/
+/data/blender-plugin/runs/*
+!/data/blender-plugin/runs/.gitkeep
+/data/blender-plugin/scenes/*.blend
 # 机设配方库是元信息（不含图），跟采集元信息同理进版本库
 !/data/mech/*/style-anchor/*.tsv
 
@@ -84,11 +89,14 @@ Desktop.ini
 # ========================================
 /node_modules/
 /runner/node_modules/
-/web/node_modules/
+/web/sd/node_modules/
+/web/blender/node_modules/
 /trainer/node_modules/
 /trainer/data/
-/web/.next/
-/web/tsconfig.tsbuildinfo
+/web/sd/.next/
+/web/blender/.next/
+/web/sd/tsconfig.tsbuildinfo
+/web/blender/tsconfig.tsbuildinfo
 /runner/runner.sqlite
 
 # ========================================

@@ -17,7 +17,9 @@ Windows GPU 上的 ComfyUI，加上一个从外部提交工作流的 Runner。
 | `runtime/comfyui-prod` | ComfyUI 本体和虚拟环境，不进版本库 |
 | `models/` | 共享权重，不进版本库 |
 | `runner/src/` | HTTP 服务。`http` 是接口，`workflow` 是版本，`task` 是出图队列，`chat` 是提示词对话，`comfy` 是 ComfyUI 客户端 |
-| `web/` | Next.js 界面，通过 Runner 的 HTTP 接口操作 |
+| `web/sd/` | 生图工作台（Next.js），通过 Runner 的 HTTP 接口操作 |
+| `web/blender/` | Blender 插件工作台（Next.js），查看插件源码、选 Scene、注入变量、运行 |
+| `data/blender-plugin/` | Blender 插件真相源：manifest、Python 源码、Scene 模板、运行记录 |
 | `data/` | Runner 的数据库和日志，不进版本库 |
 | `datasets/` | 训练数据集。启动 ComfyUI 时作为数据集节点的默认目录 |
 | `user/default/workflows/` | ComfyUI 自己的界面图，Runner 只通过 `/userdata` 读写 |
@@ -257,16 +259,25 @@ node mcp/selftest.mjs  # 不连 GPU 的自检：列工具 + 调只读工具
 
 ## Web
 
-界面在 `web/`，请求由 Next.js 转到 Runner，浏览器不直连 `8787`。
+界面分成两个独立 Next.js 工作台，请求由 Next.js 转到 Runner，浏览器不直连 `8787`。根目录 `cli.js` 已按新目录启动 `web/sd`。
 
 ```bash
-cd web
-npm install
-npm run dev
+cd web/sd && npm install && npm run dev      # 生图，:3000
+cd web/blender && npm install && npm run dev # Blender 插件，:3001
 ```
 
-默认打开 `http://127.0.0.1:3000`。Runner 地址用环境变量 `RUNNER_URL`，默认 `http://127.0.0.1:8787`。
+Runner 地址用环境变量 `RUNNER_URL`，默认 `http://127.0.0.1:8787`。`cli.js` 的服务菜单里勾 `blender-web` 会一起启动 Blender 工作台（自动带上 runner+web）。
 
-首次打开界面会设置 4 位 PIN。解锁后的会话到当天结束，次日需要再输入。PIN 的散列存在 `data/web-auth.json`，这个文件不进版本库。设置页可以更新 PIN 或退出。忘记 PIN 时，在 `web/` 执行 `npm run clear-pin` 后重新设置。连续输错会指数退避，最长锁定 24 小时；重启 Web 进程会清掉这次锁定。浏览器入口受 PIN 保护，Runner 的 `8787` 仍按原来的地址直接访问。
+首次打开界面会设置 4 位 PIN。解锁后的会话到当天结束，次日需要再输入。PIN 的散列存在 `data/web-auth.json`，这个文件不进版本库。设置页可以更新 PIN 或退出。忘记 PIN 时，在 `web/sd/` 执行 `npm run clear-pin` 后重新设置。连续输错会指数退避，最长锁定 24 小时；重启 Web 进程会清掉这次锁定。浏览器入口受 PIN 保护，Runner 的 `8787` 仍按原来的地址直接访问。
 
 顶部是 Work 和 Library。Work 是三列：进行中的任务、Work 及其已挂版本、右侧出图。右下角的对话用来多轮写出图提示词，不进入任务队列。新建和编辑 Work 都在弹窗里。Library 管理 ComfyUI 的 input 和 output，上传输入图也在这一页。同一页可以「从 ComfyUI 建立」workflow：一次选一份 JSON，新文件入库，已变化的文件覆盖当前版本，不产生新版本。打开页面不会写入。Work 页把 workflow 挂上来。点名称可以看版本图和节点图。出图时选择版本并维护这一版的 Adapter；这一版还没有时，页面沿用最近一份并标明来源。工作流页顶部可以新建版本，并在版本列表里改说明、把这一版同步到 ComfyUI。任务页轮询状态，并可以取消还没结束的任务。
+
+## Blender 工作台
+
+Blender 被当作专业 CG Runtime，不做素材与项目管理。真相源是 `data/blender-plugin/`，源码在编辑器里维护；工作台只读源码，负责选 Scene、按 schema 注入变量、运行并看日志。
+
+前置：Blender GUI 已打开，并在 Blender 里装好 BlenderMCP 的 `addon.py`（默认监听 `127.0.0.1:9876`，面板里点 Start MCP Server）。Runner 配置在 `config.json` 的 `blender` 段，`mcp.command` 写 `uvx` 的绝对路径避免 GUI 环境找不到 PATH；`BLENDER_HOST` / `BLENDER_PORT` 通过 `mcp.env` 传给服务端。
+
+插件目录约定见 `data/blender-plugin/README.md`。核心是 `plugins/<id>/manifest.json`（入口、可见源码、变量 schema）和 `plugins/<id>/scripts/*.py`。脚本运行时拿到 `VARS`（表单注入）和 `CTX`（runId、pluginId、scene、outputDir），`print` 的内容进运行日志，产物写 `CTX["outputDir"]`。
+
+接口挂在 Runner：`GET /blender/status`、`/blender/plugins`、`/blender/plugins/:id`、`/blender/scenes`、`POST /blender/run`、`GET /blender/runs[/:id]`。Runner 保持一个 blender-mcp stdio 长连接，调用串行化（add-on 的 socket 一次只接一个客户端），断线自动重连。运行记录落 `data/blender-plugin/runs/<id>/run.json`，不进版本库。

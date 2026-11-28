@@ -1,0 +1,72 @@
+:root {
+  color: #241f1a;
+  background: #efe7da;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  line-height: 1.45;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(1100px 420px at 8% -10%, #f7f1e6, transparent 55%),
+    #efe7da;
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: #cfe3db; }
+button, input, select, textarea { font: inherit; }
+
+.shell { max-width: 1560px; margin: 0 auto; padding: 1.1rem 1.4rem 2rem; }
+.top { display: flex; align-items: baseline; gap: 1rem; padding-bottom: 0.9rem; border-bottom: 1px solid #d6cbbc; }
+.brand { font-weight: 700; letter-spacing: 0.02em; font-size: 1.1rem; color: #0c5c49; text-decoration: none; }
+.brand small { font-weight: 400; opacity: 0.6; margin-left: 0.5rem; letter-spacing: 0; }
+.top .hint { margin-left: auto; font-size: 0.78rem; color: #7b7065; }
+
+.status { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.78rem; padding: 0.2rem 0.5rem; border-radius: 999px; background: #e4eee9; color: #0c5c49; }
+.status.off { background: #f2e2dc; color: #9a4a35; }
+.status::before { content: ""; width: 0.45rem; height: 0.45rem; border-radius: 50%; background: currentColor; }
+
+.layout { display: grid; grid-template-columns: 240px minmax(360px, 1fr) 320px; gap: 1rem; margin-top: 1rem; align-items: start; }
+@media (max-width: 1100px) { .layout { grid-template-columns: 200px 1fr; } .inspector { grid-column: 1 / -1; } }
+@media (max-width: 720px) { .layout { grid-template-columns: 1fr; } }
+
+.panel { background: #faf6ee; border: 1px solid #ddd2c2; border-radius: 12px; overflow: hidden; }
+.panel-head { padding: 0.7rem 0.9rem; border-bottom: 1px solid #e4dacb; display: flex; align-items: center; gap: 0.5rem; }
+.panel-head h2 { margin: 0; font-size: 0.82rem; letter-spacing: 0.05em; text-transform: uppercase; color: #6f6458; }
+.panel-head .count { margin-left: auto; font-size: 0.72rem; color: #948879; }
+.panel-body { padding: 0.75rem 0.9rem; }
+
+.item { display: block; width: 100%; text-align: left; border: 1px solid transparent; background: transparent; color: #241f1a; padding: 0.5rem 0.6rem; border-radius: 8px; margin-bottom: 0.2rem; }
+.item:hover { background: #edf4f0; }
+.item.active { background: #dcebe4; border-color: #a8c9bd; color: #0c5c49; font-weight: 600; }
+.item small { display: block; font-size: 0.72rem; font-weight: 400; opacity: 0.65; margin-top: 0.1rem; }
+
+.empty { color: #8a7f72; font-size: 0.82rem; padding: 0.8rem 0; }
+.error { color: #9a4a35; font-size: 0.82rem; padding: 0.6rem 0; }
+
+.tabs { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+.tab { border: 1px solid #d6cbbc; background: transparent; color: #6f6458; padding: 0.25rem 0.55rem; font-size: 0.76rem; border-radius: 6px; }
+.tab.active { background: #0c5c49; color: #f7f3ea; border-color: #0c5c49; }
+
+.code { margin: 0; padding: 0.9rem 0; overflow: auto; max-height: 62vh; background: #fdfbf6; font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.78rem; line-height: 1.6; }
+.code .line { display: grid; grid-template-columns: 2.8rem 1fr; padding: 0 0.9rem; }
+.code .line:hover { background: #f0eee6; }
+.code .num { color: #ad9f8d; user-select: none; text-align: right; padding-right: 0.8rem; }
+.code .src { white-space: pre; }
+
+.field { margin-bottom: 0.8rem; }
+.field label { display: flex; justify-content: space-between; font-size: 0.78rem; color: #6f6458; margin-bottom: 0.25rem; }
+.field input[type="number"], .field input[type="text"], .field select {
+  width: 100%; padding: 0.42rem 0.55rem; border: 1px solid #d2c6b6; border-radius: 7px;
+  background: #fffdf8; color: #241f1a;
+}
+.field input[type="checkbox"] { accent-color: #0c5c49; }
+.field .checkbox { display: flex; align-items: center; gap: 0.5rem; }
+
+button.primary { background: #0c5c49; color: #f7f3ea; width: 100%; padding: 0.6rem; font-weight: 600; }
+button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+button.quiet { background: transparent; color: #6f6458; border: 1px solid #d6cbbc; padding: 0.3rem 0.6rem; }
+
+.run-meta { font-size: 0.76rem; color: #7b7065; margin-top: 0.5rem; }
+.log { white-space: pre-wrap; word-break: break-word; font-family: "SFMono-Regular", Menlo, monospace; font-size: 0.74rem; background: #f1ede4; border-radius: 8px; padding: 0.6rem; max-height: 260px; overflow: auto; margin: 0.5rem 0 0; }

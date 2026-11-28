@@ -1,10 +1,12 @@
 import { Hono } from 'hono'
 
+import type { BlenderRuntime } from '../blender/runtime.ts'
 import { CaptureLive } from '../capture/live.ts'
 import { RunnerError } from '../errors.ts'
 import type { Runner } from '../task/queue.ts'
 import { mountCapture } from './capture.ts'
 import { mountCaptureLive } from './live.ts'
+import { mountBlender } from './blender.ts'
 import { mountConfig } from './config.ts'
 import { mountDice } from './dice.ts'
 import { mountChats } from './chats.ts'
@@ -28,6 +30,7 @@ import { mountWorks } from './works.ts'
 export function createApp(
   runner: Runner,
   live: CaptureLive = new CaptureLive(),
+  blender: BlenderRuntime | null = null,
 ): Hono {
   const app = new Hono()
   app.onError((err, c) => {
@@ -57,5 +60,6 @@ export function createApp(
   mountRecommend(app, runner)
   mountSystem(app, runner)
   mountTrain(app, runner)
+  if (blender) mountBlender(app, blender)
   return app
 }

@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { WebSocketServer } from 'ws'
 
+import { createBlenderRuntime } from './blender/runtime.ts'
 import { CaptureLive } from './capture/live.ts'
 import { enqueueDownload, resumeCaptureTasks } from './capture/tasks.ts'
 import { gatewayChat } from './chat/client.ts'
@@ -58,7 +59,10 @@ async function main(): Promise<void> {
       ),
   })
   runner.captureLive = live
-  const app = createApp(runner, live)
+  const blender = config.blender
+    ? createBlenderRuntime(config.blender, root)
+    : null
+  const app = createApp(runner, live, blender)
   const host = values.host ?? config.runner.host
   const port = portOf(values.port, config.runner.port)
   // tick 内部可能连续跑几秒（capture 有 3 秒预算），不加锁会被下一个 interval 重入。
@@ -83,10 +87,12 @@ async function main(): Promise<void> {
   if (config.runner.trainerBaseURL)
     log(root, `Trainer ${config.runner.trainerBaseURL}`)
   log(root, gateway ? `Gateway ${gateway.models.join(', ')}` : 'Gateway off')
+  log(root, blender ? `Blender MCP ${config.blender?.command} (${blender.dataDir})` : 'Blender off')
   process.once('SIGINT', () => {
     log(root, 'interrupting')
     clearInterval(timer)
     server.close()
+    void blender?.close()
   })
 }
 
