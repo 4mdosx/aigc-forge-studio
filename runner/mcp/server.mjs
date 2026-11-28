@@ -11,16 +11,8 @@
  *
  * 启动：node runner/mcp/server.mjs（stdio），RUNNER_URL 默认 http://127.0.0.1:8787
  */
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import {
-  CallToolRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
-  ListResourcesRequestSchema,
-  ListToolsRequestSchema,
-  ReadResourceRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js'
+import { Server } from '@modelcontextprotocol/server'
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 
 const RUNNER = (process.env.RUNNER_URL ?? 'http://127.0.0.1:8787').replace(/\/$/, '')
 
@@ -747,7 +739,7 @@ const server = new Server(
   { capabilities: { tools: {}, resources: {}, prompts: {} } },
 )
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
+server.setRequestHandler('tools/list', async () => ({
   tools: TOOLS.map((tool) => ({
     name: tool.name,
     title: tool.title,
@@ -757,7 +749,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   })),
 }))
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler('tools/call', async (request) => {
   const { name, arguments: args } = request.params
   const tool = TOOL_MAP.get(name)
   if (!tool) {
@@ -776,9 +768,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 })
 
-server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: RESOURCES }))
+server.setRequestHandler('resources/list', async () => ({ resources: RESOURCES }))
 
-server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+server.setRequestHandler('resources/read', async (request) => {
   const uri = request.params.uri
   const body = await readResource(uri)
   const meta = RESOURCES.find((item) => item.uri === uri)
@@ -800,9 +792,9 @@ const PROMPTS = [
   },
 ]
 
-server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: PROMPTS }))
+server.setRequestHandler('prompts/list', async () => ({ prompts: PROMPTS }))
 
-server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+server.setRequestHandler('prompts/get', async (request) => {
   const { name, arguments: args = {} } = request.params
   if (name !== 'mecha_standing') throw new Error(`未知 prompt：${name}`)
   const pose = args.pose ?? 'synth-stand-a'

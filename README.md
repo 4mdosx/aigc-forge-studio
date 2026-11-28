@@ -230,7 +230,7 @@ npm run check
 
 ```bash
 cd runner
-npm install            # 含 @modelcontextprotocol/sdk
+npm install            # 含 MCP TypeScript SDK v2：@modelcontextprotocol/client 与 /server
 node mcp/server.mjs    # stdio；RUNNER_URL 默认 http://127.0.0.1:8787
 node mcp/selftest.mjs  # 不连 GPU 的自检：列工具 + 调只读工具
 ```
