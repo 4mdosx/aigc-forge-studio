@@ -40,7 +40,7 @@
     "timeout": 120,
     "mcp": {
       "command": "/opt/homebrew/bin/uvx",
-      "args": ["--python", "3.11", "blender-mcp"],
+      "args": ["--python", "3.11", "mcp-for-blender"],
       "env": {
         "BLENDER_HOST": "127.0.0.1",
         "BLENDER_PORT": "9876",

@@ -275,8 +275,10 @@ Runner 地址用环境变量 `RUNNER_URL`，默认 `http://127.0.0.1:8787`。
 
 Blender 被当作专业 CG Runtime，不做素材与项目管理。真相源是 `data/blender-plugin/`，源码在编辑器里维护；工作台只读源码，负责选 Scene、按 schema 注入变量、运行并看日志。
 
-前置：Blender GUI 已打开，并在 Blender 里装好 BlenderMCP 的 `addon.py`（默认监听 `127.0.0.1:9876`，面板里点 Start MCP Server）。Runner 配置在 `config.json` 的 `blender` 段，`mcp.command` 写 `uvx` 的绝对路径避免 GUI 环境找不到 PATH；`BLENDER_HOST` / `BLENDER_PORT` 通过 `mcp.env` 传给服务端。
+前置：Blender GUI 已打开，装好 `mcp-for-blender` 的 add-on（`uvx mcp-for-blender install-addon` 会把 `blender_mcp.py` 放进当前 Blender 版本的 `scripts/addons/`），并在侧栏面板点 Connect to MCP server（默认 `127.0.0.1:9876`）。Blender 升级不会继承旧版本插件，升版本后要重装。注意 Blender 官方 Lab 的 `MCP` 扩展是另一套协议，不能替代这个 add-on。
 
-插件目录约定见 `data/blender-plugin/README.md`。核心是 `plugins/<id>/manifest.json`（入口、可见源码、变量 schema）和 `plugins/<id>/scripts/*.ts`。插件导出 `run(ctx)`，Runner 用 Node 直接加载 TS 执行；`ctx.vars` 是表单注入的变量，`ctx.mcp` 是通过 MCP 操作 Blender 的 TS 能力面（Scene、物体、渲染），`ctx.log` 写运行日志，产物写 `ctx.outputDir`。仓库里没有 `.py` 文件，底层 bpy 代码由 `runner/src/blender/mcp-tools.ts` 生成后经 blender-mcp 送入。
+同一台机器上 WorkBuddy 的 `~/.workbuddy/mcp.json` 与 Runner 的 `config.json` 应指向同一个包（`uvx --python 3.11 mcp-for-blender`）与同一个端口。两边各起一个 stdio 子进程，add-on 的 socket 每客户端一线程，命令进 queue 后在 Blender 主线程串行执行，可以同时用。Runner 配置在 `config.json` 的 `blender` 段，`mcp.command` 写 `uvx` 的绝对路径避免 GUI 环境找不到 PATH；`BLENDER_HOST` / `BLENDER_PORT` 通过 `mcp.env` 传给服务端。
 
-接口挂在 Runner：`GET /blender/status`、`/blender/plugins`、`/blender/plugins/:id`、`/blender/scenes`、`POST /blender/run`、`GET /blender/runs[/:id]`。Runner 保持一个 blender-mcp stdio 长连接，调用串行化（add-on 的 socket 一次只接一个客户端），断线自动重连。运行记录落 `data/blender-plugin/runs/<id>/run.json`，不进版本库。
+插件目录约定见 `data/blender-plugin/README.md`。核心是 `plugins/<id>/manifest.json`（入口、可见源码、变量 schema）和 `plugins/<id>/scripts/*.ts`。插件导出 `run(ctx)`，Runner 用 Node 直接加载 TS 执行；`ctx.vars` 是表单注入的变量，`ctx.mcp` 是通过 MCP 操作 Blender 的 TS 能力面（Scene、物体、渲染），`ctx.log` 写运行日志，产物写 `ctx.outputDir`。仓库里没有 `.py` 文件，底层 bpy 代码由 `runner/src/blender/mcp-tools.ts` 生成后经 MCP 送入。
+
+接口挂在 Runner：`GET /blender/status`、`/blender/plugins`、`/blender/plugins/:id`、`/blender/scenes`、`POST /blender/run`、`GET /blender/runs[/:id]`。Runner 保持一个 stdio 长连接，调用串行化，断线自动重连。运行记录落 `data/blender-plugin/runs/<id>/run.json`，不进版本库。
