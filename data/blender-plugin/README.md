@@ -32,7 +32,7 @@ data/blender-plugin/
   - `mcp.call(name, args)`：调用任意 MCP 工具。
   - `mcp.code(source)`：逃生舱，把一段 bpy 代码交给 `execute_blender_code`。
   - `mcp.scene.open(filepath)` / `mcp.scene.select(name)`：打开模板 / 切换 Scene。
-  - `mcp.objects.clear(prefix)` / `mcp.objects.boxes(items)`：清理物体 / 批量生成方块。
+  - `mcp.objects.clear(prefix)` / `mcp.objects.boxes(items)`：按前缀清理物体 / 批量生成方块。空前缀会拒绝，要清空整个场景须显式 `mcp.objects.clear('', { all: true })`。
   - `mcp.render.to(filepath, options)`：渲染到指定路径。
 
 类型声明在 `types.d.ts`，插件里 `import type { PluginContext } from '../../../types'` 即可。底层 bpy 代码由 Runner 的 `runner/src/blender/mcp-tools.ts` 生成，插件作者不写 Python。

@@ -22,7 +22,8 @@ export interface BlenderTools {
     select(name: string): Promise<string>
   }
   objects: {
-    clear(prefix?: string): Promise<string>
+    /** 按前缀删除物体；前缀为空时须显式传 all=true，否则拒绝。 */
+    clear(prefix?: string, options?: { all?: boolean }): Promise<string>
     boxes(items: BoxSpec[]): Promise<string>
   }
   render: {
@@ -75,7 +76,12 @@ bpy.context.window.scene = bpy.data.scenes[name]`)
       },
     },
     objects: {
-      async clear(prefix = '') {
+      async clear(prefix = '', options: { all?: boolean } = {}) {
+        // 空前缀等于删光整个场景。这是不可逆操作，必须显式确认，
+        // 否则拼错前缀的插件会把用户的场景清空。
+        if (prefix === '' && options.all !== true) {
+          throw new Error('objects.clear 拒绝空前缀：传前缀，或显式传 { all: true } 清空整个场景')
+        }
         return code(`import bpy, base64
 prefix = base64.b64decode('${payload(prefix)}').decode('utf-8')
 removed = 0

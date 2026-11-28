@@ -1,4 +1,6 @@
-import { existsSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import type { BlenderTools } from './mcp-tools.ts'
@@ -18,6 +20,10 @@ type PluginRun = (context: PluginContext) => unknown | Promise<unknown>
 
 // 插件是 data/blender-plugin 下的 .ts 文件。Node 22 直接剥离类型执行，
 // 不需要额外的编译步骤，也不需要 Python 解释器。
+//
+// import() 按 URL 缓存模块，编辑器改完源码直接点运行必须拿到新代码（包括
+// 插件内相对 import 的依赖）。URL query 在 file: 下会被规范化掉，不可靠；
+// 改为每次运行把插件目录复制到唯一临时目录再 import，路径天然不同。
 export async function runPlugin(
   entryPath: string,
   base: Omit<PluginContext, 'log'>,
@@ -25,37 +31,46 @@ export async function runPlugin(
   if (!existsSync(entryPath)) {
     throw new RunnerError(`插件入口不存在：${entryPath}`, 404)
   }
-  let module: { run?: unknown; default?: unknown }
+  const pluginRoot = resolve(entryPath, '..', '..')
+  const relativeEntry = resolve(entryPath).slice(pluginRoot.length + 1)
+  const staging = mkdtempSync(join(tmpdir(), 'aigc-blender-plugin-'))
   try {
-    module = (await import(pathToFileURL(entryPath).href)) as typeof module
-  } catch (err) {
-    throw new RunnerError(
-      `插件加载失败：${err instanceof Error ? err.message : String(err)}`,
-      500,
-    )
-  }
-  const run: PluginRun | null =
-    typeof module.run === 'function'
-      ? (module.run as PluginRun)
-      : typeof module.default === 'function'
-        ? (module.default as PluginRun)
-        : null
-  if (!run) {
-    throw new RunnerError('插件未导出 run(ctx) 函数', 500)
-  }
+    cpSync(pluginRoot, staging, { recursive: true })
+    let module: { run?: unknown; default?: unknown }
+    try {
+      const url = pathToFileURL(join(staging, relativeEntry)).href
+      module = (await import(url)) as typeof module
+    } catch (err) {
+      throw new RunnerError(
+        `插件加载失败：${err instanceof Error ? err.message : String(err)}`,
+        500,
+      )
+    }
+    const run: PluginRun | null =
+      typeof module.run === 'function'
+        ? (module.run as PluginRun)
+        : typeof module.default === 'function'
+          ? (module.default as PluginRun)
+          : null
+    if (!run) {
+      throw new RunnerError('插件未导出 run(ctx) 函数', 500)
+    }
 
-  const logs: string[] = []
-  const context: PluginContext = {
-    ...base,
-    log(message: string) {
-      logs.push(String(message))
-    },
+    const logs: string[] = []
+    const context: PluginContext = {
+      ...base,
+      log(message: string) {
+        logs.push(String(message))
+      },
+    }
+    try {
+      await run(context)
+    } catch (err) {
+      const text = logs.concat(err instanceof Error ? err.message : String(err)).join('\n')
+      throw new RunnerError(`插件执行失败：${text}`, 500)
+    }
+    return logs.join('\n')
+  } finally {
+    rmSync(staging, { recursive: true, force: true })
   }
-  try {
-    await run(context)
-  } catch (err) {
-    const text = logs.concat(err instanceof Error ? err.message : String(err)).join('\n')
-    throw new RunnerError(`插件执行失败：${text}`, 500)
-  }
-  return logs.join('\n')
 }

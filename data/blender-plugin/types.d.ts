@@ -26,7 +26,8 @@ export interface BlenderTools {
     select(name: string): Promise<string>
   }
   objects: {
-    clear(prefix?: string): Promise<string>
+    /** 按前缀删除物体；前缀为空时须显式传 all=true，否则拒绝。 */
+    clear(prefix?: string, options?: { all?: boolean }): Promise<string>
     boxes(items: BoxSpec[]): Promise<string>
   }
   render: {
